@@ -80,8 +80,10 @@ export function parseSms(text, receivedAt) {
   const to = t.match(/\bto\s+(?:VPA\s+)?(?!(?:your|a\/c|ac|account|card)\b)(.+?)(?=\s+(?:on|via|ref|upi)\b|\n|\(|$)/i);
   const from = t.match(/\bfrom\s+(?:VPA\s+)?(?!(?:your|hdfc bank a\/c|a\/c|ac|account)\b)(.+?)(?=\s+(?:on|via|ref|upi)\b|\n|\(|$)/i);
   const info = t.match(/\bInfo:?\s*(.+?)(?=\.|\n|$)/i) || t.match(/\bfor\s+((?:NEFT|IMPS|RTGS)\s*(?:Cr|Dr)?-?.+?)(?=\.\s|\n|\s+Avl|$)/i);
-  if (dir === 'out') merchant = cleanMerchant(at?.[1] || to?.[1] || info?.[1]);
-  else merchant = cleanMerchant(from?.[1] || info?.[1] || at?.[1]);
+  // "by NEFT-AIR INDIA EXPRESS LTD (Ref..." / "towards NEFT Cr-AIR INDIA EXPRESS-SALARY OCT 26."
+  const by = t.match(/\b(?:by|towards|via)\s+(?:NEFT|IMPS|RTGS|UPI|ACH|NACH)\s*(?:Cr|Dr|credit)?\s*[-:/ ]\s*(.+?)(?=\s*\(|\.\s|\s+(?:on|ref|avl|avail)\b|\n|$)/i);
+  if (dir === 'out') merchant = cleanMerchant(at?.[1] || to?.[1] || info?.[1] || by?.[1]);
+  else merchant = cleanMerchant(from?.[1] || info?.[1] || by?.[1] || at?.[1]);
   if (/payment .*(received|credited)/i.test(t) && isCard) merchant = 'Card payment';
 
   const rm = t.match(/\b(?:UPI(?:\s*Ref(?:\s*No)?)?|Ref(?:erence)?(?:\s*No)?|RRN|Txn\s*ID)\.?\s*[:#]?\s*(\d{6,})/i);

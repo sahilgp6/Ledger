@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.4';
+const APP_VERSION = '0.9.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -55,7 +55,7 @@ function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
-  d.inbox ||= []; d.smsSeen ||= []; d.settings.ai ||= { model: null }; d.holdings ||= [];
+  d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.settings.ai ||= { model: null }; d.holdings ||= [];
   if (!d.members?.length) {
     const holder = d.accounts.map((a) => a.statement?.holder).find(Boolean);
     d.members = [{ id: 'me', name: holder ? holder.split(/\s+/)[0].replace(/^./, (c) => c.toUpperCase()).replace(/(?<=^.).*/, (r) => r.toLowerCase()) : 'Me' }];
@@ -297,6 +297,145 @@ function marketsToday(accId) {
   return { chg, base };
 }
 
+// ---------- subscriptions & reminders ----------
+// D.bills: { id, name, kind: 'subscription'|'reminder', amount (paise, 0 = none), every: 'month'|'quarter'|'year'|'week'|'once',
+//            next: 'YYYY-MM-DD', match: words that identify its payments, accountId, remind: days before, note, lastPaid }
+const EVERY = { week: 'Weekly', month: 'Monthly', quarter: 'Every 3 months', year: 'Yearly', once: 'Once' };
+const perMonth = (b) => ({ week: 52 / 12, month: 1, quarter: 1 / 3, year: 1 / 12, once: 0 }[b.every] || 0) * (b.amount || 0);
+function advance(iso, every, day) {
+  const d = new Date(iso + 'T00:00:00');
+  if (every === 'week') { d.setDate(d.getDate() + 7); return isoOf(d); }
+  const months = every === 'quarter' ? 3 : every === 'year' ? 12 : 1;
+  const want = day || d.getDate();
+  const t = new Date(d.getFullYear(), d.getMonth() + months, 1);
+  t.setDate(Math.min(want, new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate()));
+  return isoOf(t);
+}
+const SUB_MERCHANTS = /apple|itunes|netflix|spotify|youtube|google ?(play|one|storage)|hotstar|prime|sonyliv|zee5|jiocinema|audible|kindle|microsoft|office ?365|xbox|playstation|adobe|canva|notion|dropbox|icloud|chatgpt|openai|anthropic|claude|linkedin|tinder|bumble|cult\.?fit|swiggy one|zomato gold|times prime|economic times|hindu|medium|substack|patreon/i;
+const payeeKey = (x) => (x.payee || x.description || '').trim();
+const billMatches = (b, x) => {
+  const words = (b.match || b.name).toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+  const hay = `${x.payee} ${x.description} ${x.raw || ''}`.toLowerCase();
+  return words.length && words.every((w) => hay.includes(w));
+};
+// Payments that look like subscriptions: a known subscription merchant, or the same payee at a similar amount about once a month
+function detectSubs() {
+  const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
+  const since = isoAdd(todayIso(), -400);
+  const groups = new Map();
+  for (const x of D.transactions) {
+    if (x.amount >= 0 || x.date < since || !vis.has(x.accountId)) continue;
+    const k = catById(x.categoryId)?.kind; if (k === 'transfer' || k === 'income') continue;
+    let key = payeeKey(x); if (!key || /^(upi payment|card payment|money received|sms)$/i.test(key)) continue;
+    // Group a known service under its name, however the statement or SMS spells it ("Apple Medi", "APPLE MEDIA SERVICES")
+    const km = `${key} ${x.description}`.match(SUB_MERCHANTS); if (km) key = km[0].replace(/^./, (c) => c.toUpperCase());
+    (groups.get(key) || groups.set(key, []).get(key)).push(x);
+  }
+  const dismissed = new Set(D.settings.subDismissed || []);
+  const out = [];
+  for (const [key, xs] of groups) {
+    if (dismissed.has(key) || (D.bills || []).some((b) => xs.some((x) => billMatches(b, x)))) continue;
+    xs.sort((a, b) => a.date.localeCompare(b.date));
+    const last = xs[xs.length - 1], amt = -last.amount;
+    const similar = xs.filter((x) => Math.abs(-x.amount - amt) <= amt * 0.15);
+    const months = new Set(similar.map((x) => ymOf(x.date)));
+    const known = SUB_MERCHANTS.test(`${key} ${last.description}`) || last.categoryId === 'subscriptions';
+    let every = null;
+    if (months.size >= 2) {
+      const gaps = similar.slice(1).map((x, i) => daysUntil(x.date) - daysUntil(similar[i].date)).filter((g) => g > 5);
+      const avg = gaps.length ? gaps.reduce((t, g) => t + g, 0) / gaps.length : 0;
+      if (avg >= 24 && avg <= 38 && similar.length <= months.size + 1) every = 'month';
+      else if (avg >= 80 && avg <= 100) every = 'quarter';
+      else if (avg >= 340 && avg <= 390) every = 'year';
+    }
+    if (!every && known && amt <= 1000000) every = 'month';
+    if (!every) continue;
+    let next = advance(last.date, every);
+    while (next < todayIso()) next = advance(next, every);
+    out.push({ key, name: SUB_MERCHANTS.test(key) ? key : payeeKey(last), amount: amt, every, next, accountId: last.accountId, count: similar.length, last: last.date, known });
+  }
+  return out.sort((a, b) => perMonth(b) - perMonth(a));
+}
+// Move each bill's next date past payments that have arrived, and past dates already gone for reminders with no amount to match
+function processBills() {
+  let changed = false;
+  for (const b of D.bills || []) {
+    if (b.every === 'once' || !b.next) continue;
+    const day = b.day || +b.next.slice(8);
+    if (b.kind === 'subscription') {
+      // The newest matching payment since the last one we knew of moves the next date on from it
+      const after = b.lastPaid || isoAdd(b.next, -10);
+      const paid = D.transactions.filter((x) => x.amount < 0 && x.date > after && billMatches(b, x) && (!b.amount || Math.abs(-x.amount - b.amount) <= b.amount * 0.25)).sort((p, q) => p.date.localeCompare(q.date)).pop();
+      if (paid) { b.lastPaid = paid.date; b.amount = -paid.amount; b.day = +paid.date.slice(8); b.next = advance(paid.date, b.every, b.day); changed = true; }
+    }
+  }
+  return changed;
+}
+const dueWord = (iso) => { const d = daysUntil(iso); return d === 0 ? 'today' : d === 1 ? 'tomorrow' : d < 0 ? `${-d} day${d < -1 ? 's' : ''} ago` : `in ${d} days`; };
+function billItem(b) {
+  const d = daysUntil(b.next);
+  return `<button class="item" data-act="billSheet" data-id="${b.id}"><div class="ico">${esc(initials(b.name))}</div>
+    <div class="grow"><div class="t">${esc(b.name)}</div><div class="s">${EVERY[b.every]} · ${b.every === 'once' && d < 0 ? 'was ' : 'next '}${fmtDate(b.next, true)} (${dueWord(b.next)})${b.accountId && accById(b.accountId) ? ' · ' + esc(accShort(accById(b.accountId))) : ''}</div></div>
+    <div style="text-align:right">${b.amount ? `<div class="a num">${inr(b.amount, 0)}</div>` : ''}<div class="tiny ${d < 0 ? 'bad' : d <= (b.remind ?? 1) ? 'warn' : 'muted'}">${d < 0 ? 'overdue' : d <= (b.remind ?? 1) ? 'due soon' : ''}</div></div></button>`;
+}
+function upcomingCard() {
+  const soon = (D.bills || []).filter((b) => b.next && daysUntil(b.next) <= Math.max(7, b.remind || 0) && daysUntil(b.next) >= (b.every === 'once' ? -3 : -30)).sort((p, q) => p.next.localeCompare(q.next));
+  const subs = (D.bills || []).filter((b) => b.kind === 'subscription');
+  const found = D.settings.subsSeen ? 0 : detectSubs().length;
+  if (!soon.length && !subs.length && !found) return '';
+  return `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Bills &amp; subscriptions</h2><button class="link" data-act="openBills">See all ›</button></div>
+    ${subs.length ? `<p class="small muted" style="margin:6px 0 0">${subs.length} subscription${subs.length > 1 ? 's' : ''} · ${inr(subs.reduce((t, b) => t + perMonth(b), 0), 0)} a month</p>` : ''}
+    ${found ? `<p class="small" style="margin:6px 0 0"><button class="link" data-act="openBills">${found} possible subscription${found > 1 ? 's' : ''} found in your spending ›</button></p>` : ''}
+    ${soon.length ? `<div class="list" style="margin:8px -4px 0">${soon.slice(0, 4).map(billItem).join('')}</div>` : ''}</div>`;
+}
+function renderBills(m) {
+  setTop('Bills & subscriptions', { back: 'closeView' });
+  if (processBills()) save();
+  D.settings.subsSeen = true;
+  const found = detectSubs();
+  const subs = (D.bills || []).filter((b) => b.kind === 'subscription').sort((p, q) => p.next.localeCompare(q.next));
+  const rems = (D.bills || []).filter((b) => b.kind !== 'subscription').sort((p, q) => p.next.localeCompare(q.next));
+  m.innerHTML = `
+  ${found.length ? `<div class="day"><span>Found in your spending</span></div><div class="list">${found.map((f, i) => `<div class="item" style="display:block"><div class="row"><div class="grow"><div class="t">${esc(f.name)}</div><div class="s">${inr(f.amount, 0)} · looks ${EVERY[f.every].toLowerCase()} · ${f.count > 1 ? `${f.count} payments, last ${fmtDate(f.last)}` : `paid ${fmtDate(f.last)}`}</div></div></div>
+      <div class="row" style="margin-top:8px"><button class="chip on" data-act="subAdd" data-i="${i}">Add</button><button class="chip" data-act="subNo" data-key="${esc(f.key)}">Not a subscription</button></div></div>`).join('')}</div>` : ''}
+  <div class="day"><span>Subscriptions${subs.length ? ' · ' + inr(subs.reduce((t, b) => t + perMonth(b), 0), 0) + ' a month' : ''}</span></div>
+  <div class="list">${subs.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="subscription"><div class="grow" style="color:var(--brand)">+ Add a subscription</div></button></div>
+  <div class="day"><span>Reminders</span></div>
+  <div class="list">${rems.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="reminder"><div class="grow" style="color:var(--brand)">+ Add a reminder</div></button></div>
+  <p class="small muted" style="margin:10px 4px">Subscriptions move to their next date by themselves when the payment shows up from a statement or SMS. Reminders are yours to set: pick the date and how often, and tap <b>Mark done</b> when it's handled. Add any of them to your iPhone Calendar to get an alert.</p>`;
+  ui.found = found;
+}
+function billSheet(b, kind = 'reminder', pre = {}) {
+  const x = b || { kind, every: 'month', next: todayIso(), remind: 1, ...pre };
+  const isSub = x.kind === 'subscription';
+  openSheet(`<h3>${b ? 'Edit' : 'Add'} ${isSub ? 'subscription' : 'reminder'}</h3>
+  <form data-form="bill" data-id="${b?.id || ''}" data-kind="${x.kind}">
+    <label class="f"><span>Name</span><input class="i" name="name" required value="${esc(x.name || '')}" placeholder="${isSub ? 'Apple' : 'Car insurance renewal'}"></label>
+    <label class="f"><span>Amount (₹)${isSub ? '' : ', optional'}</span><input class="i num" name="amount" inputmode="decimal" ${isSub ? 'required' : ''} value="${x.amount ? x.amount / 100 : ''}"></label>
+    <div class="split"><label class="f"><span>Repeats</span><select class="i" name="every">${Object.entries(EVERY).filter(([k]) => !isSub || k !== 'once').map(([k, v]) => `<option value="${k}" ${k === x.every ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label class="f"><span>${isSub ? 'Next payment' : 'Date'}</span><input class="i" type="date" name="next" required value="${x.next}"></label></div>
+    <label class="f"><span>Remind me</span><select class="i" name="remind">${[[0, 'On the day'], [1, '1 day before'], [3, '3 days before'], [7, 'A week before'], [15, '15 days before'], [30, 'A month before']].map(([v, l]) => `<option value="${v}" ${+v === +(x.remind ?? 1) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="f"><span>Paid from (optional)</span><select class="i" name="accountId"><option value="">Not set</option>${accOptions(x.accountId)}</select></label>
+    ${isSub ? `<label class="f"><span>Payments contain</span><input class="i" name="match" value="${esc(x.match || '')}" placeholder="apple" autocapitalize="off"></label><p class="tiny muted" style="margin-top:-6px">Words from the payee on your statement or SMS, so Ledger can tick it off when it's paid. Leave empty to use the name.</p>` : ''}
+    <label class="f"><span>Note</span><input class="i" name="note" value="${esc(x.note || '')}"></label>
+    <button class="btn wide">Save</button>
+  </form>
+  ${b ? `<div style="height:10px"></div>${b.kind !== 'subscription' ? `<button class="btn wide ghost" data-act="billDone" data-id="${b.id}">Mark done${b.every !== 'once' ? ' (move to next date)' : ''}</button><div style="height:10px"></div>` : ''}
+    <button class="btn wide ghost" data-act="billCal" data-id="${b.id}">Add to iPhone Calendar</button><div style="height:10px"></div>
+    <button class="btn wide danger" data-act="billDelete" data-id="${b.id}">Delete</button>` : ''}`);
+}
+// A calendar event with an alert, repeating like the bill; iPhone offers "Add to Calendar"
+function billIcs(b) {
+  const dt = b.next.replace(/-/g, ''), end = isoAdd(b.next, 1).replace(/-/g, '');
+  const rule = { week: 'FREQ=WEEKLY', month: 'FREQ=MONTHLY', quarter: 'FREQ=MONTHLY;INTERVAL=3', year: 'FREQ=YEARLY' }[b.every];
+  const txt = (s) => String(s).replace(/[\;,]/g, (c) => '\\' + c).replace(/\n/g, '\\n');
+  const title = `${b.name}${b.amount ? ' · ' + inr(b.amount, 0).replace('₹', 'Rs ') : ''}`;
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Ledger//EN', 'BEGIN:VEVENT', `UID:${b.id}@ledger`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${dt}`, `DTEND;VALUE=DATE:${end}`,
+    `SUMMARY:${txt(title)}`, ...(b.note ? [`DESCRIPTION:${txt(b.note)}`] : []), ...(rule ? [`RRULE:${rule}`] : []),
+    'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${txt(title)}`, `TRIGGER:${b.remind ? `-P${b.remind - 1}DT15H` : 'PT9H'}`, 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+}
+
 function monthStats(ym) {
   let spend = 0, income = 0, uncategorised = 0;
   const byCat = new Map();
@@ -346,6 +485,7 @@ function render() {
   const m = $('#main');
   if (ui.view?.page === 'account') return renderAccount(m, ui.view.id);
   if (ui.view?.page === 'ask') return renderAsk(m);
+  if (ui.view?.page === 'bills') return renderBills(m);
   ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, more: renderMore }[ui.tab])(m);
 }
 
@@ -371,6 +511,7 @@ function renderHome(m) {
     return;
   }
   recordPrices();
+  if (processBills()) save();
   const nw = netWorth();
   const mt = marketsToday();
   const ym = ymOf(todayIso());
@@ -397,6 +538,7 @@ function renderHome(m) {
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
       <div class="a num ${d <= 3 ? 'bad' : ''}">${inr(a.statement.totalDue, 0)}</div></button>`; }).join('')}
   ${D.transactions.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAsk"><div class="ico">AI</div><div class="grow"><div class="t">Ask Ledger</div><div class="s">“How can I spend less?”</div></div><div class="muted">›</div></button>` : ''}
+  ${upcomingCard()}
   ${D.inbox.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="tab" data-tab="import"><div class="grow"><div class="t">${D.inbox.length} SMS need attention</div><div class="s">Assign an account or enter them by hand</div></div><div class="muted">›</div></button>` : ''}
   ${backupOld ? `<div class="card row"><div class="grow small">No backup in the last 30 days. If this app is deleted, its data goes with it.</div><button class="btn ghost" data-act="backup">Back up</button></div>` : ''}
   <div class="card"><h2>Spent in ${monthLabel(ym)}</h2>
@@ -1137,7 +1279,9 @@ function smsToTx(acc, p, hash) {
   const payee = payeeFrom(raw.replace(/^(NEFT|IMPS|RTGS)\s*(Cr|Dr)?-?/i, '')) || raw;
   const t = { accountId: acc.id, date: p.date, amount: p.amount, description: p.merchant || p.channel || 'SMS', payee };
   if (isMyUpi(p.merchant)) return { id: uid(), ...t, payee: 'Self transfer', time: null, raw: p.text, categoryId: 'self_transfer', notes: '', ref: p.ref, importId: null, hash, source: 'sms', upi: p.merchant };
-  const c = categorize(t, D.rules);
+  let c = categorize(t, D.rules);
+  // Money in with no match on the payee: look at the whole SMS (e.g. "...NEFT Cr-AIR INDIA EXPRESS-SALARY")
+  if (!c.categoryId && p.amount > 0) { const c2 = categorize({ ...t, description: p.text }, D.rules); if (c2.categoryId) c = { ...c2, payee: c2.payee || c.payee }; }
   return { id: uid(), ...t, time: null, raw: p.text, payee: c.payee || payee, categoryId: c.categoryId, notes: '', ref: p.ref, importId: null, hash, source: 'sms', upi: /@/.test(p.merchant) ? p.merchant : undefined };
 }
 const isMyUpi = (h) => !!h && (D.settings.myUpi || []).includes(String(h).toLowerCase());
@@ -1749,6 +1893,19 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  openBills: () => { ui.view = { page: 'bills' }; render(); window.scrollTo(0, 0); },
+  billSheet: (d) => { ui.pendingLast = null; billSheet(d.id ? D.bills.find((b) => b.id === d.id) : null, d.kind || 'reminder'); },
+  subAdd: (d) => { const f = ui.found?.[+d.i]; if (!f) return; billSheet(null, 'subscription', { name: f.name, amount: f.amount, every: f.every, next: f.next, accountId: f.accountId, match: f.name.toLowerCase().split(/\s+/).slice(0, 2).join(' '), remind: 1 }); },
+  subNo: (d) => { D.settings.subDismissed = [...new Set([...(D.settings.subDismissed || []), d.key])]; save(); render(); },
+  billDone: (d) => { const b = D.bills.find((x) => x.id === d.id); if (!b) return; b.lastPaid = todayIso(); if (b.every === 'once') D.bills = D.bills.filter((x) => x.id !== b.id); else { const day = b.day || +b.next.slice(8); do { b.next = advance(b.next, b.every, day); } while (b.next <= todayIso()); } save(); closeSheet(); render(); toast(b.every === 'once' ? 'Done and removed' : `Next: ${fmtDate(b.next, true)}`); },
+  billDelete: (d) => { D.bills = D.bills.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
+  billCal: async (d) => {
+    const b = D.bills.find((x) => x.id === d.id); if (!b) return;
+    const ics = billIcs(b), name = b.name.replace(/[^\w ]+/g, '').trim() || 'reminder';
+    const file = new File([ics], `${name}.ics`, { type: 'text/calendar' });
+    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    const a = document.createElement('a'); a.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics); a.download = `${name}.ics`; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
+  },
   tab: (d) => { ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
   closeSheet, closeView: () => { ui.view = null; render(); },
   month: (d) => { ui.month = addMonths(ui.month, +d.d); render(); },
@@ -1974,6 +2131,16 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  bill: (f, form) => {
+    const amt = parseRupees(f.get('amount') || '');
+    const next = f.get('next'); if (!next) return toast('Pick a date.');
+    const v = { name: f.get('name').trim(), amount: amt ? Math.abs(amt) : 0, every: f.get('every'), next, day: +next.slice(8), remind: +f.get('remind'), accountId: f.get('accountId') || null, note: (f.get('note') || '').trim() };
+    if (form.dataset.kind === 'subscription') v.match = (f.get('match') || '').trim().toLowerCase();
+    const id = form.dataset.id;
+    if (id) Object.assign(D.bills.find((x) => x.id === id), v); else D.bills.push({ id: uid(), kind: form.dataset.kind, ...v, ...(ui.pendingLast && form.dataset.kind === 'subscription' ? { lastPaid: ui.pendingLast } : {}) });
+    ui.pendingLast = null;
+    processBills(); save(); closeSheet(); render(); toast('Saved');
+  },
   setup: async (f) => {
     if (f.get('p1') !== f.get('p2')) return toast('The passphrases do not match.');
     toast('Creating your vault…');
@@ -2181,4 +2348,4 @@ async function boot() {
 boot();
 
 // Exposed for automated tests only
-window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, spendFacts, ask, builtinTips, handleInbox, matchTransfers, AI };
+window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, spendFacts, ask, builtinTips, detectSubs, processBills, billIcs, handleInbox, matchTransfers, AI };

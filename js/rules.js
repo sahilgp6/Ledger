@@ -79,7 +79,7 @@ export const DEFAULT_RULES = [
   R('JIOCINEMA', 'subscriptions'), R('JIOHOTSTAR', 'subscriptions'), R('JIO', 'mobile'), R('AIRTEL', 'mobile'), R('VODAFONE', 'mobile'), R('BSNL', 'mobile'), R('ACT FIBERNET', 'mobile'), R('HATHWAY', 'mobile'), R('TATA PLAY', 'subscriptions'),
   R('MSEDCL', 'electricity'), R('MAHAVITARAN', 'electricity'), R('ADANI ELECTRICITY', 'electricity'), R('TATA POWER', 'electricity'), R('TORRENT POWER', 'electricity'), R('BEST UNDERTAKING', 'electricity'),
   R('MAHANAGAR GAS', 'gas'), R('INDANE', 'gas'), R('HP GAS', 'gas'), R('BHARATGAS', 'gas'),
-  R('NETFLIX', 'subscriptions'), R('SPOTIFY', 'subscriptions'), R('HOTSTAR', 'subscriptions'), R('YOUTUBE', 'subscriptions'), R('APPLE.COM', 'subscriptions'), R('APPLE SERVICES', 'subscriptions'), R('GOOGLE PLAY', 'subscriptions'), R('ANTHROPIC', 'subscriptions'), R('CLAUDE.AI', 'subscriptions'), R('OPENAI', 'subscriptions'), R('PRIME VIDEO', 'subscriptions'), R('SONYLIV', 'subscriptions'),
+  R('NETFLIX', 'subscriptions'), R('SPOTIFY', 'subscriptions'), R('HOTSTAR', 'subscriptions'), R('YOUTUBE', 'subscriptions'), R('APPLE.COM', 'subscriptions'), R('APPLE SERVICES', 'subscriptions'), R('APPLE MEDIA', 'subscriptions'), R('ITUNES', 'subscriptions'), R('APPLESERVICES', 'subscriptions'), R('GOOGLE PLAY', 'subscriptions'), R('ANTHROPIC', 'subscriptions'), R('CLAUDE.AI', 'subscriptions'), R('OPENAI', 'subscriptions'), R('PRIME VIDEO', 'subscriptions'), R('SONYLIV', 'subscriptions'),
   R('NOBROKER', 'rent'), R('MYGATE', 'society'),
   // Health & pets (vet before hospital)
   R('VET', 'vet'), R('SUPERPETS', 'pet_supplies'), R('HEADS UP FOR TAILS', 'pet_supplies'), R('HUFT', 'pet_supplies'), R('SUPERTAILS', 'pet_supplies'), R('PETS', 'pet_supplies'),
@@ -109,7 +109,7 @@ const title = (s) => s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase(
 const PAYEE_ALIASES = [
   ['OFFUSEMI,PRIN', 'EMI principal'], ['OFFUSEMI,INT', 'EMI interest'], ['PROCNGFEE', 'EMI processing fee'], ['AGGREGATOREMI', 'EMI conversion credit'],
   ['IGST-', 'GST on charges'], ['CGST-', 'GST on charges'], ['SGST-', 'GST on charges'], ['CCPAYMENT', 'Card payment'], ['AUTOPAYSI', 'Card autopay'], ['CCBILLPAY', 'Card bill payment'], ['PETROSURCHARGE', 'Fuel surcharge waiver'],
-  ['AIRINDIAEXPRESS', 'Air India Express'], ['CREDITINTERESTCAPITALIZED', 'Savings interest'], ['INTERESTCAPITALISED', 'Savings interest'], ['AMAZONGIFTCARD', 'Amazon gift card'], ['AMAZONSELLERSERVICES', 'Amazon'], ['AMAZONINDIA', 'Amazon'], ['AMAZONPAY', 'Amazon Pay'], ['HENNESNMAURITZ', 'H&M'],
+  ['AIRINDIAEXPRESS', 'Air India Express'], ['APPLEMEDI', 'Apple'], ['APPLECOMBILL', 'Apple'], ['APPLESERVICES', 'Apple'], ['ITUNES', 'Apple'], ['CREDITINTERESTCAPITALIZED', 'Savings interest'], ['INTERESTCAPITALISED', 'Savings interest'], ['AMAZONGIFTCARD', 'Amazon gift card'], ['AMAZONSELLERSERVICES', 'Amazon'], ['AMAZONINDIA', 'Amazon'], ['AMAZONPAY', 'Amazon Pay'], ['HENNESNMAURITZ', 'H&M'],
   ['INSTAMART', 'Swiggy Instamart'], ['SWIGGY', 'Swiggy'], ['ZOMATO', 'Zomato'], ['BLINKIT', 'Blinkit'], ['BLINKCOMMERCE', 'Blinkit'], ['UBER', 'Uber'], ['ZARACOM', 'Zara'],
   ['MCDONALDS', "McDonald's"], ['TATASTARBUCKS', 'Starbucks'], ['STARBUCKS', 'Starbucks'], ['1MG', 'Tata 1mg'], ['JIOPOSTPAID', 'Jio Postpaid'], ['AJIO', 'AJIO'], ['IKEA', 'IKEA'],
 ];
