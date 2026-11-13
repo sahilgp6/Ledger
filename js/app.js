@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.5';
+const APP_VERSION = '1.4.6';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -40,7 +40,34 @@ const initials = (s) => (String(s || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().s
 
 function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); }
 function openSheet(html) { $('#sheet').innerHTML = '<div class="grab"></div>' + html; $('#sheet').classList.add('on'); $('#scrim').classList.add('on'); $('#sheet').scrollTop = 0; }
-function closeSheet() { $('#sheet').classList.remove('on'); $('#scrim').classList.remove('on'); }
+function closeSheet() { const s = $('#sheet'); s.classList.remove('on'); s.style.transform = ''; s.style.transition = ''; $('#scrim').classList.remove('on'); $('#scrim').style.opacity = ''; }
+// Pull a sheet down to close it: from the handle anywhere, or from the content once it is scrolled to the top
+let shS = null;
+document.addEventListener('touchstart', (e) => {
+  const sh = e.target.closest?.('#sheet.on'); if (!sh || e.touches.length > 1) return;
+  if (e.target.closest('input,select,textarea,.esc-row,input.pp')) return;
+  shS = { y: e.touches[0].clientY, x: e.touches[0].clientX, t: performance.now(), top: sh.scrollTop <= 0, grab: !!e.target.closest('.grab,h3'), dy: 0, on: false, sh };
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!shS) return;
+  const dy = e.touches[0].clientY - shS.y, dx = e.touches[0].clientX - shS.x;
+  if (!shS.on) {
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) { shS = null; return; }
+    if (dy > 6 && (shS.grab || (shS.top && shS.sh.scrollTop <= 0))) { shS.on = true; shS.sh.style.transition = 'none'; }
+    else if (dy < -6) { shS = null; return; } else return;
+  }
+  e.preventDefault();
+  shS.dy = Math.max(0, dy);
+  shS.sh.style.transform = `translateY(${shS.dy}px)`;
+  $('#scrim').style.opacity = String(Math.max(0, 1 - shS.dy / (shS.sh.offsetHeight || 600)));
+}, { passive: false });
+document.addEventListener('touchend', () => {
+  if (!shS) return; const s = shS; shS = null; if (!s.on) return;
+  const v = s.dy / Math.max(1, performance.now() - s.t);
+  s.sh.style.transition = ''; $('#scrim').style.opacity = '';
+  if (s.dy > 110 || (v > 0.6 && s.dy > 30)) { haptic(); closeSheet(); } else s.sh.style.transform = '';
+});
+document.addEventListener('touchcancel', () => { if (shS?.on) { shS.sh.style.transition = ''; shS.sh.style.transform = ''; $('#scrim').style.opacity = ''; } shS = null; });
 const save = () => vault.save();
 
 function newData() {
@@ -806,12 +833,15 @@ function setTop(title, { back, action } = {}) {
   $('#top').innerHTML = (back ? `<button class="back" data-act="${back}">‹ Back</button>` : '') + `<h1>${esc(title)}</h1>` + (action || '');
 }
 // Haptic tick: iOS 18+ plays one when a switch control toggles; elsewhere this does nothing
-let hapEl = null;
+let hapAt = 0;
 function haptic() {
   try {
+    const now = performance.now(); if (now - hapAt < 80) return; hapAt = now;
     if (navigator.vibrate) { navigator.vibrate(8); return; }
-    if (!hapEl) { hapEl = document.createElement('label'); hapEl.setAttribute('aria-hidden', 'true'); hapEl.style.cssText = 'position:fixed;left:-99px;width:1px;height:1px;overflow:hidden'; hapEl.innerHTML = '<input type="checkbox" switch>'; document.body.appendChild(hapEl); }
-    hapEl.click();
+    // iOS 18+: toggling a hidden <input switch> through its label plays the system tap. It must run inside the tap itself.
+    const l = document.createElement('label'); l.setAttribute('aria-hidden', 'true'); l.style.display = 'none';
+    const i = document.createElement('input'); i.type = 'checkbox'; i.setAttribute('switch', ''); l.appendChild(i);
+    document.head.appendChild(l); l.click(); l.remove();
   } catch { /* no haptics here */ }
 }
 // A short check mark for things that are done
@@ -2678,6 +2708,7 @@ document.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse')
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = acts[el.dataset.act]; if (!fn) return;
+  haptic();
   if (!(el.tagName === 'A' && el.hasAttribute('download'))) e.preventDefault();
   fn(el.dataset, el);
 });

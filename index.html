@@ -122,7 +122,9 @@ table.t a{color:var(--brand);text-decoration:none;font-weight:500;overflow-wrap:
 #scrim.on{opacity:1;pointer-events:auto}
 #sheet{position:fixed;left:0;right:0;bottom:0;z-index:32;background:var(--card);border-radius:20px 20px 0 0;max-height:92dvh;overflow-y:auto;transform:translateY(105%);transition:transform .48s var(--ease-ios);padding:8px 18px calc(18px + var(--safe-b))}
 #sheet.on{transform:none}
-#sheet .grab{width:40px;height:5px;border-radius:3px;background:var(--line);margin:4px auto 12px}
+#sheet .grab{width:40px;height:5px;border-radius:3px;background:var(--muted);opacity:.45;margin:0 auto 12px;position:relative}
+#sheet .grab::before{content:'';position:absolute;inset:-14px -60px}
+#sheet{overscroll-behavior:contain}
 #sheet h3{margin:0 0 14px;font-family:var(--serif);font-weight:500;font-size:1.45rem}
 /* Lock */
 #lock{position:fixed;inset:0;z-index:30;background:var(--bg);display:none;overflow-y:auto;padding:calc(var(--safe-t) + 40px) 22px 30px}
