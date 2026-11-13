@@ -108,7 +108,7 @@ const title = (s) => s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase(
 const PAYEE_ALIASES = [
   ['OFFUSEMI,PRIN', 'EMI principal'], ['OFFUSEMI,INT', 'EMI interest'], ['PROCNGFEE', 'EMI processing fee'], ['AGGREGATOREMI', 'EMI conversion credit'],
   ['IGST-', 'GST on charges'], ['CGST-', 'GST on charges'], ['SGST-', 'GST on charges'], ['CCPAYMENT', 'Card payment'], ['AUTOPAYSI', 'Card autopay'], ['CCBILLPAY', 'Card bill payment'], ['PETROSURCHARGE', 'Fuel surcharge waiver'],
-  ['AMAZONGIFTCARD', 'Amazon gift card'], ['AMAZONSELLERSERVICES', 'Amazon'], ['AMAZONINDIA', 'Amazon'], ['AMAZONPAY', 'Amazon Pay'], ['HENNESNMAURITZ', 'H&M'],
+  ['AIRINDIAEXPRESS', 'Air India Express'], ['CREDITINTERESTCAPITALIZED', 'Savings interest'], ['INTERESTCAPITALISED', 'Savings interest'], ['AMAZONGIFTCARD', 'Amazon gift card'], ['AMAZONSELLERSERVICES', 'Amazon'], ['AMAZONINDIA', 'Amazon'], ['AMAZONPAY', 'Amazon Pay'], ['HENNESNMAURITZ', 'H&M'],
   ['INSTAMART', 'Swiggy Instamart'], ['SWIGGY', 'Swiggy'], ['ZOMATO', 'Zomato'], ['BLINKIT', 'Blinkit'], ['BLINKCOMMERCE', 'Blinkit'], ['UBER', 'Uber'], ['ZARACOM', 'Zara'],
   ['MCDONALDS', "McDonald's"], ['TATASTARBUCKS', 'Starbucks'], ['STARBUCKS', 'Starbucks'], ['1MG', 'Tata 1mg'], ['JIOPOSTPAID', 'Jio Postpaid'], ['AJIO', 'AJIO'], ['IKEA', 'IKEA'],
 ];

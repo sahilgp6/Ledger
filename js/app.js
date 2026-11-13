@@ -4,7 +4,7 @@ import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squas
 import { parseSms, smsPayee, splitInbox } from './sms.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -308,13 +308,12 @@ function renderAccount(m, id) {
 function renderImport(m) {
   setTop('Import');
   if (ui.imp) return renderImportPreview(m);
+  if (ui.batch?.length) return renderBatch(m);
   const imps = [...D.imports].sort((a, b) => b.at.localeCompare(a.at));
   m.innerHTML = `
-  <div class="card"><h2>Add a statement</h2>
-    <button class="btn wide" data-act="pickFile" data-kind="pdf">Credit card statement (PDF)</button>
-    <p class="small muted">HDFC Bank cards work now. Password-protected PDFs are fine: you'll be asked for the password, and it is never saved.</p>
-    <button class="btn wide ghost" data-act="pickFile" data-kind="csv">Bank statement (CSV)</button>
-    <p class="small muted">Export from net banking as CSV (in HDFC choose "Delimited"). You'll match the columns once.</p>
+  <div class="card"><h2>Add statements</h2>
+    <button class="btn wide" data-act="pickFile" data-kind="any">Upload statements</button>
+    <p class="small muted">Pick one or several PDFs or CSVs at once. Ledger recognises each one and sets up the accounts for you. Works now: HDFC credit cards, DNS Bank savings, any bank CSV. More banks and investment statements are coming. Password-protected files are fine.</p>
   </div>
   <div class="card"><h2>Bank SMS</h2>
     <button class="btn wide" data-act="pickFile" data-kind="inbox">Read SMS inbox file</button>
@@ -344,27 +343,62 @@ async function readPdf(file, password) {
   await doc.destroy();
   return pages;
 }
-async function handlePdf(file, password) {
-  let pages;
-  try { pages = await readPdf(file, password); }
-  catch (e) {
-    if (e?.name === 'PasswordException') {
-      openSheet(`<h3>PDF password</h3><p class="small muted">${password ? 'That password did not work. ' : ''}HDFC card statements usually use the first 4 letters of your name in capitals plus the last 4 digits of the card, or your date of birth. It's used once and not saved.</p>
-        <form data-form="pdfPass"><input class="i" name="pw" type="password" autocomplete="off" autofocus><div style="height:12px"></div><button class="btn wide">Open</button></form>`);
-      pendingFile = file;
-      return;
-    }
-    console.error(e); toast('Could not read that PDF.'); return;
+// Opens a PDF, trying saved statement passwords before asking. Returns pages or null (prompt shown).
+async function openPdf(file, password) {
+  const tries = password != null ? [password] : [undefined, ...(D.settings.pdfPasswords || []).map((p) => p.pw)];
+  for (const pw of tries) {
+    try { return { pages: await readPdf(file, pw), pw }; }
+    catch (e) { if (e?.name !== 'PasswordException') throw e; }
   }
+  return null;
+}
+function askPdfPassword(file, wrong) {
+  pendingFile = file;
+  openSheet(`<h3>Password for ${esc(file.name)}</h3><p class="small muted">${wrong ? 'That password did not work. ' : ''}HDFC cards: first 4 letters of your name in capitals + last 4 card digits. HDFC savings: your Customer ID. CAS: your PAN. DNS Bank: your Customer ID.</p>
+    <form data-form="pdfPass"><input class="i" name="pw" type="password" autocomplete="off" autofocus>
+    <label class="row small" style="margin:10px 0"><input type="checkbox" class="chk" name="remember" checked><span>Remember it in my encrypted vault, so next month's statement opens by itself</span></label>
+    <button class="btn wide">Open</button></form>`);
+}
+// Turns a file into an import draft (imp), or explains why it can't.
+async function draftFromPdf(file, password) {
+  const opened = await openPdf(file, password);
+  if (!opened) return { needPassword: true, wrong: password != null };
+  const { pages } = opened;
   const text = P.toLines(pages).map((l) => l.text).join('\n');
-  if (!P.detectHdfcCard(text)) {
-    openSheet(`<h3>Format not supported yet</h3><p>This doesn't look like an HDFC credit card statement. Send a sample of this format to Claude and a parser can be added.</p><button class="btn wide ghost" data-act="closeSheet">OK</button>`);
-    return;
+  if (P.detectHdfcCard(text)) {
+    const parsed = P.parseHdfcCard(pages);
+    const match = D.accounts.find((a) => a.type === 'credit_card' && !a.archived && a.last4 && a.last4 === parsed.statement.cardLast4);
+    return { imp: { kind: 'card', fileName: file.name, parsed, accountId: match?.id || '_new', newName: `HDFC ${parsed.statement.product || 'Credit Card'}`, newType: 'credit_card', rows: [] }, pw: opened.pw };
   }
-  const parsed = P.parseHdfcCard(pages);
-  const match = D.accounts.find((a) => a.type === 'credit_card' && !a.archived && a.last4 && a.last4 === parsed.statement.cardLast4);
-  ui.imp = { kind: 'card', fileName: file.name, parsed, accountId: match?.id || '_new', newName: `HDFC ${parsed.statement.product || 'Credit Card'}`, rows: [] };
-  buildRows();
+  if (P.detectBankStatement(text)) {
+    const parsed = P.parseBankPdf(pages);
+    const st = parsed.statement;
+    const match = D.accounts.find((a) => !a.archived && a.type !== 'credit_card' && a.last4 && a.last4 === st.last4 && (!a.institution || !st.bank || a.institution === st.bank));
+    const loans = [...new Set(parsed.transactions.filter((t) => t.loanAccount).map((t) => t.loanAccount))]
+      .filter((no) => !D.accounts.some((a) => a.last4 === no.slice(-4) && typeOf(a.type).side === 'liability'));
+    return { imp: { kind: 'bankpdf', fileName: file.name, parsed, accountId: match?.id || '_new', newName: `${st.bank || 'Bank'} ${st.accountType === 'current' ? 'Current' : 'Savings'}`.trim(), newType: st.accountType || 'savings', rows: [], loans: loans.map((no) => ({ no, create: true, type: 'home_loan', name: `${st.bank} Home Loan`.trim(), outstanding: '' })) }, pw: opened.pw };
+  }
+  return { unsupported: true };
+}
+async function handlePdf(file, password) {
+  let r;
+  try { r = await draftFromPdf(file, password); } catch (e) { console.error(e); toast('Could not read that PDF.'); return; }
+  if (r.needPassword) return askPdfPassword(file, r.wrong);
+  if (r.unsupported) { toast(`${file.name}: this statement type isn't supported yet. Send a sample to Claude.`, 4500); return; }
+  if (password && pendingRemember) rememberPassword(password);
+  queueDraft(r.imp);
+}
+let pendingRemember = false;
+function rememberPassword(pw) {
+  D.settings.pdfPasswords ||= [];
+  if (!D.settings.pdfPasswords.some((p) => p.pw === pw)) { D.settings.pdfPasswords.push({ pw, at: new Date().toISOString() }); save(); }
+}
+// Drafts collect into a batch; the review screen shows them all with one Confirm.
+function queueDraft(imp) {
+  ui.batch ||= [];
+  ui.batch.push(imp);
+  ui.imp = imp; buildRows();
+  ui.imp = null;
   ui.tab = 'import'; ui.view = null; $('#toast').classList.remove('on'); render();
 }
 let pendingFile = null;
@@ -374,9 +408,7 @@ async function handleCsv(file) {
   const rows = P.parseCSV(text);
   if (rows.length < 2) return toast('That file has no rows.');
   const map = P.guessCsvMapping(rows);
-  ui.imp = { kind: 'csv', fileName: file.name, csvRows: rows, map, accountId: D.accounts.find((a) => ['savings', 'current'].includes(a.type))?.id || '_new', newName: '', newType: 'savings', rows: [] };
-  buildRows();
-  ui.tab = 'import'; ui.view = null; render();
+  queueDraft({ kind: 'csv', fileName: file.name, csvRows: rows, map, accountId: D.accounts.find((a) => ['savings', 'current'].includes(a.type))?.id || '_new', newName: '', newType: 'savings', rows: [] });
 }
 
 function txHash(accountId, t, n) { return [accountId, t.date, t.amount, squash(t.raw || t.description), t.ref || '', n].join('|'); }
@@ -384,7 +416,7 @@ function txHash(accountId, t, n) { return [accountId, t.date, t.amount, squash(t
 function buildRows() {
   const imp = ui.imp;
   let src;
-  if (imp.kind === 'card') src = imp.parsed.transactions;
+  if (imp.kind === 'card' || imp.kind === 'bankpdf') src = imp.parsed.transactions;
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
   const acc = imp.accountId;
   const existing = new Set(D.transactions.filter((x) => x.accountId === acc).map((x) => x.hash));
@@ -395,8 +427,10 @@ function buildRows() {
     const k = [t.date, t.amount, squash(t.raw || t.description), t.ref || ''].join('|');
     const n = (seen.get(k) || 0) + 1; seen.set(k, n);
     const hash = txHash(acc, t, n);
-    const payee = payeeFrom(t.description);
+    const payee = t.self ? 'Self transfer' : payeeFrom(t.counterparty || t.description);
     const c = categorize({ ...t, payee, accountId: acc }, D.rules);
+    if (!c.categoryId && t.self) c.categoryId = 'self_transfer';
+    if (!c.categoryId && t.loanAccount) c.categoryId = 'loan_repayment';
     const dup = existing.has(hash);
     let smsMatch = null;
     if (!dup) {
@@ -409,15 +443,17 @@ function buildRows() {
 
 function renderImportPreview(m) {
   const imp = ui.imp;
-  setTop('Review import', { back: 'cancelImport' });
-  const isCard = imp.kind === 'card';
+  setTop('Review rows', { back: 'batchBack' });
+  const isCard = imp.kind === 'card', isStmt = imp.kind === 'card' || imp.kind === 'bankpdf';
   const accFilter = isCard ? (a) => a.type === 'credit_card' : (a) => typeOf(a.type).mode === 'ledger' && a.type !== 'credit_card';
   const st = imp.parsed?.statement;
   const rec = imp.parsed?.recon;
   const inc = imp.rows.filter((r) => r.include);
   const dups = imp.rows.filter((r) => r.dup).length;
   let h = `<div class="card"><h2>${esc(imp.fileName)}</h2>`;
-  if (isCard) {
+  if (imp.kind === 'bankpdf') {
+    h += bankSummary(imp);
+  } else if (isCard) {
     h += `<div class="split"><div><div class="small muted">Total due</div><div class="mid num">${inr(st.totalDue, 0)}</div></div><div><div class="small muted">Due date</div><div class="mid">${fmtDate(st.dueDate, true)}</div></div></div>
       <p class="small muted" style="margin:8px 0">${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)} · card ••${esc(st.cardLast4 || '????')}</p>
       ${rec?.ok ? `<span class="badge">All ${imp.rows.length} rows match the statement totals</span>` : rec?.ok === false ? `<span class="badge warn">Rows differ from statement totals by ${inr(rec.debitDiff)} / ${inr(rec.creditDiff)}</span>` : ''}`;
@@ -432,21 +468,20 @@ function renderImportPreview(m) {
   }
   h += `</div><div class="card"><h2>Add to account</h2><select class="i" id="impAcc">${accOptions(imp.accountId, accFilter)}<option value="_new" ${imp.accountId === '_new' ? 'selected' : ''}>+ New account…</option></select>
     ${imp.accountId === '_new' ? `<div style="height:10px"></div><input class="i" id="impNewName" placeholder="Account name, e.g. HDFC Savings" value="${esc(imp.newName)}">
-      ${!isCard ? `<div style="height:10px"></div><select class="i" id="impNewType">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
+      ${!isStmt ? `<div style="height:10px"></div><select class="i" id="impNewType">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
   </div>
   <div class="row" style="margin:0 4px 8px"><div class="grow small muted">${inc.length} of ${imp.rows.length} selected${dups ? ` · ${dups} already imported` : ''}${imp.rows.some((r) => r.smsMatch) ? ` · ${imp.rows.filter((r) => r.smsMatch).length} match SMS entries` : ''}</div><button class="link" data-act="impAll">${inc.length === imp.rows.length ? 'Select none' : 'Select all'}</button></div>
   <div class="list">${imp.rows.map((r, i) => `<label class="item ${r.include ? '' : 'dup'}"><input type="checkbox" class="chk" data-imp="${i}" ${r.include ? 'checked' : ''}>
     <div class="grow"><div class="t">${esc(r.payee || r.description)}</div><div class="s">${fmtDate(r.date)} · ${r.categoryId ? esc(catName(r.categoryId)) : '<span class="warn">Uncategorised</span>'}${r.dup ? ' · already imported' : ''}${r.smsMatch ? ' · replaces SMS entry' : ''}</div></div>
     <div class="a num ${r.amount > 0 ? 'in' : ''}">${r.amount > 0 ? '+' : ''}${inr(r.amount)}</div></label>`).join('')}</div>
   ${imp.warnings?.length ? `<p class="small warn">${imp.warnings.slice(0, 5).map(esc).join('<br>')}</p>` : ''}
-  <button class="btn wide" data-act="commitImport" ${inc.length || isCard ? '' : 'disabled'}>Import ${inc.length} transactions</button>
-  <div style="height:10px"></div><button class="btn wide ghost" data-act="cancelImport">Cancel</button>`;
+  <button class="btn wide" data-act="batchBack">Done</button>`;
   m.innerHTML = h;
-  $('#impAcc').addEventListener('change', (e) => { imp.accountId = e.target.value; buildRows(); render(); });
+  $('#impAcc').addEventListener('change', (e) => { imp.accountId = e.target.value; buildRowsFor(imp); render(); });
   $('#impNewName')?.addEventListener('input', (e) => { imp.newName = e.target.value; });
   $('#impNewType')?.addEventListener('change', (e) => { imp.newType = e.target.value; });
   m.querySelectorAll('[data-imp]').forEach((el) => el.addEventListener('change', () => { imp.rows[+el.dataset.imp].include = el.checked; render(); }));
-  m.querySelectorAll('[data-map]').forEach((el) => el.addEventListener('change', () => { imp.map[el.dataset.map] = +el.value; buildRows(); render(); }));
+  m.querySelectorAll('[data-map]').forEach((el) => el.addEventListener('change', () => { imp.map[el.dataset.map] = +el.value; buildRowsFor(imp); render(); }));
 }
 
 // If the CSV has a running balance column, work out the balance before the first row
@@ -460,18 +495,25 @@ function csvOpening(imp) {
   return { amount: 0, date: rows[0]?.date || todayIso(), source: 'manual' };
 }
 
-function commitImport() {
-  const imp = ui.imp;
+function buildRowsFor(imp) { const prev = ui.imp; ui.imp = imp; buildRows(); ui.imp = prev; }
+function draftKey(imp) { return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
+// Imports one draft. Returns { acc, added, upgraded } (throws on a problem the user must fix).
+function commitDraft(imp, createdInBatch = {}) {
   let acc = accById(imp.accountId);
+  if (!acc && createdInBatch[draftKey(imp)]) acc = createdInBatch[draftKey(imp)];
   if (!acc) {
     const name = (imp.newName || '').trim();
-    if (!name) return toast('Give the new account a name.');
-    acc = imp.kind === 'card'
-      ? { id: uid(), name, type: 'credit_card', institution: imp.parsed.institution, last4: imp.parsed.statement.cardLast4 || '', currency: 'INR', createdAt: new Date().toISOString() }
-      : { id: uid(), name, type: imp.newType || 'savings', institution: '', last4: '', currency: 'INR', createdAt: new Date().toISOString(), opening: csvOpening(imp) };
+    if (!name) throw new Error(`Give the new account for ${imp.fileName} a name.`);
+    const now = new Date().toISOString();
+    if (imp.kind === 'card') acc = { id: uid(), name, type: 'credit_card', institution: imp.parsed.institution, last4: imp.parsed.statement.cardLast4 || '', currency: 'INR', createdAt: now };
+    else if (imp.kind === 'bankpdf') { const st = imp.parsed.statement; acc = { id: uid(), name, type: imp.newType || 'savings', institution: st.bank || '', last4: st.last4 || '', currency: 'INR', createdAt: now, opening: { amount: st.openingBalance || 0, date: st.periodFrom || imp.rows[0]?.date || todayIso(), source: 'statement' } }; }
+    else acc = { id: uid(), name, type: imp.newType || 'savings', institution: '', last4: '', currency: 'INR', createdAt: now, opening: csvOpening(imp) };
     D.accounts.push(acc);
-    // hashes were built against "_new"; rebuild against the real id
-    imp.accountId = acc.id; const keep = imp.rows.map((r) => r.include); buildRows(); imp.rows.forEach((r, i) => { r.include = keep[i] && !r.dup; });
+    createdInBatch[draftKey(imp)] = acc;
+  }
+  if (imp.accountId !== acc.id) {
+    // hashes were built against another id; rebuild against the real one, keeping the user's ticks
+    imp.accountId = acc.id; const keep = imp.rows.map((r) => r.include); buildRowsFor(imp); imp.rows.forEach((r, i) => { r.include = keep[i] && !r.dup; });
   }
   const importId = uid();
   const rows = imp.rows.filter((r) => r.include);
@@ -488,6 +530,26 @@ function commitImport() {
     D.transactions.push({ id: uid(), accountId: acc.id, date: r.date, time: r.time || null, amount: r.amount, description: r.description, raw: r.raw || r.description, payee: r.payee, categoryId: r.categoryId, notes: '', ref: r.ref || null, importId, hash: r.hash, points: r.points ?? null });
   }
   const rec = { id: importId, accountId: acc.id, fileName: imp.fileName, kind: imp.kind, at: new Date().toISOString(), count: rows.length };
+  if (imp.kind === 'bankpdf') {
+    const st = imp.parsed.statement;
+    rec.period = { from: st.periodFrom, to: st.periodTo }; rec.statement = st;
+    const otherTx = D.transactions.some((x) => x.accountId === acc.id && x.importId !== importId && x.source !== 'sms');
+    if (acc.opening?.source !== 'manual' || (!otherTx && !acc.opening.amount)) {
+      if (!acc.opening || !otherTx || st.periodFrom < acc.opening.date) acc.opening = { amount: st.openingBalance || 0, date: st.periodFrom, source: 'statement' };
+    }
+    if (!acc.statement || st.periodTo >= acc.statement.periodTo) {
+      acc.statement = { ...st };
+      const bal = (acc.opening?.amount || 0) + D.transactions.filter((x) => x.accountId === acc.id && x.date <= st.periodTo).reduce((s2, x) => s2 + x.amount, 0);
+      acc.statementBalanceCheck = { ok: Math.abs(bal - st.closingBalance) < 100, diff: bal - st.closingBalance, strays: D.transactions.filter((x) => x.accountId === acc.id && x.source === 'sms' && x.date >= st.periodFrom && x.date <= st.periodTo).length };
+    }
+    for (const l of imp.loans || []) {
+      if (!l.create || D.accounts.some((a) => a.last4 === l.no.slice(-4) && typeOf(a.type).side === 'liability')) continue;
+      const la = { id: uid(), name: l.name || 'Home Loan', type: l.type || 'home_loan', institution: st.bank || '', last4: l.no.slice(-4), currency: 'INR', createdAt: new Date().toISOString(), loanAccountNo: l.no };
+      D.accounts.push(la);
+      const v = parseRupees(l.outstanding || '');
+      if (v != null) D.valuations.push({ id: uid(), accountId: la.id, date: todayIso(), value: Math.abs(v), note: 'Entered at import', at: Date.now() });
+    }
+  }
   if (imp.kind === 'card') {
     const st = imp.parsed.statement;
     rec.period = { from: st.periodFrom, to: st.periodTo };
@@ -509,11 +571,54 @@ function commitImport() {
   }
   rec.count = rows.length - upgraded; rec.upgraded = upgraded;
   D.imports.push(rec);
+  return { acc, added: rows.length - upgraded, upgraded };
+}
+function commitBatch() {
+  const created = {}; let added = 0, upgraded = 0; const accs = new Set();
+  // oldest statements first, so opening balances come from the earliest one
+  const list = [...ui.batch].sort((a, b) => (a.parsed?.statement?.periodFrom || '').localeCompare(b.parsed?.statement?.periodFrom || ''));
+  try {
+    for (const imp of list) { const r = commitDraft(imp, created); added += r.added; upgraded += r.upgraded; accs.add(r.acc.id); }
+  } catch (e) { save(); toast(e.message, 4000); return; }
   const tm = matchTransfers();
   save();
-  ui.imp = null;
-  toast(`Imported ${rows.length - upgraded} new${upgraded ? `, ${upgraded} SMS entries confirmed` : ''}${tm ? `, ${tm} transfers matched` : ''}`, 3500);
-  ui.tab = 'accounts'; ui.view = { page: 'account', id: acc.id }; render();
+  ui.batch = null; ui.imp = null;
+  toast(`${added} transactions added${upgraded ? `, ${upgraded} SMS confirmed` : ''}${tm ? `, ${tm} transfers matched` : ''}`, 3500);
+  if (accs.size === 1) { ui.tab = 'accounts'; ui.view = { page: 'account', id: [...accs][0] }; } else { ui.tab = 'accounts'; ui.view = null; }
+  render();
+}
+function bankSummary(imp) {
+  const st = imp.parsed.statement, rec = imp.parsed.recon;
+  return `<div class="split"><div><div class="small muted">Closing balance</div><div class="mid num">${inr(st.closingBalance, 0)}</div></div><div><div class="small muted">Opening</div><div class="mid num">${inr(st.openingBalance, 0)}</div></div></div>
+    <p class="small muted" style="margin:8px 0">${esc(st.bank)} ${st.accountType} ••${esc(st.last4 || '????')} · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}</p>
+    ${rec?.ok ? `<span class="badge">All ${imp.rows.length} rows add up to the closing balance</span>` : rec?.ok === false ? `<span class="badge warn">Rows don't add up to the closing balance. Check before importing.</span>` : ''}`;
+}
+function renderBatch(m) {
+  setTop('Review', { back: 'cancelImport' });
+  const created = new Set();
+  let h = `<p class="small muted" style="margin:0 4px 10px">${ui.batch.length} statement${ui.batch.length > 1 ? 's' : ''} ready. Check the accounts, then confirm.</p>`;
+  ui.batch.forEach((imp, i) => {
+    const acc = accById(imp.accountId);
+    const key = draftKey(imp); const willReuse = !acc && created.has(key); if (!acc) created.add(key);
+    const inc = imp.rows.filter((r) => r.include).length, dups = imp.rows.filter((r) => r.dup).length, sms = imp.rows.filter((r) => r.smsMatch).length;
+    const st = imp.parsed?.statement;
+    const title = imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
+    const what = imp.kind === 'card' ? `${inr(st.totalDue, 0)} due ${fmtDate(st.dueDate)}` : imp.kind === 'bankpdf' ? `Balance ${inr(st.closingBalance, 0)}` : `${imp.rows.length} rows`;
+    const ok = imp.parsed?.recon?.ok;
+    h += `<div class="card"><div class="row"><div class="grow"><div class="t" style="font-weight:600">${esc(title)}</div><div class="small muted">${esc(imp.fileName)}${st?.periodFrom ? ` · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}` : ''}</div></div><div class="num" style="font-weight:600">${what}</div></div>
+      <p class="small" style="margin:10px 0 6px">${acc ? `Adds to <b>${esc(accShort(acc))}</b>` : willReuse ? `Adds to the new account above` : `<b>Creates a new account</b>${st?.last4 || st?.cardLast4 ? ' ••' + esc(st.last4 || st.cardLast4) : ''}:`}</p>
+      ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
+      <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm SMS entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
+      ${(imp.loans || []).map((l, j) => `<label class="row small" style="margin:6px 0"><input type="checkbox" class="chk" data-loan="${i}:${j}" ${l.create ? 'checked' : ''}><span>Payments go to loan account ••${esc(l.no.slice(-4))}. Add it as a home loan?</span></label>
+        ${l.create ? `<input class="i num" data-loan-amt="${i}:${j}" inputmode="decimal" placeholder="Outstanding today (₹), optional" value="${esc(l.outstanding)}" style="margin-bottom:6px">` : ''}`).join('')}
+      <div class="row"><button class="chip" data-act="batchOpen" data-i="${i}">Review rows / change account</button><button class="chip" data-act="batchDrop" data-i="${i}">Remove</button></div></div>`;
+  });
+  h += `<button class="btn wide" data-act="commitBatch">Confirm and import</button><div style="height:10px"></div><button class="btn wide ghost" data-act="pickFile" data-kind="any">Add more files</button><div style="height:10px"></div><button class="btn wide ghost" data-act="cancelImport">Cancel</button>`;
+  m.innerHTML = h;
+  m.querySelectorAll('[data-newname]').forEach((el) => el.addEventListener('input', () => { ui.batch[+el.dataset.newname].newName = el.value; }));
+  m.querySelectorAll('[data-newtype]').forEach((el) => el.addEventListener('change', () => { ui.batch[+el.dataset.newtype].newType = el.value; }));
+  m.querySelectorAll('[data-loan]').forEach((el) => el.addEventListener('change', () => { const [i, j] = el.dataset.loan.split(':').map(Number); ui.batch[i].loans[j].create = el.checked; render(); }));
+  m.querySelectorAll('[data-loan-amt]').forEach((el) => el.addEventListener('input', () => { const [i, j] = el.dataset.loanAmt.split(':').map(Number); ui.batch[i].loans[j].outstanding = el.value; }));
 }
 
 // ---------- sheets ----------
@@ -615,6 +720,7 @@ function renderMore(m) {
   <div class="list">
     <button class="item" data-act="backup"><div class="grow">Back up (encrypted file)<div class="s">${D.settings.lastBackupAt ? 'Last: ' + fmtDate(D.settings.lastBackupAt.slice(0, 10), true) : 'Never backed up'}</div></div><div class="muted">›</div></button>
     <button class="item" data-act="restorePick"><div class="grow">Restore from backup</div><div class="muted">›</div></button>
+    <button class="item" data-act="pwSheet"><div class="grow">Saved statement passwords</div><div class="muted">${(D.settings.pdfPasswords || []).length} ›</div></button>
     <button class="item" data-act="exportCsv"><div class="grow">Export transactions (CSV)</div><div class="muted">›</div></button>
     <div class="item"><div class="grow">Storage<div class="s" id="storageInfo">Checking…</div></div></div>
   </div>
@@ -968,9 +1074,13 @@ const acts = {
   editValuation: (d) => { const v = D.valuations.find((x) => x.id === d.id); valuationSheet(v.accountId, v); },
   deleteValuation: (d) => { D.valuations = D.valuations.filter((v) => v.id !== d.id); save(); closeSheet(); render(); },
   togglePaid: (d) => { const a = accById(d.id); a.statement.paid = !a.statement.paid; save(); render(); },
-  pickFile: (d) => { const f = $('#file'); f.dataset.kind = d.kind; f.accept = d.kind === 'pdf' ? 'application/pdf,.pdf' : d.kind === 'inbox' ? 'text/plain,.txt' : 'text/csv,.csv,text/plain,.txt'; f.value = ''; f.click(); },
-  cancelImport: () => { ui.imp = null; render(); },
-  commitImport,
+  pickFile: (d) => { const f = $('#file'); f.dataset.kind = d.kind; f.multiple = d.kind === 'any'; f.accept = d.kind === 'pdf' ? 'application/pdf,.pdf' : d.kind === 'inbox' ? 'text/plain,.txt' : d.kind === 'any' ? 'application/pdf,.pdf,text/csv,.csv' : 'text/csv,.csv,text/plain,.txt'; f.value = ''; f.click(); },
+  cancelImport: () => { ui.imp = null; ui.batch = null; render(); },
+  commitBatch,
+  commitImport: commitBatch,
+  batchOpen: (d) => { ui.imp = ui.batch[+d.i]; render(); window.scrollTo(0, 0); },
+  batchBack: () => { ui.imp = null; render(); window.scrollTo(0, 0); },
+  batchDrop: (d) => { ui.batch.splice(+d.i, 1); if (!ui.batch.length) ui.batch = null; render(); },
   impAll: () => { const all = ui.imp.rows.every((r) => r.include); ui.imp.rows.forEach((r) => { r.include = !all; }); render(); },
   undoImport: (d) => {
     const i = D.imports.find((x) => x.id === d.id); const n = D.transactions.filter((x) => x.importId === i.id).length;
@@ -1000,6 +1110,10 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  pwSheet: () => openSheet(`<h3>Saved statement passwords</h3><p class="small muted">Kept inside your encrypted vault. Ledger tries these before asking when you upload a protected PDF.</p>
+    ${(D.settings.pdfPasswords || []).length ? `<div class="list">${D.settings.pdfPasswords.map((p, i) => `<div class="item"><div class="grow num">${esc(p.pw.slice(0, 2))}${'•'.repeat(Math.max(3, p.pw.length - 2))}<div class="s">saved ${fmtDate(p.at.slice(0, 10), true)}</div></div><button class="link" data-act="pwDel" data-i="${i}">Delete</button></div>`).join('')}</div>` : '<p>None saved.</p>'}
+    <button class="btn wide ghost" data-act="closeSheet">Close</button>`),
+  pwDel: (d) => { D.settings.pdfPasswords.splice(+d.i, 1); save(); acts.pwSheet(); render(); },
   pasteSms: () => openSheet(`<h3>Paste an SMS</h3><form data-form="pasteSms"><textarea class="i" name="t" rows="7" placeholder="Txn Rs.198.00 On HDFC Bank Card 9550 …" required></textarea><div style="height:10px"></div><button class="btn wide">Add</button></form>`),
   smsSetup: () => smsSetupSheet(),
   inboxDismiss: (d) => { D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); },
@@ -1086,7 +1200,7 @@ const forms = {
     if (f.get('p1') !== f.get('p2')) return toast('The new passphrases do not match.');
     try { await vault.changePassphrase(f.get('old'), f.get('p1')); closeSheet(); toast('Passphrase changed. Make a fresh backup.'); } catch (e) { toast(e.message); }
   },
-  pdfPass: (f) => { closeSheet(); handlePdf(pendingFile, f.get('pw')); },
+  pdfPass: async (f) => { closeSheet(); pendingRemember = !!f.get('remember'); await handlePdf(pendingFile, f.get('pw')); pendingRemember = false; processQueue(); },
   pasteSms: async (f) => { closeSheet(); await handleInbox(f.get('t'), 'paste'); },
   ask: async (f, form) => { const q = f.get('q'); form.reset(); await ask(q); },
   tx: (f, form) => {
@@ -1157,15 +1271,25 @@ document.addEventListener('submit', async (e) => {
   finally { if (btn && document.body.contains(btn)) btn.disabled = false; }
 });
 
-$('#file').addEventListener('change', async (e) => {
-  const file = e.target.files[0]; e.target.value = ''; if (!file) return;
-  toast('Reading ' + file.name + '…');
-  try {
-    if (e.target.dataset.kind === 'inbox') await handleInbox(await file.text(), file.name);
-    else if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') await handlePdf(file);
-    else await handleCsv(file);
+let fileQueue = [];
+async function processQueue() {
+  while (fileQueue.length) {
+    if ($('#sheet').classList.contains('on') && pendingFile) return; // waiting for a password
+    const file = fileQueue.shift();
+    toast('Reading ' + file.name + '…');
+    try {
+      if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') await handlePdf(file);
+      else await handleCsv(file);
+    } catch (err) { console.error(err); toast('Could not read ' + file.name); }
+    if ($('#sheet').classList.contains('on')) return; // a password prompt is open; resumes after it
   }
-  catch (err) { console.error(err); toast('Could not read that file.'); }
+}
+$('#file').addEventListener('change', async (e) => {
+  const files = [...e.target.files]; const kind = e.target.dataset.kind; e.target.value = ''; if (!files.length) return;
+  if (kind === 'inbox') { try { await handleInbox(await files[0].text(), files[0].name); } catch (err) { toast('Could not read that file.'); } return; }
+  pendingFile = null;
+  fileQueue.push(...files);
+  processQueue();
 });
 $('#restoreFile').addEventListener('change', async (e) => {
   const file = e.target.files[0]; e.target.value = ''; if (!file) return;

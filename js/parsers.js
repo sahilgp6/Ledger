@@ -196,3 +196,123 @@ export function csvToTransactions(rows, map) {
   }
   return { transactions: out, warnings };
 }
+
+// ---------- Bank account statements (PDF), generic table reader ----------
+// Works off the column headers (Withdrawal / Deposit / Balance) and uses the running balance
+// to decide whether each row is money in or out, so odd layouts still come out right.
+const BANKS = [
+  { id: 'dns', name: 'DNS Bank', re: /dns\.bank\.in|DNS Bank|Dombivli Nagari/i },
+  { id: 'hdfc', name: 'HDFC Bank', re: /HDFC BANK/i },
+  { id: 'icici', name: 'ICICI Bank', re: /ICICI Bank/i },
+  { id: 'sbi', name: 'SBI', re: /State Bank of India/i },
+  { id: 'axis', name: 'Axis Bank', re: /Axis Bank/i },
+  { id: 'kotak', name: 'Kotak Bank', re: /Kotak Mahindra/i },
+];
+const DATE_START = /^(\d{1,2}[-\/ ](?:[A-Za-z]{3}|\d{1,2})[-\/ ]\d{2,4})\b/;
+const NUM = /^-?[\d,]+\.\d{2}$|^-?\d[\d,]*$/;
+
+export function detectBankStatement(text) {
+  const hasCols = /withdraw/i.test(text) && /deposit/i.test(text) && /balance/i.test(text);
+  if (!hasCols || detectHdfcCard(text)) return null;
+  return BANKS.find((b) => b.re.test(text)) || { id: 'other', name: '' };
+}
+
+export function parseBankPdf(pages) {
+  const lines = toLines(pages);
+  const full = lines.map((l) => l.text).join('\n');
+  const bank = detectBankStatement(full) || { id: 'other', name: '' };
+  const warnings = [];
+  const statement = { bank: bank.name };
+  const acct = full.match(/Account\s*(?:No|Number)\.?\s*:?\s*([0-9X*]{8,20})/i);
+  if (acct) { statement.accountNo = acct[1]; statement.last4 = acct[1].slice(-4); }
+  const per = full.match(/(?:Statement\s+Period|Period|From)\s*:?\s*(\d{1,2}[-\/][A-Za-z0-9]{2,3}[-\/]\d{2,4})\s*(?:TO|-)\s*(\d{1,2}[-\/][A-Za-z0-9]{2,3}[-\/]\d{2,4})/i);
+  if (per) { statement.periodFrom = dmyToIso(per[1]); statement.periodTo = dmyToIso(per[2]); }
+  if (/sav(ing|ings)? account|SB A\/c|savings/i.test(full)) statement.accountType = 'savings';
+  else if (/current account/i.test(full)) statement.accountType = 'current';
+  else statement.accountType = 'savings';
+
+  // Header row: find the x position of each money column
+  let hdrIdx = lines.findIndex((l) => /withdraw/i.test(l.text) && /deposit/i.test(l.text) && /balance/i.test(l.text));
+  if (hdrIdx < 0) return { kind: 'bank', bank, statement, transactions: [], warnings: ['Could not find the table header'] };
+  const hdr = lines[hdrIdx];
+  const colX = (re) => { const it = hdr.items.find((i) => re.test(i.str)); return it ? it.x : null; };
+  const cols = { w: colX(/withdraw|debit/i), d: colX(/deposit|credit/i), b: colX(/balance/i) };
+  const narrX = colX(/narration|particulars|description|details/i) ?? 60;
+  const dateX = hdr.items[0].x;
+  const refX = colX(/ref|chq|cheque/i);
+  const moneyLeft = Math.min(...[cols.w, cols.d].filter((v) => v != null)) - 12;
+
+  const rows = [];
+  let cur = null, opening = null;
+  for (let i = hdrIdx + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (/end of statement|statement summary|closing balance/i.test(l.text) && !DATE_START.test(l.text)) { if (cur) rows.push(cur); cur = null; if (/end of statement/i.test(l.text)) break; continue; }
+    if (/opening balance/i.test(l.text)) { const n = l.items.filter((it) => NUM.test(it.str.trim()) && it.x >= moneyLeft); if (n.length) opening = toPaise(n[n.length - 1].str); continue; }
+    const first = l.items[0]?.str.trim() || '';
+    const dm = first.match(DATE_START);
+    if (dm && l.items[0].x < narrX - 5) {
+      if (cur) rows.push(cur);
+      const nums = l.items.filter((it) => it.x >= moneyLeft && NUM.test(it.str.trim()));
+      const text = l.items.filter((it) => it !== l.items[0] && it.x < moneyLeft && !(refX != null && it.x >= refX - 4 && /^\d{6,}$/.test(it.str.trim()) && false)).map((it) => it.str).join(' ');
+      cur = { date: dmyToIso(dm[1]), desc: [text.trim()], nums: nums.map((n) => ({ x: n.x, v: toPaise(n.str) })) };
+    } else if (cur && l.page === cur.page || cur) {
+      // continuation of the narration on the next line(s)
+      if (l.items.every((it) => it.x < moneyLeft) && l.items[0].x > dateX + 25) cur.desc.push(l.text);
+      else if (!dm) { if (cur) rows.push(cur); cur = null; }
+    }
+  }
+  if (cur) rows.push(cur);
+
+  // Resolve amount and direction from the running balance
+  const transactions = [];
+  let prev = opening;
+  for (const r of rows) {
+    if (!r.nums.length) continue;
+    const bal = r.nums[r.nums.length - 1].v;
+    const amtItem = r.nums.length >= 2 ? r.nums[r.nums.length - 2] : null;
+    let amount = null;
+    if (prev != null && amtItem) {
+      const diff = bal - prev;
+      if (Math.abs(Math.abs(diff) - amtItem.v) <= 1) amount = diff;
+    }
+    if (amount == null && amtItem) {
+      // Fall back to which column the number sits under
+      const dw = cols.w != null ? Math.abs(amtItem.x - cols.w) : 1e9, dd = cols.d != null ? Math.abs(amtItem.x - cols.d) : 1e9;
+      amount = dd < dw ? amtItem.v : -amtItem.v;
+      if (prev != null) warnings.push(`Balance did not add up on ${r.date}`);
+    }
+    if (amount == null) continue;
+    const description = r.desc.join(' ').replace(/\s+/g, ' ').replace(/\|\|--/g, ' ').trim();
+    transactions.push({ date: r.date, description, raw: description, ref: null, amount, balance: bal });
+    prev = bal;
+  }
+  // Account holder (to spot transfers to yourself)
+  const nameHdr = lines.findIndex((l) => /account/i.test(l.text) && /name/i.test(l.text) && /pan|ifsc|micr/i.test(l.text));
+  if (nameHdr >= 0 && lines[nameHdr + 1]) {
+    const nx = lines[nameHdr].items.find((i) => /name/i.test(i.str))?.x ?? 0;
+    const cand = lines[nameHdr + 1].items.filter((i) => /^[A-Za-z .]{5,}$/.test(i.str.trim())).sort((a, b) => Math.abs(a.x - nx) - Math.abs(b.x - nx))[0];
+    if (cand) statement.holder = cand.str.trim();
+  }
+  for (const t of transactions) {
+    // DNS / co-op style: "UPI DR 581439612236 SAHIL SANJ CENTRAL OFFI"
+    let m = t.description.match(/^UPI\s+(DR|CR)\s+(\d{9,})\s+(.+?)(?:\s+CENTRAL OFFI.*)?$/i);
+    if (m) { t.ref = m[2]; t.counterparty = m[3].trim(); }
+    m = t.description.match(/^(\d{10,})\s*-\s*(.+?)\s+Drawdown\s+From\s+CASA/i);
+    if (m) { t.counterparty = `Loan account ••${m[1].slice(-4)}`; t.loanAccount = m[1]; }
+    m = t.description.match(/^NEFT\s*(?:CR|DR)?-+([^|]+?)(?:\|\||-|\s{2}|$)/i);
+    if (m) t.counterparty = m[1].trim();
+    if (statement.holder && t.counterparty) {
+      const hn = statement.holder.toUpperCase().split(/\s+/), cp = t.counterparty.toUpperCase().split(/\s+/);
+      if (cp.length >= 2 && hn[0] === cp[0] && hn[1]?.startsWith(cp[1]) || cp.join(' ') === hn.slice().reverse().join(' ')) t.self = true;
+    }
+  }
+  const closing = transactions.length ? transactions[transactions.length - 1].balance : opening;
+  statement.openingBalance = opening ?? (transactions.length ? transactions[0].balance - transactions[0].amount : null);
+  statement.closingBalance = closing;
+  const sum = transactions.reduce((s, t) => s + t.amount, 0);
+  const recon = { ok: statement.openingBalance != null ? Math.abs(statement.openingBalance + sum - closing) <= 1 : null };
+  const summaryBal = full.match(/\bBalance\s+([\d,]+\.\d{2})/);
+  if (summaryBal) { statement.summaryBalance = toPaise(summaryBal[1]); if (Math.abs(statement.summaryBalance - closing) > 1) { recon.ok = false; warnings.push('Closing balance does not match the summary'); } }
+  if (!statement.periodTo && transactions.length) { statement.periodFrom = transactions[0].date; statement.periodTo = transactions[transactions.length - 1].date; }
+  return { kind: 'bank', institution: bank.name, bank, statement, transactions, recon, warnings };
+}
