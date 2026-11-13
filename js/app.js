@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -82,7 +82,7 @@ function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
-  d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= []; d.vault ||= [];
+  d.budgets ||= {}; d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= []; d.vault ||= [];
   d.settings.ai ||= { model: null }; d.holdings ||= [];
   // Older versions read the date in a Shortcut log as the amount (e.g. ₹2,026): drop those so the log is read again
   if (!d.settings.logFix3) { d.transactions = d.transactions.filter((x) => !(x.source === 'log' && !x.catManual && x.amount % 100 === 0 && Math.abs(x.amount) / 100 >= 1990 && Math.abs(x.amount) / 100 <= 2100)); d.settings.logFix3 = true; }
@@ -727,7 +727,7 @@ function aiSummary(period = 'last') {
   L.push('', 'TOP PAYEES');
   for (const [k, e] of [...byPayee.entries()].sort((x, y) => y[1].v - x[1].v).slice(0, 12)) L.push(`- ${k}: ${r(e.v)} in ${e.n} payment${e.n > 1 ? 's' : ''}`);
   L.push('', 'LARGEST PAYMENTS');
-  for (const x of [...tx].sort((p, q) => p.amount - q.amount).slice(0, 10)) L.push(`- ${fmtDate(x.date, true)}: ${clean(x.payee || x.description)}, ${r(-x.amount)} (${catName(x.categoryId)})`);
+  for (const x of [...tx].filter((x) => { const r2 = refundFor(x); return !r2 || r2.amount < -x.amount; }).sort((p, q) => p.amount - q.amount).slice(0, 10)) L.push(`- ${fmtDate(x.date, true)}: ${clean(x.payee || x.description)}, ${r(-x.amount)} (${catName(x.categoryId)})`);
   const small = tx.filter((x) => -x.amount < 50000);
   if (small.length) L.push('', `SMALL PAYMENTS: ${small.length} payments under ₹500, adding up to ${r(small.reduce((t, x) => t - x.amount, 0))}`);
   const per = { month: 'a month', quarter: 'a quarter', year: 'a year', week: 'a week' };
@@ -740,6 +740,16 @@ function aiSummary(period = 'last') {
   }
   const nw = netWorth(); if (nw.assets || nw.liabilities) L.push('', 'NET WORTH', `- ${r(nw.net)} (assets ${r(nw.assets)}, debts ${r(-nw.liabilities)}${loans.length && D.settings.loansSeparate ? ', loans listed above not included' : ''})`);
   const uncat = a.cats.get('_none'); if (uncat) L.push('', `NOTE: ${r(uncat)} of spending is not categorised yet.`);
+  const brows = months.length === 1 ? budgetRows(months[0]) : [];
+  if (brows.length) { L.push('', 'MY BUDGETS'); for (const b of brows) L.push(`- ${b.name}: ${r(b.v)} of ${r(b.lim)} (${Math.round(b.pct * 100)}%${b.pct > 1 ? ', over' : ''})`); }
+  const tagT = new Map();
+  for (const x of tx) for (const t of tagsOf(x)) tagT.set(t, (tagT.get(t) || 0) - x.amount);
+  if (tagT.size) {
+    L.push('', 'TRIPS AND EVENTS (one-offs, included in the totals above)');
+    for (const [t, v] of [...tagT.entries()].sort((p, q) => q[1] - p[1])) L.push(`- ${t}: ${r(v)}`);
+    const oneOff = tx.filter((x) => tagsOf(x).length).reduce((t, x) => t - x.amount, 0);
+    L.push(`- Spending without trips and events: ${r(a.spend - oneOff)}${withData.length > 1 ? ` (${r((a.spend - oneOff) / withData.length)} a month)` : ''}`);
+  }
   if (D.settings.sumAll) {
     // Every transaction, oldest first. Transfers between my own accounts and card bill payments are left out.
     const all = D.transactions.filter((x) => vis.has(x.accountId) && months.includes(ymOf(x.date)) && catById(x.categoryId)?.kind !== 'transfer')
@@ -763,6 +773,302 @@ function summarySheet(period) {
     <textarea class="i" readonly style="min-height:300px;font-size:.8rem;line-height:1.45;font-family:ui-monospace,Menlo,monospace;padding-top:48px">${esc(text)}</textarea></div>
     <div class="row" style="position:sticky;bottom:calc(-18px - var(--safe-b));margin:10px -18px calc(-18px - var(--safe-b));padding:10px 18px calc(10px + var(--safe-b));background:var(--card);border-top:1px solid var(--line)"><button class="btn" style="flex:1" data-act="sumCopy">Copy everything</button>${navigator.share ? '<button class="btn ghost" style="flex:1" data-act="sumShare">Share…</button>' : ''}</div>`);
 }
+// ===================== Safe to spend =====================
+// What's left for the rest of the month after income, the savings goal, bills and EMIs still due,
+// and what has already gone. Loan EMIs are transfers (only their interest shows as spending), so the
+// full EMI is set aside and the interest already counted is taken back out of spending.
+const dim = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5), 0).getDate();
+function safeToSpend() {
+  const today = todayIso(), ym = ymOf(today), st = monthStats(ym), prev = monthStats(addMonths(ym, -1));
+  // Salary may not have arrived yet: expect the larger of the last two months' income
+  const ref = Math.max(prev.income, monthStats(addMonths(ym, -2)).income);
+  let income = st.income, est = false;
+  if (ref && st.income < ref * 0.6) { income = Math.max(st.income, ref); est = true; }
+  if (!income) return null;
+  const goal = D.settings.saveTarget || 0;
+  const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
+  const loans = D.accounts.filter((a) => a.loan?.emi && !a.archived && accVisible(a));
+  const loanIds = new Set(loans.map((a) => a.id));
+  const emi = loans.reduce((t, a) => t + Math.round(a.loan.emi * (shareOf(a) || 1)), 0);
+  const loanInt = D.transactions.filter((x) => x.date.startsWith(ym) && x.interest && (loanIds.has(x.accountId) || vis.has(x.accountId))).reduce((t, x) => t + x.interest, 0);
+  const billList = (D.bills || []).filter((b) => b.amount && b.next && b.next >= today && b.next.startsWith(ym) && !/emi/i.test(b.name));
+  const bills = billList.reduce((t, b) => t + b.amount, 0);
+  const spent = Math.max(0, st.spend - loanInt);
+  const budget = income - goal - emi - bills;
+  const left = budget - spent;
+  const days = dim(ym), day = +today.slice(8), daysLeft = days - day + 1;
+  const perDay = left / daysLeft;
+  const pace = budget > 0 ? spent / (budget * ((day - 0.5) / days)) : 9;
+  const tone = left < 0 ? 'bad' : pace > 1.1 ? 'warn' : 'ok';
+  return { income, est, goal, emi, bills, billList, spent, budget, left, perDay, daysLeft, days, day, tone, used: budget > 0 ? Math.min(1, spent / budget) : 1 };
+}
+function safeCard() {
+  const s = safeToSpend();
+  if (!s) return '';
+  const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[s.tone];
+  const msg = s.left < 0 ? `Over by ${inr(-s.left, 0)} this month` : s.tone === 'warn' ? 'Spending faster than planned' : 'On track';
+  return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet">
+    <div class="row"><h2 class="grow" style="margin:0">Safe to spend</h2><span class="pillnote" style="color:${col}">${msg}</span></div>
+    <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money" data-count="${Math.max(0, Math.round(s.perDay / 100))}">${inr(Math.max(0, s.perDay), 0)}</div><div class="muted">a day</div></div>
+    <div class="small muted">${s.left >= 0 ? `${inr(s.left, 0)} left for the next ${s.daysLeft} day${s.daysLeft > 1 ? 's' : ''}` : 'Cut back until the month ends'}${s.goal ? ` · ${inr(s.goal, 0)} goal set aside` : ''}</div>
+    <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${(s.used * 100).toFixed(1)}%;background:${col}"></i><b style="left:${((s.day - 0.5) / s.days * 100).toFixed(1)}%"></b></div>
+    <div class="row tiny muted" style="margin-top:4px"><span class="grow">Spent ${inr(s.spent, 0)} of ${inr(Math.max(0, s.budget), 0)}</span><span>today ▴</span></div>
+  </button>`;
+}
+function safeSheet() {
+  const s = safeToSpend();
+  if (!s) return toast('Ledger needs your salary for this or last month first.');
+  const row2 = (k, v, cls = '') => `<tr><td>${k}</td><td class="num ${cls}" style="text-align:right">${v}</td></tr>`;
+  openSheet(`<h3>Safe to spend</h3>
+    <table class="t">${row2(`Income${s.est ? ' (expected, from recent months)' : ''}`, inr(s.income, 0))}
+      ${row2('Savings goal', s.goal ? '− ' + inr(s.goal, 0) : 'not set')}
+      ${s.emi ? row2('Loan EMIs', '− ' + inr(s.emi, 0)) : ''}
+      ${s.billList.map((b) => row2(`${esc(b.name)}, ${fmtDate(b.next, true)}`, '− ' + inr(b.amount, 0))).join('')}
+      ${row2('Spent so far', '− ' + inr(s.spent, 0))}
+      ${row2('<b>Left this month</b>', `<b>${inr(s.left, 0)}</b>`, s.left < 0 ? 'bad' : 'in')}
+      ${row2(`Per day, for ${s.daysLeft} days`, inr(Math.max(0, s.perDay), 0))}</table>
+    <label class="f" style="margin-top:14px"><span>Save each month (₹)</span><input class="i" id="safeGoal" inputmode="decimal" placeholder="e.g. 30000" value="${s.goal ? s.goal / 100 : ''}"></label>
+    <p class="small muted">Spending here leaves out transfers between your accounts and card bill payments. Card purchases count on the day you make them.</p>`);
+}
+
+// ===================== Category budgets =====================
+const budgets = () => (D.budgets ||= {});
+// Past months only count budgets that existed then, so a limit set today doesn't fail last month
+function budgetRows(ym = ymOf(todayIso())) {
+  const st = monthStats(ym), by = new Map(st.byCat), since = D.settings.budgetSince || {};
+  return Object.entries(budgets()).filter(([id, v]) => v > 0 && (since[id] || '0000') <= ym).map(([id, lim]) => { const v = Math.max(0, by.get(id) || 0); return { id, name: catName(id), lim, v, pct: v / lim }; }).sort((a, b) => b.pct - a.pct);
+}
+const budTone = (p) => (p >= 1 ? 'bad' : p >= 0.8 ? 'warn' : 'ok');
+const budBar = (r) => `<div class="bar bud ${budTone(r.pct)}"><i class="grow-x" style="--w:${Math.min(100, r.pct * 100).toFixed(1)}%"></i></div>`;
+function budgetCard() {
+  const rows = budgetRows(); if (!rows.length) return '';
+  const day = +todayIso().slice(8), days = dim(ymOf(todayIso()));
+  return `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Budgets</h2><button class="link" data-act="openBudgets">See all ›</button></div>
+    ${rows.slice(0, 4).map((r) => `<button class="item" style="padding:9px 0" data-act="showCat" data-id="${r.id}"><div class="grow"><div class="row"><span class="grow">${esc(r.name)}</span><span class="num small ${r.pct >= 1 ? 'bad' : ''}">${inr(r.v, 0)} <span class="muted">of ${inr(r.lim, 0)}</span></span></div>${budBar(r)}</div></button>`).join('')}
+    <p class="tiny muted" style="margin:6px 0 0">${day} of ${days} days gone (${Math.round(day / days * 100)}%)</p></div>`;
+}
+// A one-time nudge when a category crosses 80% or 100% of its budget this month
+function budgetNudge() {
+  const ym = ymOf(todayIso()), seen = (D.settings.budSeen && D.settings.budSeen.ym === ym) ? D.settings.budSeen : (D.settings.budSeen = { ym, at: {} });
+  for (const r of budgetRows(ym)) {
+    const lvl = r.pct >= 1 ? 2 : r.pct >= 0.8 ? 1 : 0;
+    if (lvl > (seen.at[r.id] || 0)) { seen.at[r.id] = lvl; save(); setTimeout(() => toast(lvl === 2 ? `${r.name}: over budget (${inr(r.v, 0)} of ${inr(r.lim, 0)})` : `${r.name}: ${Math.round(r.pct * 100)}% of this month's budget used`, 3200), 600); return; }
+  }
+}
+function avgSpend(catId, n = 3) {
+  const ym = ymOf(todayIso()); let t = 0, k = 0;
+  for (let i = 1; i <= n; i++) { const st = monthStats(addMonths(ym, -i)); if (!st.spend) continue; k++; t += new Map(st.byCat).get(catId) || 0; }
+  return k ? t / k : 0;
+}
+function renderBudgets(m) {
+  setTop('Budgets', { back: 'closeView' });
+  const ym = ymOf(todayIso()), rows = budgetRows(ym), st = monthStats(ym);
+  const set = new Set(rows.map((r) => r.id));
+  const ideas = [...new Set([...st.byCat.map(([k]) => k), ...D.categories.filter((c) => c.kind === 'expense').map((c) => c.id)])].filter((k) => k !== '_none' && !set.has(k) && catById(k)?.kind === 'expense')
+    .map((k) => ({ id: k, avg: avgSpend(k) })).filter((x) => x.avg > 0).sort((a, b) => b.avg - a.avg).slice(0, 8);
+  const lp = budgetRows(addMonths(ym, -1));
+  m.innerHTML = `${rows.length ? `<div class="card"><h2>${monthLabel(ym)}</h2>${rows.map((r) => `<button class="item" style="padding:10px 0" data-act="budgetSheet" data-id="${r.id}"><div class="grow"><div class="row"><span class="grow">${esc(r.name)}</span><span class="num small ${r.pct >= 1 ? 'bad' : ''}">${inr(r.v, 0)} <span class="muted">of ${inr(r.lim, 0)}</span></span></div>${budBar(r)}<div class="tiny muted" style="margin-top:3px">${r.v <= r.lim ? `${inr(r.lim - r.v, 0)} left` : `${inr(r.v - r.lim, 0)} over`}</div></div></button>`).join('')}</div>` : `<div class="card" style="text-align:center"><div class="serif" style="font-size:1.25rem">Set your first budget</div><p class="small muted">Pick a category below. Ledger suggests a limit from your last 3 months and warns you at 80%.</p></div>`}
+    ${lp.length ? `<div class="card"><h2>Last month's scorecard</h2><p class="mid serif" style="margin:0">Kept ${lp.filter((r) => r.pct <= 1).length} of ${lp.length}</p>${lp.filter((r) => r.pct > 1).map((r) => `<p class="small" style="margin:6px 0 0">${esc(r.name)}: <span class="bad">${inr(r.v - r.lim, 0)} over</span></p>`).join('')}</div>` : ''}
+    ${ideas.length ? `<div class="day"><span>Add a budget</span></div><div class="list">${ideas.map((x) => `<button class="item" data-act="budgetSheet" data-id="${x.id}">${catIcon(x.id)}<div class="grow">${esc(catName(x.id))}<div class="s">About ${inr(x.avg, 0)} a month lately</div></div><div class="muted">+</div></button>`).join('')}</div>` : ''}
+    <div class="list"><button class="item" data-act="budgetSheet"><div class="grow" style="color:var(--brand)">+ Another category</div></button></div>`;
+}
+function budgetSheet(id) {
+  const avg = id ? avgSpend(id) : 0, cur = id ? budgets()[id] : 0;
+  openSheet(`<h3>${id ? esc(catName(id)) : 'New budget'}</h3><form data-form="budget">
+    ${id ? `<input type="hidden" name="cat" value="${id}">` : `<label class="f"><span>Category</span><select class="i" name="cat">${catOptions('', { allowNone: false })}</select></label>`}
+    <label class="f"><span>Monthly limit (₹)</span><input class="i num" name="lim" inputmode="decimal" value="${cur ? cur / 100 : avg ? Math.round(avg / 10000) * 100 : ''}" required></label>
+    ${avg ? `<p class="small muted" style="margin-top:-4px">You spent about ${inr(avg, 0)} a month here over the last 3 months.${avg > 200000 ? ` A 10% cut would be ${inr(Math.round(avg * 0.9 / 10000) * 10000, 0)}.` : ''}</p>` : ''}
+    <button class="btn wide">Save</button></form>
+    ${cur ? `<div style="height:10px"></div><button class="btn wide ghost" data-act="budgetRemove" data-id="${id}">Remove this budget</button>` : ''}`);
+}
+
+// ===================== Refunds and duplicates =====================
+const pkey = (x) => (x.payee || x.description || '').toUpperCase().replace(/[^A-Z]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
+// Pair each refund with the purchase it reverses: money in, same payee, amount no more than the purchase, within 90 days after it
+function matchRefunds() {
+  const outs = new Map();
+  for (const x of D.transactions) if (x.amount < 0 && catById(x.categoryId)?.kind !== 'transfer') { const k = pkey(x); if (k) (outs.get(k) || outs.set(k, []).get(k)).push(x); }
+  const taken = new Set(D.transactions.filter((x) => x.refundOf).map((x) => x.refundOf));
+  let n = 0;
+  for (const r of D.transactions) {
+    if (r.amount <= 0 || r.refundOf || r.notRefund) continue;
+    if (catById(r.categoryId)?.kind !== 'expense') continue;
+    const cands = (outs.get(pkey(r)) || []).filter((o) => !taken.has(o.id) && o.date <= r.date && daysUntil(r.date) - daysUntil(o.date) <= 90 && -o.amount >= r.amount)
+      .sort((p, q) => (Math.abs(-p.amount - r.amount) - Math.abs(-q.amount - r.amount)) || q.date.localeCompare(p.date));
+    if (cands[0]) { r.refundOf = cands[0].id; taken.add(cands[0].id); n++; }
+  }
+  return n;
+}
+const refundFor = (x) => D.transactions.find((r) => r.refundOf === x.id);
+// Same account, same amount and direction, within a day, similar payee, and not already explained
+function findDupes() {
+  const no = new Set(D.settings.notDupes || []), byKey = new Map(), out = [];
+  for (const x of D.transactions) { if (x.transferId) continue; const k = x.accountId + '|' + x.amount; (byKey.get(k) || byKey.set(k, []).get(k)).push(x); }
+  for (const g of byKey.values()) {
+    if (g.length < 2) continue;
+    g.sort((p, q) => p.date.localeCompare(q.date));
+    for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+      const a = g[i], b = g[j];
+      if (Math.abs(daysUntil(b.date) - daysUntil(a.date)) > 1) break;
+      if (a.ref && b.ref && a.ref !== b.ref) continue;
+      if (pkey(a) !== pkey(b) && !(a.ref && a.ref === b.ref)) continue;
+      if (a.refundOf || b.refundOf || refundFor(a) && refundFor(b)) continue;
+      const key = [a.id, b.id].sort().join('|'); if (no.has(key)) continue;
+      out.push({ a, b, key, sure: !!(a.ref && a.ref === b.ref) });
+    }
+  }
+  return out;
+}
+function dupesCard() {
+  const d = findDupes(); if (!d.length) return '';
+  return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openDupes"><div class="ico tone-clay" aria-hidden="true">2×</div><div class="grow"><div class="t">${d.length} possible duplicate${d.length > 1 ? 's' : ''}</div><div class="s">Same amount, same payee, a day apart. Check before they count twice.</div></div><div class="muted">›</div></button>`;
+}
+function renderDupes(m) {
+  setTop('Possible duplicates', { back: 'closeView' });
+  const d = findDupes();
+  const one = (x) => `<div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)}${x.time ? ' ' + x.time : ''} · ${x.source === 'sms' ? 'SMS' : x.source === 'log' ? 'logged' : x.importId ? 'statement' : 'added by hand'}${x.ref ? ' · ref ' + esc(String(x.ref).slice(-6)) : ''}</div></div>`;
+  m.innerHTML = d.length ? d.map((p) => `<div class="card dupe"><div class="row"><span class="small muted grow">${esc(accShort(accById(p.a.accountId)))}</span><span class="num ${p.a.amount > 0 ? 'in' : ''}">${inr(p.a.amount)}</span></div>
+      ${p.sure ? '<p class="tiny warn" style="margin:4px 0 0">Same bank reference. Almost certainly a duplicate.</p>' : ''}
+      <div class="item" style="padding:8px 0">${one(p.a)}<button class="btn ghost" style="min-height:34px;padding:4px 10px" data-act="dupeDel" data-id="${p.a.id}">Delete</button></div>
+      <div class="item" style="padding:8px 0;border-top:1px solid var(--line)">${one(p.b)}<button class="btn ghost" style="min-height:34px;padding:4px 10px" data-act="dupeDel" data-id="${p.b.id}">Delete</button></div>
+      <button class="btn wide ghost" style="margin-top:6px" data-act="dupeKeep" data-key="${p.key}">Both are real</button></div>`).join('')
+    : `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.25rem">No duplicates</div><p class="small muted">Everything is counted once.</p></div>`;
+}
+
+// ===================== Trips and events (tags) =====================
+const tagsOf = (x) => x.tags || [];
+function allTags() {
+  const m2 = new Map();
+  for (const x of D.transactions) for (const t of tagsOf(x)) {
+    const e = m2.get(t) || { name: t, spend: 0, n: 0, from: x.date, to: x.date };
+    if (x.amount < 0 && catById(x.categoryId)?.kind !== 'transfer') e.spend -= x.amount; else if (x.amount > 0 && catById(x.categoryId)?.kind === 'expense') e.spend -= x.amount;
+    e.n++; if (x.date < e.from) e.from = x.date; if (x.date > e.to) e.to = x.date; m2.set(t, e);
+  }
+  return [...m2.values()].sort((a, b) => b.to.localeCompare(a.to));
+}
+const parseTags = (s) => [...new Set(String(s || '').split(';').map((t) => t.trim().replace(/\s+/g, ' ')).filter(Boolean).map((t) => t.slice(0, 40)))];
+function renderTags(m) {
+  setTop('Trips & events', { back: 'closeView', action: `<button class="btn" style="min-height:36px;padding:6px 14px;border-radius:18px" data-act="tagTrip">+ Tag</button>` });
+  if (ui.view.tag) return renderTag(m, ui.view.tag);
+  const tags = allTags();
+  m.innerHTML = tags.length ? `<div class="list">${tags.map((t) => `<button class="item" data-act="openTag" data-tag="${esc(t.name)}"><div class="ico tone-sand" aria-hidden="true">#</div><div class="grow"><div class="t">${esc(t.name)}</div><div class="s">${fmtDate(t.from, true)}${t.to !== t.from ? ' to ' + fmtDate(t.to, true) : ''} · ${t.n} transaction${t.n > 1 ? 's' : ''}</div></div><div class="a num">${inr(t.spend, 0)}</div></button>`).join('')}</div>
+    <p class="small muted" style="margin:10px 4px">Trips and events show their own totals, and Summary for AI lists them separately so one-offs don't skew your monthly averages.</p>`
+    : `<div class="card" style="text-align:center;padding:26px 20px"><svg width="80" height="60" viewBox="0 0 96 72" fill="none" stroke="var(--gold)" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M20 40l26-26h24v24L44 64z"/><circle cx="60" cy="24" r="4"/></svg><div class="serif" style="font-size:1.25rem;margin:8px 0 4px">No trips or events yet</div><p class="small muted">Tag a trip like "Goa, Dec 2026" to see what it cost. You can tag everything between two dates in one go.</p><button class="btn" data-act="tagTrip">Tag a trip or event</button></div>`;
+}
+function renderTag(m, tag) {
+  const tx = D.transactions.filter((x) => tagsOf(x).includes(tag)).sort((a, b) => b.date.localeCompare(a.date));
+  const t = allTags().find((e) => e.name === tag) || { spend: 0, n: 0, from: '', to: '' };
+  const cats = new Map(); for (const x of tx) if (catById(x.categoryId)?.kind !== 'transfer' && (x.amount < 0 || catById(x.categoryId)?.kind === 'expense')) { const k = x.categoryId || '_none'; cats.set(k, (cats.get(k) || 0) - x.amount); }
+  const cs = [...cats.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]), mx = Math.max(1, ...cs.map((c) => c[1]));
+  const days = t.from ? daysUntil(t.to) - daysUntil(t.from) + 1 : 1;
+  m.innerHTML = `<div class="card"><h2>#${esc(tag)}</h2><div class="big num">${inr(t.spend, 0)}</div><div class="small muted">${t.n} transactions · ${days} day${days > 1 ? 's' : ''}${days > 1 ? ` · ${inr(t.spend / days, 0)} a day` : ''}</div>
+    ${cs.map(([k, v]) => `<div style="margin-top:10px"><div class="row small"><span class="grow">${esc(k === '_none' ? 'Uncategorised' : catName(k))}</span><span class="num">${inr(v, 0)}</span></div><div class="bar"><i class="grow-x" style="--w:${(v / mx * 100).toFixed(1)}%"></i></div></div>`).join('')}</div>
+    <div class="list">${tx.map((x) => txItem(x)).join('')}</div>
+    <div class="row" style="margin-top:12px"><button class="btn ghost" style="flex:1" data-act="tagRename" data-tag="${esc(tag)}">Rename</button><button class="btn ghost" style="flex:1" data-act="tagRemove" data-tag="${esc(tag)}">Remove tag</button></div>`;
+}
+function tagTripSheet() {
+  const to = todayIso(), from = isoAdd(to, -6);
+  openSheet(`<h3>Tag a trip or event</h3><form data-form="tagTrip">
+    <label class="f"><span>Name</span><input class="i" name="tag" list="tagList" placeholder="e.g. Goa, Dec 2026" required>${tagDatalist()}</label>
+    <div class="split"><label class="f"><span>From</span><input class="i" type="date" name="from" id="ttFrom" value="${from}"></label><label class="f"><span>To</span><input class="i" type="date" name="to" id="ttTo" value="${to}"></label></div>
+    <div id="ttList"></div><button class="btn wide">Tag selected</button></form>`);
+  const fill = () => {
+    const f = $('#ttFrom').value, t = $('#ttTo').value;
+    const xs = D.transactions.filter((x) => x.date >= f && x.date <= t && x.amount < 0 && catById(x.categoryId)?.kind !== 'transfer' && accVisible(accById(x.accountId) || {})).sort((a, b) => a.date.localeCompare(b.date));
+    $('#ttList').innerHTML = xs.length ? `<p class="small muted">${xs.length} payments in these dates. Untick anything that wasn't part of it.</p><div class="list" style="margin-bottom:12px">${xs.map((x) => `<label class="item"><input type="checkbox" class="chk" name="ids" value="${x.id}" checked><div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)} · ${esc(catName(x.categoryId))}</div></div><div class="a num">${inr(x.amount)}</div></label>`).join('')}</div>` : '<p class="small muted">No payments in these dates.</p>';
+  };
+  $('#ttFrom').addEventListener('change', fill); $('#ttTo').addEventListener('change', fill); fill();
+}
+const tagDatalist = () => `<datalist id="tagList">${allTags().map((t) => `<option value="${esc(t.name)}">`).join('')}</datalist>`;
+
+// ===================== Investments: returns, allocation, SIPs =====================
+function xirr(flows) { // flows: [{d: iso, v: paise, + is money back to you}] -> annual rate
+  if (flows.length < 2 || !flows.some((f) => f.v < 0) || !flows.some((f) => f.v > 0)) return null;
+  const t0 = new Date(flows[0].d + 'T00:00:00');
+  const yr = flows.map((f) => (new Date(f.d + 'T00:00:00') - t0) / 3.1536e10);
+  const npv = (r) => flows.reduce((s, f, i) => s + f.v / Math.pow(1 + r, yr[i]), 0);
+  let lo = -0.99, hi = 10, flo = npv(lo), fhi = npv(hi);
+  if (flo * fhi > 0) return null;
+  for (let i = 0; i < 100; i++) { const mid = (lo + hi) / 2, fm = npv(mid); if (Math.abs(fm) < 1) return mid; if (flo * fm < 0) { hi = mid; fhi = fm; } else { lo = mid; flo = fm; } }
+  return (lo + hi) / 2;
+}
+const DEBTY = /\b(DEBT|LIQUID|GILT|BOND|OVERNIGHT|MONEY MARKET|CORPORATE|BANKING AND PSU|SHORT DURATION|ULTRA SHORT|CREDIT RISK|DYNAMIC BOND|ARBITRAGE|FIXED|TARGET MATURITY|SDL)\b/i;
+const GOLDY = /\b(GOLD|SILVER|GOLDBEES|SGB)\b/i;
+function allocation() {
+  const B = { Equity: 0, 'Debt & deposits': 0, Retirement: 0, Gold: 0, Cash: 0, Crypto: 0, Other: 0 };
+  for (const a of D.accounts) {
+    if (a.archived || typeOf(a.type).side !== 'asset') continue;
+    const sh = shareOf(a); if (!sh) continue;
+    const hs = D.holdings.filter((h) => h.accountId === a.id);
+    if (hs.length) { for (const h of hs) { const v = holdValue(h) * sh; B[GOLDY.test(h.name) ? 'Gold' : DEBTY.test(h.name) ? 'Debt & deposits' : 'Equity'] += v; } continue; }
+    const v = Math.max(0, balance(a)) * sh;
+    const t = a.type;
+    if (['savings', 'current', 'cash', 'wallet'].includes(t)) B.Cash += v;
+    else if (['fd', 'rd'].includes(t)) B['Debt & deposits'] += v;
+    else if (['ppf', 'epf', 'nps'].includes(t)) B.Retirement += v;
+    else if (t === 'gold') B.Gold += v; else if (t === 'crypto') B.Crypto += v;
+    else if (['stocks', 'mutual_fund'].includes(t)) B.Equity += v;
+    else if (!['property', 'vehicle'].includes(t)) B.Other += v;
+  }
+  const total = Object.values(B).reduce((s, v) => s + v, 0);
+  return { total, parts: Object.entries(B).filter(([, v]) => v > 0).map(([k, v]) => ({ k, v, p: v / total })).sort((a, b) => b.v - a.v) };
+}
+const SIPY = /\b(SIP|MUTUAL|MF|BSE ?STAR|BSESTAR|NSE CLEARING|ICCL|INDIAN CLEARING|ZERODHA|COIN|GROWW|KUVERA|CAMS|KFIN|PPF|NPS|PROTEAN|SMALLCASE|PAYTM MONEY|ACH D)\b/i;
+function findSips() {
+  const g = new Map();
+  for (const x of D.transactions) {
+    if (x.amount >= 0) continue;
+    const c = catById(x.categoryId);
+    if (!(c?.id === 'investments' || (SIPY.test(`${x.payee} ${x.description}`) && (!c || c.kind === 'transfer')))) continue;
+    const k = pkey(x) + '|' + Math.round(-x.amount / 50000);
+    (g.get(k) || g.set(k, []).get(k)).push(x);
+  }
+  const out = [];
+  for (const xs of g.values()) {
+    const months = new Set(xs.map((x) => ymOf(x.date))); if (months.size < 2) continue;
+    xs.sort((a, b) => a.date.localeCompare(b.date));
+    const last = xs.at(-1), next = advance(last.date, 'month', +last.date.slice(8));
+    const late = daysUntil(next);
+    out.push({ name: last.payee || last.description, amount: -last.amount, last: last.date, next, months: months.size, status: late < -5 ? 'missed' : late <= 5 ? 'due' : 'ok' });
+  }
+  return out.sort((a, b) => b.amount - a.amount);
+}
+function returnsData() {
+  const accs = D.accounts.filter((a) => !a.archived && D.holdings.some((h) => h.accountId === a.id) && shareOf(a));
+  let value = 0, cost = 0;
+  for (const a of accs) for (const h of D.holdings.filter((h2) => h2.accountId === a.id)) { value += holdValue(h) * shareOf(a); cost += holdCost(h) * shareOf(a); }
+  // XIRR since tracking began: the first recorded value, then money moved into investments, against today's value
+  const ids = new Set(accs.map((a) => a.id));
+  const days = Object.keys(D.priceHist || {}).filter((d) => accs.some((a) => D.priceHist[d][a.id] != null)).sort();
+  const d0 = days[0] || null;
+  let irr = null, since = d0;
+  if (d0 && daysUntil(d0) <= -90) {
+    const v0 = accs.reduce((t, a) => t + (D.priceHist[d0][a.id] || 0) * shareOf(a), 0);
+    const flows = [{ d: d0, v: -v0 }];
+    for (const x of D.transactions) if (x.date > d0 && x.categoryId === 'investments' && x.amount < 0 && !ids.has(x.accountId)) flows.push({ d: x.date, v: x.amount });
+    flows.sort((p, q) => p.d.localeCompare(q.d)); flows.push({ d: todayIso(), v: value });
+    irr = xirr(flows);
+  }
+  return { accs, value, cost, gain: value - cost, irr, since };
+}
+const ALLOC_COL = { Equity: 'var(--brand)', 'Debt & deposits': 'var(--gold)', Retirement: '#7c8f86', Gold: '#c9a54a', Cash: '#9fb7c9', Crypto: '#b07a5a', Other: 'var(--line)' };
+function renderInvest(m) {
+  setTop('Investments', { back: 'closeView' });
+  const r = returnsData(), al = allocation(), sips = findSips();
+  const pct = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  m.innerHTML = `${r.accs.length ? `<div class="card"><h2>Returns</h2><div class="big num">${inr(r.value, 0)}</div>
+      ${r.cost ? `<div class="small"><span class="${r.gain >= 0 ? 'in' : 'bad'} num">${r.gain >= 0 ? '+' : ''}${inr(r.gain, 0)} (${pct(r.gain / r.cost)})</span> <span class="muted">on ${inr(r.cost, 0)} invested</span></div>` : ''}
+      <div class="split" style="margin-top:12px"><div><div class="small muted">XIRR (yearly)</div><div class="mid num ${r.irr == null ? 'muted' : r.irr >= 0 ? 'in' : 'bad'}">${r.irr == null ? '…' : pct(r.irr)}</div></div>
+      <div><div class="small muted">Tracked since</div><div class="num">${r.since ? fmtDate(r.since, true) : 'today'}</div></div></div>
+      <p class="tiny muted" style="margin:8px 0 0">${r.irr == null ? `XIRR needs about 3 months of history in Ledger${r.since ? `. It appears around ${fmtDate(isoAdd(r.since, 90), true)}` : ''}. Until then, the gain above is against what you paid.` : 'XIRR counts the value when Ledger started tracking, money you moved into investments since then, and today\'s value.'}</p>
+      <div class="list" style="margin:10px -4px 0">${r.accs.map((a) => { let v = 0, c = 0; for (const h of D.holdings.filter((h2) => h2.accountId === a.id)) { v += holdValue(h); c += holdCost(h); } return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${c ? `<span class="${v >= c ? 'in' : 'bad'}">${pct((v - c) / c)}</span> on ${inr(c, 0)}` : ''}</div></div><div class="a num">${inr(v, 0)}</div></button>`; }).join('')}</div></div>` : ''}
+    ${al.total ? `<div class="card"><h2>Where your money sits</h2><div class="allocbar" aria-hidden="true">${al.parts.map((p, i) => `<i style="--w:${(p.p * 100).toFixed(2)}%;background:${ALLOC_COL[p.k]};--d:${i * 70}ms"></i>`).join('')}</div>
+      ${al.parts.map((p) => `<div class="row small" style="margin-top:8px"><span class="dot" style="background:${ALLOC_COL[p.k]}"></span><span class="grow">${p.k}</span><span class="num">${inr(p.v, 0)}</span><span class="muted num" style="width:3.2em;text-align:right">${Math.round(p.p * 100)}%</span></div>`).join('')}
+      <p class="tiny muted" style="margin:8px 0 0">Leaves out property, vehicles and loans. Mutual funds are split by their names (debt, liquid and gilt funds count as debt).</p></div>` : ''}
+    <div class="card"><h2>SIPs</h2>${sips.length ? sips.map((s) => `<div class="item" style="padding:8px 0"><div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${inr(s.amount, 0)} a month · last ${fmtDate(s.last, true)} · ${s.months} months seen</div></div><span class="pillnote ${s.status === 'missed' ? 'bad' : s.status === 'due' ? 'warn' : 'in'}">${s.status === 'missed' ? `Not seen for ${MON[+s.next.slice(5, 7) - 1]}` : s.status === 'due' ? 'Due ' + dueWord(s.next) : 'On track'}</span></div>`).join('')
+      : '<p class="small muted" style="margin:0">No SIPs found yet. Ledger spots them once the same investment debit shows up in two different months.</p>'}</div>`;
+}
+
 function recapData(ym) {
   const st = monthStats(ym), prev = monthStats(addMonths(ym, -1));
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
@@ -776,9 +1082,11 @@ function recapCard(force) {
   const r = recapData(ym); if (!r.spend) return '';
   const max = Math.max(1, ...r.top.map((t) => t.v));
   const mn = MON[+ym.slice(5) - 1];
+  const br = budgetRows(ym);
   return `<div class="card recap"><div class="row"><h2 class="grow" style="margin:0;color:var(--on-brand);opacity:.8">Your ${mn}</h2><button class="link" style="color:var(--on-brand);opacity:.8" data-act="recapHide" aria-label="Hide recap">✕</button></div>
     <div class="big money">${inr(r.spend, 0)}</div><div class="small" style="opacity:.85">spent across ${r.n} payments${r.prev ? ` · ${r.spend > r.prev ? '▲' : '▼'} ${inr(Math.abs(r.spend - r.prev), 0)} vs ${MON[+addMonths(ym, -1).slice(5) - 1]}` : ''}</div>
     ${r.top.map((t) => `<div style="margin-top:10px"><div class="row small"><span class="grow">${esc(t.name)}</span><span class="num money">${inr(t.v, 0)}</span></div><div class="bar" style="background:rgba(255,255,255,.16)"><i style="width:${(t.v / max) * 100}%;background:#e9d7ae"></i></div></div>`).join('')}
+    ${br.length ? `<p class="small" style="margin:12px 0 0;opacity:.9">Budgets kept: <b>${br.filter((b) => b.pct <= 1).length} of ${br.length}</b>${br.some((b) => b.pct > 1) ? ' · over on ' + br.filter((b) => b.pct > 1).map((b) => esc(b.name)).join(', ') : ''}</p>` : ''}
     <div class="row" style="margin-top:14px"><button class="btn" style="flex:1;background:var(--on-brand);color:var(--brand-bg)" data-act="recapShare" data-ym="${ym}">Share as image</button><button class="btn" style="flex:1;background:none;border:1px solid rgba(255,255,255,.35)" data-act="recapSee" data-ym="${ym}">See ${mn}</button></div></div>`;
 }
 async function recapImage(ym) {
@@ -945,6 +1253,10 @@ function render() {
   if (ui.view?.page === 'ask') return renderAsk(m);
   if (ui.view?.page === 'bills') return renderBills(m);
   if (ui.view?.page === 'receipts') return renderReceipts(m);
+  if (ui.view?.page === 'budgets') return renderBudgets(m);
+  if (ui.view?.page === 'dupes') return renderDupes(m);
+  if (ui.view?.page === 'tags') return renderTags(m);
+  if (ui.view?.page === 'invest') return renderInvest(m);
 
   ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, vault: renderVault, more: renderMore }[ui.tab])(m);
   requestAnimationFrame(() => document.querySelectorAll('.whoseg .pill[data-to]').forEach((p2) => { p2.style.transform = `translateX(${p2.dataset.to * 100}%)`; }));
@@ -965,7 +1277,7 @@ function txItem(x, showAcc = true) {
   const c = catById(x.categoryId);
   const a = accById(x.accountId);
   const sug = !c && x.suggest && catById(x.suggest) ? ` <span class="badge" data-act="acceptSug" data-id="${x.id}">AI: ${esc(catName(x.suggest))} ✓</span>` : '';
-  const sub = [c ? c.name : '<span class="warn">Uncategorised</span>' + sug, showAcc && a ? esc(accShort(a)) : '', x.source === 'sms' ? 'from SMS' : x.source === 'log' ? 'logged' : '', x.transferId ? 'matched transfer' : '', D.receipts?.some((r) => r.txId === x.id) ? '📎' : ''].filter(Boolean).join(' · ');
+  const sub = [c ? c.name : '<span class="warn">Uncategorised</span>' + sug, showAcc && a ? esc(accShort(a)) : '', x.source === 'sms' ? 'from SMS' : x.source === 'log' ? 'logged' : '', x.transferId ? 'matched transfer' : '', x.refundOf ? '<span class="in">refund</span>' : refundFor(x) ? '<span class="in">refunded</span>' : '', ...tagsOf(x).map((t) => `<span class="tagchip">#${esc(t)}</span>`), D.receipts?.some((r) => r.txId === x.id) ? '📎' : ''].filter(Boolean).join(' · ');
   return `<div class="sw" data-id="${x.id}"><div class="sw-acts"><button data-act="swCat" data-id="${x.id}">Category</button><button data-act="swTransfer" data-id="${x.id}">Transfer</button></div><button class="item" data-act="editTx" data-id="${x.id}">
     ${catIcon(x.categoryId)}
     <div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${sub}</div></div>
@@ -984,7 +1296,8 @@ function renderHome(m) {
     return;
   }
   recordPrices();
-  if (processBills()) save();
+  if (processBills() | matchRefunds()) save();
+  budgetNudge();
   const nw = netWorth();
   const loans = loansTotal();
   const mt = marketsToday();
@@ -1013,7 +1326,9 @@ function renderHome(m) {
       <div><div class="small muted">${D.settings.loansSeparate ? 'Card dues & other' : 'Liabilities'}</div><div class="num">${compact(nw.liabilities)}</div></div>
     </div>
     ${D.settings.loansSeparate && loans ? `<button class="item" style="margin:10px -4px 0;padding:10px 4px;border-top:1px solid var(--line)" data-act="tab" data-tab="accounts"><div class="grow"><div class="small muted">Loans, kept out of net worth</div><div class="num">${inr(loans, 0)}</div></div><div class="muted">›</div></button>` : ''}</div>
+  ${safeCard()}
   ${recapCard()}
+  ${dupesCard()}
   ${dues.map((a) => { const d = daysUntil(a.statement.dueDate); return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAccount" data-id="${a.id}">
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
@@ -1029,6 +1344,7 @@ function renderHome(m) {
     <div class="cols">${months.map((x) => `<div class="${x.y === ym ? 'now' : ''}"><i style="height:${Math.max(3, (x.v / maxV) * 70)}px"></i><span>${MON[+x.y.slice(5) - 1]}</span></div>`).join('')}</div>
     ${s.uncategorised ? `<p class="small" style="margin:12px 0 0"><button class="link" data-act="showUncat">${s.uncategorised} transactions need a category ›</button></p>` : ''}
   </div>
+  ${budgetCard()}
   ${top.length ? `<div class="card"><h2>Top categories</h2>${top.map(([id, v]) => `
     <button class="item" style="padding:8px 0" data-act="showCat" data-id="${id}"><div class="grow"><div class="row"><span class="grow">${esc(id === '_none' ? 'Uncategorised' : catName(id))}</span><span class="num">${inr(v, 0)}</span></div>
     <div class="bar"><i style="width:${(v / topMax) * 100}%"></i></div></div></button>`).join('')}</div>` : ''}
@@ -1043,7 +1359,7 @@ function filteredTx() {
     if (ui.src && x.source !== ui.src) return false;
     if (multi() && D.settings.who !== 'all' && !ui.acc && !accVisible(accById(x.accountId) || {})) return false;
     if (ui.cat === '_none' ? x.categoryId : ui.cat && x.categoryId !== ui.cat) return false;
-    if (q && !`${x.payee} ${x.description} ${x.notes || ''} ${catName(x.categoryId)} ${(x.amount / 100).toFixed(2)}`.toLowerCase().includes(q)) return false;
+    if (q && !`${x.payee} ${x.description} ${x.notes || ''} ${tagsOf(x).join(' ')} ${catName(x.categoryId)} ${(x.amount / 100).toFixed(2)}`.toLowerCase().includes(q)) return false;
     return true;
   }).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || ''));
 }
@@ -1097,6 +1413,7 @@ function renderAccounts(m) {
   for (const a of D.accounts.filter((a) => !a.archived && accVisible(a))) (groups[typeOf(a.type).group] ||= []).push(a);
   const order = [...new Set(ACCOUNT_TYPES.map((t) => t.group))];
   m.innerHTML = whoSwitch() + `<div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2><div class="big num">${inr(nw.net, 0)}</div>${D.settings.loansSeparate && loansTotal() ? `<div class="small muted">Loans ${inr(loansTotal(), 0)}, kept out of net worth</div>` : ''}${multi() && D.settings.who !== 'all' && D.accounts.some((a) => ownerOf(a) === 'joint') ? '<div class="tiny muted">Joint accounts count half here.</div>' : ''}</div>` +
+    (allocation().total ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openInvest"><div class="ico tone-sage" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18l5-6 4 3 7-9"/><path d="M15 6h5v5"/></svg></div><div class="grow"><div class="t">Investments</div><div class="s">Returns, where your money sits, SIPs</div></div><div class="muted">›</div></button>` : '') +
     order.filter((g) => groups[g]).map((g) => {
       const total = groups[g].reduce((s2, a) => s2 + Math.round((balance(a) - unbilledEmi(a)) * shareOf(a)), 0);
       return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="acards">${groups[g].map((a) => {
@@ -1584,6 +1901,7 @@ function txSheet(x, accId) {
       <label class="f"><span>Date</span><input class="i" type="date" name="date" value="${x.date}" required></label>
       <label class="f"><span>Account</span><select class="i" name="accountId">${accOptions(x.accountId, ledger)}</select></label>
     </div>
+    <label class="f"><span>Trip or event</span><input class="i" name="tags" list="tagList" placeholder="Optional, e.g. Goa, Dec 2026 (separate two with ;)" value="${esc(tagsOf(x).join('; '))}">${tagDatalist()}</label>
     <label class="f"><span>Notes</span><textarea class="i" name="notes">${esc(x.notes)}</textarea></label>
     ${isNew ? '' : `${receiptThumbs(receiptsFor(x.id))}<button type="button" class="btn ghost wide" data-act="txAttach" data-id="${x.id}" style="margin:0 0 12px">📎 Attach a receipt or bill</button>`}
     ${x.raw ? `<p class="tiny muted">${x.source === 'sms' ? 'SMS' : 'Bank text'}: ${esc(x.raw)}${x.points ? ` · ${x.points} reward points` : ''}</p>` : ''}
@@ -1671,6 +1989,10 @@ function renderMore(m) {
   <div class="list">
     <button class="item" data-act="payWithSheet"><div class="grow">Where quick entries go<div class="s">UPI: ${esc(accShort(payAccount('upi', false)) || 'not set')} · Card: ${esc(accShort(payAccount('card', false)) || 'not set')}</div></div><div class="muted">›</div></button>
     <button class="item" data-act="shortcutHelp"><div class="grow">Set up "Log to Ledger" for Siri</div><div class="muted">›</div></button>
+    <button class="item" data-act="openBudgets"><div class="grow">Budgets<div class="s">${Object.keys(D.budgets || {}).length ? Object.keys(D.budgets).length + ' set' : 'Monthly limits by category'}</div></div><div class="muted">›</div></button>
+    <button class="item" data-act="openTags"><div class="grow">Trips & events<div class="s">What each trip or occasion cost</div></div><div class="muted">›</div></button>
+    <button class="item" data-act="openInvest"><div class="grow">Investments<div class="s">Returns, where your money sits, SIPs</div></div><div class="muted">›</div></button>
+    <button class="item" data-act="openDupes"><div class="grow">Possible duplicates<div class="s">Check payments counted twice</div></div><div class="muted">›</div></button>
     <button class="item" data-act="summarySheet"><div class="grow">Summary for AI<div class="s">Copy your month into Claude or ChatGPT for a report</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openVault"><div class="grow">Family vault<div class="s">${(D.vault || []).length} policies and documents, encrypted</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openReceipts"><div class="grow">Receipts & bills<div class="s">${D.receipts.length} kept, encrypted</div></div><div class="muted">›</div></button>
@@ -2452,6 +2774,19 @@ document.addEventListener('visibilitychange', () => {
 // ---------- events ----------
 const acts = {
   summarySheet: () => summarySheet(),
+  safeSheet: () => safeSheet(),
+  openBudgets: () => { ui.view = { page: 'budgets' }; render(); window.scrollTo(0, 0); },
+  budgetSheet: (d) => budgetSheet(d.id),
+  budgetRemove: (d) => { delete budgets()[d.id]; delete (D.settings.budgetSince || {})[d.id]; save(); closeSheet(); render(); },
+  openDupes: () => { ui.view = { page: 'dupes' }; render(); window.scrollTo(0, 0); },
+  dupeDel: (d) => { D.transactions = D.transactions.filter((x) => x.id !== d.id); for (const x of D.transactions) if (x.refundOf === d.id) delete x.refundOf; save(); render(); done('Deleted'); },
+  dupeKeep: (d) => { (D.settings.notDupes ||= []).push(d.key); save(); render(); },
+  openTags: () => { ui.view = { page: 'tags' }; render(); window.scrollTo(0, 0); },
+  openTag: (d) => { ui.view = { page: 'tags', tag: d.tag }; render(); window.scrollTo(0, 0); },
+  tagTrip: () => tagTripSheet(),
+  tagRename: (d) => { const n = parseTags(prompt('New name', d.tag))[0]; if (!n || n === d.tag) return; for (const x of D.transactions) if (tagsOf(x).includes(d.tag)) x.tags = [...new Set(tagsOf(x).map((t) => (t === d.tag ? n : t)))]; save(); ui.view = { page: 'tags', tag: n }; render(); },
+  tagRemove: (d) => { if (!confirm(`Remove #${d.tag} from all its transactions?`)) return; for (const x of D.transactions) if (tagsOf(x).includes(d.tag)) { x.tags = tagsOf(x).filter((t) => t !== d.tag); if (!x.tags.length) delete x.tags; } save(); ui.view = { page: 'tags' }; render(); },
+  openInvest: () => { ui.view = { page: 'invest' }; render(); window.scrollTo(0, 0); },
   sumRefresh: () => { const top = $('#sheet').scrollTop; summarySheet(ui.sumPeriod); $('#sheet').scrollTop = top; },
   sumPeriod: (d) => { const top = $('#sheet').scrollTop; summarySheet(d.p); $('#sheet').scrollTop = top; },
   sumCopy: async () => { try { await navigator.clipboard.writeText(ui.sumText); done('Copied'); } catch { const t = $('#sheet textarea'); t.removeAttribute('readonly'); t.select(); document.execCommand('copy'); t.setAttribute('readonly', ''); done('Copied'); } },
@@ -2531,7 +2866,7 @@ const acts = {
     const a = document.createElement('a'); a.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics); a.download = `${name}.ics`; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
   },
   tab: (d) => { if (ui.tab !== d.tab) haptic(); ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
-  closeSheet, closeView: () => { ui.view = null; render(); },
+  closeSheet, closeView: () => { ui.view = ui.view?.page === 'tags' && ui.view.tag ? { page: 'tags' } : null; render(); },
   month: (d) => { ui.month = addMonths(ui.month, +d.d); render(); },
   showUncat: () => { ui.tab = 'tx'; ui.cat = '_none'; ui.month = ymOf(todayIso()); ui.view = null; render(); },
   showCat: (d) => { ui.tab = 'tx'; ui.cat = d.id; ui.month = ymOf(todayIso()); ui.view = null; render(); },
@@ -2801,6 +3136,13 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  budget: (f) => { const lim = parseRupees(f.get('lim')); const c = f.get('cat'); if (!c) return toast('Pick a category.'); if (!lim || lim <= 0) return toast('Enter a monthly limit.'); budgets()[c] = lim; (D.settings.budgetSince ||= {})[c] ||= ymOf(todayIso()); save(); closeSheet(); render(); done('Budget set'); },
+  tagTrip: (f) => {
+    const tag = parseTags(f.get('tag'))[0]; if (!tag) return toast('Give it a name.');
+    const ids = new Set(f.getAll('ids')); let n = 0;
+    for (const x of D.transactions) if (ids.has(x.id) && !tagsOf(x).includes(tag)) { x.tags = [...tagsOf(x), tag]; n++; }
+    save(); closeSheet(); ui.view = { page: 'tags', tag }; render(); done(`${n} tagged #${tag}`);
+  },
   epf: (f) => { const a = commitEpf(ui.epf, f.get('acc')); ui.epf = null; save(); closeSheet(); ui.tab = 'accounts'; ui.view = { page: 'account', id: a.id }; render(); done('EPF updated'); },
   vault: (f, form) => {
     const id = form.dataset.id; const amt = parseRupees(f.get('premium') || '');
@@ -2897,7 +3239,8 @@ const forms = {
     const amt = parseRupees(f.get('amount')); if (amt == null || amt === 0) return toast('Enter an amount.');
     const signed = f.get('dir') === 'in' ? Math.abs(amt) : -Math.abs(amt);
     const id = form.dataset.id;
-    const vals = { payee: f.get('payee').trim(), amount: signed, categoryId: f.get('categoryId') || null, date: f.get('date'), accountId: f.get('accountId'), notes: f.get('notes').trim() };
+    const vals = { payee: f.get('payee').trim(), amount: signed, categoryId: f.get('categoryId') || null, date: f.get('date'), accountId: f.get('accountId'), notes: f.get('notes').trim(), tags: parseTags(f.get('tags')) };
+    if (!vals.tags.length) vals.tags = undefined;
     let x;
     if (id) {
       x = D.transactions.find((t) => t.id === id);
@@ -3035,6 +3378,7 @@ window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recap
 
 // Savings goal and AI style on the Summary sheet: saved as you leave each box
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'safeGoal') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); render(); safeSheet(); return; }
   if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); acts.sumRefresh(); }
   else if (e.target.id === 'sumAll') { D.settings.sumAll = e.target.checked; save(); acts.sumRefresh(); }
   else if (e.target.id === 'sumStyle') { D.settings.aiStyle = e.target.value.trim().slice(0, 300); save(); acts.sumRefresh(); }
