@@ -296,7 +296,7 @@ export function parseBankPdf(pages) {
     if (cand) statement.holder = cand.str.trim();
   }
   for (const t of transactions) {
-    // DNS / co-op style: "UPI DR 581439612236 SAHIL SANJ CENTRAL OFFI"
+    // DNS / co-op style: "UPI DR 123456789012 RAVI KUMA CENTRAL OFFI"
     let m = t.description.match(/^UPI\s+(DR|CR)\s+(\d{9,})\s+(.+?)(?:\s+CENTRAL OFFI.*)?$/i);
     if (m) { t.ref = m[2]; t.counterparty = m[3].trim(); }
     m = t.description.match(/^(\d{10,})\s*-\s*(.+?)\s+Drawdown\s+From\s+CASA/i);
@@ -520,4 +520,34 @@ export function parseHoldingsReport(pages) {
   const tl = lines.find((l, i) => i > start && /^Total\b/.test(l.text));
   let reported = null; if (tl) { const n = [...new Set(tl.items.filter((it) => NUM.test(it.str.trim())).map((it) => it.str.trim()))].map((s2) => parseFloat(s2.replace(/,/g, ''))); if (n.length >= 2) reported = Math.round(n[1] * 100); }
   return { kind: 'hreport', institution: st.distributor, statement: st, holdings, recon: { ok: reported != null ? Math.abs(reported - st.value) <= 100 : null, reported } };
+}
+
+// ---------- EPFO member passbook (PDF from the EPFO passbook portal) ----------
+export const detectEpfPassbook = (text) => /Member Passbook/i.test(text) && /\bUAN\b/.test(text) && /EPF Passbook/i.test(text);
+export function parseEpfPassbook(text) {
+  const t = text.replace(/\s+/g, ' ');
+  const num = (s) => Math.round(parseFloat(String(s).replace(/,/g, '')) * 100);
+  const dmy = (s) => { const m = s.match(/(\d{2})[-/](\d{2})[-/](\d{4})/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+  const est = (t.match(/Establishment ID\/Name\s+([A-Z0-9]+)\s*\/\s*([A-Z][A-Z0-9&.,()' -]*[A-Z.)])/) || []);
+  const mem = (t.match(/Member ID\/Name\s+([A-Z0-9]+)\s*\/\s*([A-Z][A-Z .]*[A-Z])/) || []);
+  const fy = (t.match(/Financial Year\s*-\s*(\d{4})-(\d{4})/i) || []);
+  const ob = t.match(/OB Int\.? Updated upto (\d{2}\/\d{2}\/\d{4})\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/i);
+  const cl = t.match(/Closing Balance as on (\d{2}\/\d{2}\/\d{4})\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/i);
+  const printed = t.match(/Printed On\s*:\s*(\d{2}-\d{2}-\d{4})/i);
+  const rows = [];
+  // Rows read as "Mar-2026 01-04-2026 CR [Cont. for the Due-Month] [202604] 46,458 15,000 5,575 4,325 1,250"
+  const re = /([A-Z][a-z]{2}-\d{4})\s+(\d{2}-\d{2}-\d{4})\s+CR\b(?:\s+Cont\.[A-Za-z .-]*?)?(?:\s+\d{6})?\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)/g;
+  let m;
+  while ((m = re.exec(t))) rows.push({ wageMonth: m[1], date: dmy(m[2]), wages: num(m[3]), epsWages: num(m[4]), employee: num(m[5]), employer: num(m[6]), pension: num(m[7]) });
+  if (!ob && !cl) return null;
+  const opening = ob ? { asOn: dmy(ob[1]), employee: num(ob[2]), employer: num(ob[3]), pension: num(ob[4]) } : null;
+  const closing = cl ? { employee: num(cl[2]), employer: num(cl[3]), pension: num(cl[4]) } : null;
+  const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
+  // The printed closing balance should equal opening + this year's contributions (interest comes after 31 March)
+  const check = opening && closing ? ['employee', 'employer', 'pension'].every((k) => Math.abs(opening[k] + sum(k) - closing[k]) < 200) : null;
+  return {
+    establishment: est[2]?.trim() || '', memberIdLast4: (mem[1] || '').slice(-4), name: mem[2]?.trim() || '',
+    fy: fy[1] ? `${fy[1]}-${fy[2]}` : '', printedOn: printed ? dmy(printed[1]) : null,
+    opening, closing, rows, check,
+  };
 }

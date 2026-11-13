@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -667,6 +667,74 @@ async function recapImage(ym) {
   return new File([blob], `ledger-${ym}.png`, { type: 'image/png' });
 }
 
+// ---------- EPF (from the EPFO passbook) ----------
+const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const wmToYm = (wm) => { const [mo, y] = wm.split('-'); return `${y}-${String(MONS.indexOf(mo) + 1).padStart(2, '0')}`; };
+const ymToWm = (ym) => `${MONS[+ym.slice(5) - 1]}-${ym.slice(0, 4)}`;
+function epfSheet(ep) {
+  ui.epf = ep;
+  const accs = D.accounts.filter((a) => a.type === 'epf' && !a.archived);
+  const last = ep.rows[ep.rows.length - 1];
+  const bal = ep.closing || ep.opening;
+  openSheet(`<h3>EPF passbook</h3>
+    <p class="small muted" style="margin-top:-6px">${esc(ep.establishment)}${ep.fy ? ' · FY ' + esc(ep.fy) : ''}${ep.memberIdLast4 ? ' · member ••' + esc(ep.memberIdLast4) : ''}</p>
+    <div class="split"><div><div class="small muted">Your share</div><div class="mid num">${inr(bal.employee, 0)}</div></div><div><div class="small muted">Employer share</div><div class="mid num">${inr(bal.employer, 0)}</div></div></div>
+    <p class="small" style="margin:10px 0 4px">EPF balance <b class="num">${inr(bal.employee + bal.employer, 0)}</b> · pension (EPS) ${inr(bal.pension, 0)}, shown separately</p>
+    <p class="small muted">${ep.rows.length} contributions this year${last ? `, last for ${esc(last.wageMonth)} (${inr(last.employee, 0)} yours + ${inr(last.employer, 0)} employer)` : ''}. ${ep.check ? '<span class="in">Totals check out.</span>' : ep.check === false ? '<span class="warn">Totals did not add up exactly; check the balances.</span>' : ''}</p>
+    <form data-form="epf"><label class="f"><span>Account</span><select class="i" name="acc">${accs.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}<option value="_new">New EPF account</option></select></label>
+    <button class="btn wide">Save to Ledger</button></form>`);
+}
+function commitEpf(ep, accId) {
+  let a = accById(accId);
+  if (!a) { a = { id: uid(), name: `EPF${ep.establishment ? ' · ' + ep.establishment.replace(/\s+LIMITED$/i, '').replace(/\b(\w)(\w*)/g, (x, f, r) => f + r.toLowerCase()) : ''}`, type: 'epf', owner: ownerFromName(ep.name), institution: 'EPFO', last4: ep.memberIdLast4 || null }; D.accounts.push(a); }
+  const bal = ep.closing || ep.opening, last = ep.rows[ep.rows.length - 1];
+  const asOn = last?.date || ep.printedOn || todayIso();
+  a.epf = { employee: bal.employee, employer: bal.employer, pension: bal.pension, asOn, fy: ep.fy, opening: ep.opening, rows: ep.rows, lastWage: last ? wmToYm(last.wageMonth) : null, monthly: last ? { employee: last.employee, employer: last.employer, pension: last.pension } : (a.epf?.monthly || null), rate: a.epf?.rate || 8.25, estimated: [] };
+  D.valuations = D.valuations.filter((v) => !(v.accountId === a.id && v.estimate));
+  D.valuations.push({ id: uid(), accountId: a.id, date: asOn, value: bal.employee + bal.employer, note: 'EPF passbook', at: Date.now() });
+  processEpf();
+  return a;
+}
+// Adds the expected monthly contribution once its usual credit time has passed (wage month + 2, on the 1st).
+// A new passbook replaces these estimates with the real figures.
+function processEpf() {
+  let changed = false;
+  for (const a of D.accounts) {
+    const e = a.epf; if (!e?.monthly || !e.lastWage || a.archived) continue;
+    for (let i = 0; i < 24; i++) {
+      const next = addMonths(e.lastWage, 1), due = addMonths(next, 2) + '-01';
+      if (due > todayIso()) break;
+      e.employee += e.monthly.employee; e.employer += e.monthly.employer; e.pension += e.monthly.pension;
+      e.lastWage = next; (e.estimated ||= []).push(next);
+      D.valuations.push({ id: uid(), accountId: a.id, date: due, value: e.employee + e.employer, note: `Expected contribution for ${ymToWm(next)} (estimate)`, estimate: true, at: Date.now() });
+      changed = true;
+    }
+  }
+  return changed;
+}
+// Interest building up since 1 April at the rate (credited by EPFO after the year ends)
+function epfInterestSoFar(a) {
+  const e = a.epf; if (!e?.opening) return 0;
+  const r = (e.rate || 8.25) / 1200, fyStart = e.opening.asOn ? addMonths(ymOf(e.opening.asOn), 1) : null; if (!fyStart) return 0;
+  const today = ymOf(todayIso());
+  let bal = e.opening.employee + e.opening.employer, int = 0, ym = fyStart;
+  const add = {}; for (const row of e.rows || []) add[addMonths(wmToYm(row.wageMonth), 1)] = (add[addMonths(wmToYm(row.wageMonth), 1)] || 0) + row.employee + row.employer;
+  for (const ex of e.estimated || []) add[addMonths(ex, 1)] = (add[addMonths(ex, 1)] || 0) + e.monthly.employee + e.monthly.employer;
+  for (let i = 0; i < 12 && ym < today; i++) { int += bal * r; bal += add[ym] || 0; ym = addMonths(ym, 1); }
+  return Math.round(int);
+}
+function epfCard(a) {
+  const e = a.epf; if (!e) return '';
+  const int = epfInterestSoFar(a);
+  const lastReal = (e.rows || [])[e.rows.length - 1];
+  return `<div class="card"><h2>Provident fund</h2>
+    <div class="split"><div><div class="small muted">Your share</div><div class="mid num">${inr(e.employee, 0)}</div></div><div><div class="small muted">Employer share</div><div class="mid num">${inr(e.employer, 0)}</div></div></div>
+    <div class="split" style="margin-top:10px"><div><div class="small muted">Each month</div><div class="num">${e.monthly ? inr(e.monthly.employee + e.monthly.employer, 0) : '-'}</div><div class="tiny muted">${e.monthly ? `${inr(e.monthly.employee, 0)} yours + ${inr(e.monthly.employer, 0)} employer` : ''}</div></div>
+    <div><div class="small muted">Interest this year (est.)</div><div class="num in">${inr(int, 0)}</div><div class="tiny muted">at ${e.rate}%, credited after 31 March</div></div></div>
+    <p class="small muted" style="margin:10px 0 0">Pension (EPS): ${inr(e.pension, 0)}, kept out of the balance because it pays a pension rather than a lump sum.</p>
+    <p class="tiny muted" style="margin:6px 0 0">${lastReal ? `Passbook up to ${esc(lastReal.wageMonth)}, credited ${fmtDate(lastReal.date, true)}.` : ''}${e.estimated?.length ? ` ${e.estimated.length} later month${e.estimated.length > 1 ? 's' : ''} added as estimates.` : ''} Upload a new passbook any time to replace estimates with real figures.</p></div>`;
+}
+
 function monthStats(ym) {
   let spend = 0, income = 0, uncategorised = 0;
   const byCat = new Map();
@@ -923,6 +991,7 @@ function renderAccount(m, id) {
     <div class="row" style="margin-top:12px"><button class="btn" style="flex:1" data-act="setBalance" data-id="${a.id}">Update balance</button><button class="btn ghost" style="flex:1" data-act="transferSheet" data-from="${a.id}">Transfer</button></div>`;
   h += `</div>`;
   if (hasHold) h += holdingsCard(a);
+  if (a.epf) h += epfCard(a);
   if (isLoanType(a.type)) h += a.loan ? loanCard(a) : `<div class="card row"><div class="grow small">Track this loan's EMIs automatically?</div><button class="btn ghost" data-act="editAccount" data-id="${a.id}">Set up EMI</button></div>`;
   const st = a.statement;
   if (a.type === 'credit_card' && st) {
@@ -1017,6 +1086,7 @@ async function draftFromPdf(file, password) {
   if (!opened) return { needPassword: true, wrong: password != null };
   const { pages } = opened;
   const text = P.toLines(pages).map((l) => l.text).join('\n');
+  if (P.detectEpfPassbook(text)) { const ep = P.parseEpfPassbook(text); return ep ? { epf: ep } : { unsupported: true }; }
   if (P.detectHdfcCard(text)) {
     const parsed = P.parseHdfcCard(pages);
     const match = D.accounts.find((a) => a.type === 'credit_card' && !a.archived && a.last4 && a.last4 === parsed.statement.cardLast4);
@@ -1051,6 +1121,7 @@ async function handlePdf(file, password) {
   if (r.needPassword) return askPdfPassword(file, r.wrong);
   if (r.unsupported) { toast(`${file.name}: this statement type isn't supported yet. Send a sample to Claude.`, 4500); return; }
   if (password && pendingRemember) rememberPassword(password);
+  if (r.epf) return epfSheet(r.epf);
   queueDraft(r.imp);
 }
 let pendingRemember = false;
@@ -2225,7 +2296,7 @@ async function offerFaceId() {
 }
 async function afterUnlock() {
   D = migrate(vault.data); vault.data = D;
-  if (processEmis()) save();
+  if (processEmis() | processEpf()) save();
   refreshNavs().then((n) => { if (n && D) render(); }).catch(() => {});
   refreshStocks().then((n) => { if (n && D) render(); }).catch(() => {});
   hideLock(); render();
@@ -2569,6 +2640,7 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  epf: (f) => { const a = commitEpf(ui.epf, f.get('acc')); ui.epf = null; save(); closeSheet(); ui.tab = 'accounts'; ui.view = { page: 'account', id: a.id }; render(); done('EPF updated'); },
   vault: (f, form) => {
     const id = form.dataset.id; const amt = parseRupees(f.get('premium') || '');
     const vals = { kind: f.get('kind'), type: f.get('type'), title: f.get('title').trim(), provider: f.get('provider').trim(), policyNo: f.get('policyNo').trim(), cover: f.get('cover').trim(), premium: amt ? Math.abs(amt) : 0, freq: f.get('freq') || '', nextDue: f.get('nextDue') || '', nominee: f.get('nominee').trim(), notes: f.get('notes').trim() };
