@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -735,6 +735,33 @@ function epfCard(a) {
     <p class="tiny muted" style="margin:6px 0 0">${lastReal ? `Passbook up to ${esc(lastReal.wageMonth)}, credited ${fmtDate(lastReal.date, true)}.` : ''}${e.estimated?.length ? ` ${e.estimated.length} later month${e.estimated.length > 1 ? 's' : ''} added as estimates.` : ''} Upload a new passbook any time to replace estimates with real figures.</p></div>`;
 }
 
+// ---------- account details ("i") ----------
+function accountInfo(id) {
+  const a = accById(id); if (!a) return;
+  const t = typeOf(a.type), st = a.statement || {}, L = a.loan, e = a.epf;
+  const row = (k, v) => (v === 0 || v) && v !== '' ? `<tr><td class="muted">${k}</td><td class="r">${v}</td></tr>` : '';
+  const sec = (title, rows) => rows.replace(/\s/g, '') ? `<h2 class="small" style="margin:16px 0 4px;color:var(--gold-ink);letter-spacing:.12em;text-transform:uppercase">${title}</h2><table class="t">${rows}</table>` : '';
+  const txs = D.transactions.filter((x) => x.accountId === a.id);
+  const dates = txs.map((x) => x.date).sort();
+  const lastVal = latestValuation(a.id);
+  const receipts = D.receipts.filter((r) => txs.some((x) => x.id === r.txId)).length;
+  const usedFor = Object.entries(D.settings.payWith || {}).filter(([, v]) => v === a.id).map(([k]) => ({ upi: 'UPI quick entries', card: 'card quick entries', cash: 'cash entries' }[k])).join(', ');
+  const digits = [a.last4, ...(a.smsLast4 || [])].filter(Boolean).map((d) => '••' + d).join(', ');
+  let h = sec('Account', row('Name', esc(a.name)) + row('Type', esc(t.label)) + row('Belongs to', multi() ? esc(memberName(ownerOf(a))) : '') + row('Bank or company', esc(a.institution || st.bank || '')) + row('Number', digits) + row('IFSC', esc(st.ifsc || '')) + row('Holder on statement', esc(st.holder || '')) + row('In net worth', inNetWorth(a) ? 'Yes' : 'No, kept separate'));
+  h += sec('Balance', row(t.side === 'liability' ? 'You owe' : 'Balance', `<b>${inr(Math.abs(balance(a)), 0)}</b>`) + (t.mode === 'ledger' ? row('Opening balance', a.opening ? inr(a.opening.amount, 0) + (a.opening.date ? ' on ' + fmtDate(a.opening.date, true) : '') : '') + row('Balance confirmed', a.balanceSetAt ? fmtDate(a.balanceSetAt, true) : '') : row('Value as on', lastVal ? fmtDate(lastVal.date, true) : '')));
+  if (a.type === 'credit_card') h += sec('Card', row('Card', esc(st.product || '')) + row('Credit limit', st.creditLimit ? inr(st.creditLimit, 0) : '') + row('Available', st.availableLimit != null ? inr(st.availableLimit, 0) : '') + row('Statement date', st.statementDate ? fmtDate(st.statementDate, true) : '') + row('Total due', st.totalDue ? inr(st.totalDue, 0) : '') + row('Minimum due', st.minDue ? inr(st.minDue, 0) : '') + row('Due date', st.dueDate ? fmtDate(st.dueDate, true) + (st.paid ? ' · paid' : '') : '') + row('Card EMIs still to bill', unbilledEmi(a) ? inr(unbilledEmi(a), 0) : ''));
+  if (L) {
+    let left = latestValuation(a.id)?.value || 0, k = 0; const r = mrate(L.rate); while (left > 100 && k++ < 600) { const i = Math.round(left * r); left -= Math.min(L.emi, left + i) - i; }
+    h += sec('Loan', row('EMI', inr(L.emi, 0)) + row('Interest rate', L.rate ? L.rate + '% a year' : 'No-cost') + row('Borrowed', L.borrowed ? inr(L.borrowed, 0) : '') + row('Next EMI', L.nextDue ? fmtDate(L.nextDue, true) : '') + row('EMIs left', k) + row('Paid from', L.paidFrom && accById(L.paidFrom) ? esc(accShort(accById(L.paidFrom))) : ''));
+  }
+  if (e) h += sec('Provident fund', row('Your share', inr(e.employee, 0)) + row('Employer share', inr(e.employer, 0)) + row('Pension (EPS)', inr(e.pension, 0)) + row('Each month', e.monthly ? inr(e.monthly.employee + e.monthly.employer, 0) : '') + row('Interest rate used', e.rate + '%') + row('Passbook up to', e.rows?.length ? esc(e.rows[e.rows.length - 1].wageMonth) : ''));
+  const hs = D.holdings.filter((x) => x.accountId === a.id);
+  if (hs.length) { const val = hs.reduce((s2, x) => s2 + holdValue(x), 0), cost = hs.reduce((s2, x) => s2 + holdCost(x), 0); h += sec('Investments', row('Holdings', hs.length) + row('Invested', inr(cost, 0)) + row('Value now', inr(val, 0)) + row('Gain', `<span class="${val >= cost ? 'in' : 'bad'}">${inrS(val - cost, 0)}</span>`) + row('SIPs a month', a.sips?.length ? inr(a.sips.reduce((s2, x) => s2 + x.amount, 0), 0) : '')); }
+  h += sec('Activity', row('Transactions', txs.length) + row('From', dates.length ? fmtDate(dates[0], true) + ' to ' + fmtDate(dates[dates.length - 1], true) : '') + row('Statements up to', st.periodTo ? fmtDate(st.periodTo, true) : '') + row('Receipts attached', receipts || '') + row('Used for', esc(usedFor)) + row('SMS read for', digits ? digits : ''));
+  openSheet(`<h3>${esc(a.name)}</h3>${h}
+    <div class="row" style="margin-top:16px"><button class="btn ghost" style="flex:1" data-act="openAccount" data-id="${a.id}">Open</button><button class="btn ghost" style="flex:1" data-act="editAccount" data-id="${a.id}">Edit</button></div>`);
+}
+
 function monthStats(ym) {
   let spend = 0, income = 0, uncategorised = 0;
   const byCat = new Map();
@@ -964,9 +991,9 @@ function renderAccounts(m) {
       return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="acards">${groups[g].map((a) => {
         const b = balance(a), emi = unbilledEmi(a), loan = isLoanType(a.type);
         const sub = [multi() ? memberName(ownerOf(a)) : '', a.institution, a.last4 ? '••' + a.last4 : '', a.type === 'credit_card' && a.statement?.dueDate && !a.statement.paid && daysUntil(a.statement.dueDate) >= 0 ? 'due ' + fmtDate(a.statement.dueDate) : '', loan && a.loan ? 'EMI ' + inr(a.loan.emi, 0) : ''].filter(Boolean).join(' · ');
-        return `<button class="acard ${loan ? 'outline' : 'tone-' + acctTone(a)}" data-act="openAccount" data-id="${a.id}">
+        return `<div class="acwrap"><button class="acinfo" data-act="accountInfo" data-id="${a.id}" aria-label="Details for ${esc(a.name)}">i</button><button class="acard ${loan ? 'outline' : 'tone-' + acctTone(a)}" data-act="openAccount" data-id="${a.id}">
           <span class="grow"><span class="n">${esc(a.name)}</span><span class="s">${esc(sub || typeOf(a.type).label)}</span><span class="v num">${inr(b, 0)}${emi ? ` <span class="tiny muted">+ ${inr(emi, 0)} EMI</span>` : ''}</span></span>
-          ${loan ? '' : sparkline(a)}</button>`;
+          ${loan ? '' : sparkline(a)}</button></div>`;
       }).join('')}</div>`;
     }).join('') +
     (D.accounts.some((a) => a.archived) ? `<p class="small muted center">Archived: ${D.accounts.filter((a) => a.archived).map((a) => `<button class="link" data-act="openAccount" data-id="${a.id}">${esc(a.name)}</button>`).join(', ')}</p>` : '');
@@ -976,7 +1003,7 @@ function renderAccount(m, id) {
   const a = accById(id);
   if (!a) { ui.view = null; return render(); }
   const t = typeOf(a.type);
-  setTop(a.name, { back: 'closeView', action: (D.holdings.some((h) => h.accountId === a.id && h.qty != null) ? refreshBtn : '') + `<button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
+  setTop(a.name, { back: 'closeView', action: (D.holdings.some((h) => h.accountId === a.id && h.qty != null) ? refreshBtn : '') + `<button class="acinfo static" data-act="accountInfo" data-id="${a.id}" aria-label="Account details">i</button><button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
   const b = balance(a);
   const txs = D.transactions.filter((x) => x.accountId === a.id).sort((p, q) => q.date.localeCompare(p.date) || (q.time || '').localeCompare(p.time || ''));
   recordPrices();
@@ -2312,6 +2339,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  accountInfo: (d) => accountInfo(d.id),
   openVault: () => { ui.tab = 'vault'; ui.view = null; render(); window.scrollTo(0, 0); },
   vaultOpen: (d) => vaultOpen(d.id),
   vaultEdit: (d) => vaultEdit(d.id),

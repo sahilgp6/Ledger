@@ -163,6 +163,10 @@ input.pp::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:
 input.pp::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;margin-top:-11px;border-radius:14px;background:var(--brand-bg);box-shadow:0 0 0 4px var(--card),0 2px 8px rgba(15,21,18,.25)}
 input.pp::-moz-range-track{height:6px;border-radius:3px;background:var(--line)}input.pp::-moz-range-thumb{width:24px;height:24px;border:0;border-radius:12px;background:var(--brand-bg)}
 .recap{background:var(--brand-bg);color:var(--on-brand)}.recap .big{color:var(--on-brand)}
+.acwrap{position:relative}.acwrap .acard{padding-right:44px}
+.acinfo{position:absolute;top:10px;right:10px;z-index:2;width:30px;height:30px;border-radius:15px;border:1.5px solid currentColor;background:color-mix(in srgb,var(--card) 70%,transparent);color:var(--muted);font:600 .82rem/1 var(--serif);font-style:italic;display:grid;place-items:center;padding:0}
+.acinfo::before{content:"";position:absolute;inset:-7px}
+.acinfo.static{position:relative;top:auto;right:auto;margin-right:10px}
 .swapin{animation:swapin .3s var(--ease) both}
 @keyframes swapin{from{opacity:0;transform:translateY(4px);filter:blur(3px)}to{opacity:1;transform:none;filter:blur(0)}}
 .pop{animation:pop .42s var(--ease) both}
