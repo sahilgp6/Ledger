@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.6.2';
+const APP_VERSION = '0.6.3';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -871,16 +871,23 @@ function applyRule(rule) {
   return n;
 }
 
+// iOS only allows the share sheet straight from a tap, so the encrypted file is prepared first
+// and a second tap shares it.
+let pendingBackup = null;
 async function doBackup() {
-  const b = await vault.exportBackup();
-  const name = `ledger-backup-${todayIso()}.json`;
-  const file = new File([JSON.stringify(b)], name, { type: 'application/json' });
+  openSheet(`<h3>Back up</h3><p class="small muted">Preparing your encrypted backup…</p>`);
   try {
-    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'Ledger backup' }); }
-    else { const u = URL.createObjectURL(file); const a = document.createElement('a'); a.href = u; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(u), 5000); }
-    D.settings.lastBackupAt = new Date().toISOString(); save(); toast('Backup created. Keep it in iCloud Drive or Files.'); render();
-  } catch (e) { if (e.name !== 'AbortError') toast('Backup was not saved.'); }
+    const b = await vault.exportBackup();
+    const name = `ledger-backup-${todayIso()}.json`;
+    pendingBackup = new File([JSON.stringify(b)], name, { type: 'application/json' });
+    const url = URL.createObjectURL(pendingBackup);
+    openSheet(`<h3>Backup ready</h3>
+      <p class="small">${(pendingBackup.size / 1024).toFixed(0)} KB, encrypted. Save it to <b>Files → iCloud Drive</b> so it survives if the phone or app is lost. Restoring needs your recovery passphrase.</p>
+      ${navigator.canShare?.({ files: [pendingBackup] }) ? '<button class="btn wide" data-act="shareBackup">Save to Files…</button><div style="height:10px"></div>' : ''}
+      <a class="btn wide ghost" href="${url}" download="${name}" data-act="backupDownloaded">Download instead</a>`);
+  } catch (e) { console.error(e); openSheet(`<h3>Backup failed</h3><p class="small">${esc(e.message || String(e))}</p><button class="btn wide ghost" data-act="closeSheet">Close</button>`); }
 }
+function markBackedUp() { D.settings.lastBackupAt = new Date().toISOString(); save(); }
 function exportCsv() {
   const rows = [['Date', 'Account', 'Payee', 'Category', 'Amount', 'Notes', 'Bank text']];
   for (const x of [...D.transactions].sort((a, b) => a.date.localeCompare(b.date))) rows.push([x.date, accShort(accById(x.accountId)), x.payee, catName(x.categoryId), (x.amount / 100).toFixed(2), x.notes || '', x.raw || x.description]);
@@ -1368,6 +1375,13 @@ const acts = {
     save(); render();
   },
   backup: doBackup, exportCsv,
+  shareBackup: () => {
+    if (!pendingBackup) return;
+    navigator.share({ files: [pendingBackup], title: 'Ledger backup' })
+      .then(() => { markBackedUp(); closeSheet(); render(); toast('Backup saved'); })
+      .catch((e) => { if (e.name !== 'AbortError') toast('Could not open the share sheet. Use Download instead.', 4000); });
+  },
+  backupDownloaded: () => { markBackedUp(); setTimeout(() => { closeSheet(); render(); }, 800); },
   restorePick: () => { $('#restoreFile').value = ''; $('#restoreFile').click(); },
   manageCats: catsSheet, manageRules: rulesSheet,
   editCat: (d) => {
@@ -1479,7 +1493,8 @@ document.addEventListener('change', (e) => {
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = acts[el.dataset.act]; if (!fn) return;
-  e.preventDefault(); fn(el.dataset, el);
+  if (!(el.tagName === 'A' && el.hasAttribute('download'))) e.preventDefault();
+  fn(el.dataset, el);
 });
 
 const forms = {
