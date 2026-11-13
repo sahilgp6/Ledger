@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -99,7 +99,7 @@ function holdingsCard(a) {
     <div class="split"><div><div class="small muted">Invested</div><div class="mid num">${inr(cost, 0)}</div></div>
     <div><div class="small muted">Profit / loss</div><div class="mid num ${pl >= 0 ? 'in' : 'bad'}">${inrS(pl, 0)} <span class="small">${pct(pl, cost)}</span></div></div></div>
     ${a.sips?.length ? `<p class="small" style="margin:8px 0 0">SIPs: <b>${inr(a.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</b> across ${a.sips.length} fund${a.sips.length > 1 ? 's' : ''}</p>` : ''}
-    ${hs.some((h) => h.type === 'mf' && h.qty != null && h.isin) ? `<p class="small muted" style="margin:8px 0 0">NAVs update automatically each day. ${a.navCheckedAt ? 'Last checked ' + new Date(a.navCheckedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''} <button class="link" data-act="refreshNav" data-id="${a.id}">Refresh now</button></p>` : `<p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p>`}</div>
+    ${hs.some((h) => h.type === 'mf' && h.qty != null) ? `<p class="small muted" style="margin:8px 0 0">NAVs update automatically each day. ${a.navCheckedAt ? 'Last checked ' + new Date(a.navCheckedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''} <button class="link" data-act="refreshNav" data-id="${a.id}">Refresh now</button></p>` : `<p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p>`}</div>
     <div class="list">${hs.map((h) => `<div class="item"><div class="ico">${esc(initials(h.symbol))}</div>
       <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${h.qty != null && h.type === 'mf' ? `${(+h.qty.toFixed(3)).toLocaleString('en-IN')} units × NAV ₹${(h.price / 100).toFixed(4)} (${fmtDate(h.priceDate)})` : h.qty != null ? `${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}` : `${h.folio ? 'Folio ' + esc(h.folio) : ''}${h.xirr != null ? ` · XIRR ${h.xirr}%` : ''}${(a.sips || []).find((x) => x.folio === h.folio) ? ` · SIP ${inr(a.sips.find((x) => x.folio === h.folio).amount, 0)}` : ''}`}</div></div>
       <div style="text-align:right"><div class="a num">${inr(h.value, 0)}</div><div class="tiny num ${h.value >= h.cost ? 'in' : 'bad'}">${inrS(h.value - h.cost, 0)} · ${pct(h.value - h.cost, h.cost)}</div></div></div>`).join('')}</div>`;
@@ -434,11 +434,12 @@ async function draftFromPdf(file, password) {
     const match = D.accounts.find((a) => a.type === 'credit_card' && !a.archived && a.last4 && a.last4 === parsed.statement.cardLast4);
     return { imp: { kind: 'card', fileName: file.name, parsed, accountId: match?.id || '_new', newName: `HDFC ${parsed.statement.product || 'Credit Card'}`, newType: 'credit_card', rows: [] }, pw: opened.pw };
   }
-  if (P.detectCas(text)) {
-    const parsed = P.parseCas(pages);
+  if (P.detectCas(text) || P.detectHoldingsReport(text)) {
+    const isCas = P.detectCas(text);
+    const parsed = isCas ? P.parseCas(pages) : P.parseHoldingsReport(pages);
     const st = parsed.statement;
     const match = D.accounts.find((a) => !a.archived && a.type === 'mutual_fund' && st.pan && (a.mfPan === st.pan || (a.mfKey || '').startsWith(st.pan + '|')));
-    return { imp: { kind: 'cas', fileName: file.name, parsed, accountId: match?.id || '_new', newName: 'Mutual funds', newType: 'mutual_fund', rows: [] }, pw: opened.pw };
+    return { imp: { kind: 'cas', fileName: file.name, parsed, accountId: match?.id || '_new', newName: isCas ? 'Mutual funds' : `Mutual funds${st.holder ? ' · ' + st.holder.split(/\s+/)[0].toLowerCase().replace(/^./, (c) => c.toUpperCase()) : ''}`, newType: 'mutual_fund', rows: [] }, pw: opened.pw };
   }
   if (P.detectMfSummary(text)) {
     const parsed = P.parseMfSummary(pages);
@@ -686,7 +687,7 @@ function commitHoldings(imp, created) {
   if (st.clientId && !acc.brokerId) acc.brokerId = st.clientId;
   const importId = uid();
   if (!acc.holdingsAsOn || (st.asOn || '') >= acc.holdingsAsOn) {
-    const mapH = imp.kind === 'cas' ? (h) => ({ id: uid(), accountId: acc.id, importId, ...h, qty: h.units, price: h.nav * 100, avg: h.units ? h.cost / h.units : 0, priceDate: h.navDate, schemeCode: D.holdings.find((o) => o.isin === h.isin && o.schemeCode)?.schemeCode })
+    const mapH = imp.kind === 'cas' ? (h) => ({ id: uid(), accountId: acc.id, importId, ...h, qty: h.units, price: h.nav * 100, avg: h.units ? h.cost / h.units : 0, priceDate: h.navDate, schemeCode: D.holdings.find((o) => o.schemeCode && ((h.isin && o.isin === h.isin) || o.name === h.name))?.schemeCode })
       : isMf ? (h) => ({ id: uid(), accountId: acc.id, importId, ...h, qty: null, price: null, priceDate: st.asOn })
       : (h) => ({ id: uid(), accountId: acc.id, importId, ...h, avg: h.avg * 100, price: h.price * 100, priceDate: st.asOn });
     D.holdings = D.holdings.filter((h) => h.accountId !== acc.id).concat(imp.parsed.holdings.map(mapH));
@@ -707,7 +708,7 @@ function commitBatch() {
   } catch (e) { save(); toast(e.message, 4000); return; }
   // Name the main person from the first statement that prints a holder name
   const me = D.members.find((x) => x.id === 'me');
-  if (me && me.name === 'Me') { const h = list.map((x) => x.parsed?.statement?.holder).find(Boolean); if (h) me.name = h.split(/\s+/)[0].toLowerCase().replace(/^./, (c) => c.toUpperCase()); }
+  if (me && me.name === 'Me') { const h = list.filter((x) => (x.owner || 'me') === 'me').map((x) => x.parsed?.statement?.holder).find(Boolean); if (h) me.name = h.split(/\s+/)[0].toLowerCase().replace(/^./, (c) => c.toUpperCase()); }
   const tm = matchTransfers();
   save();
   ui.batch = null; ui.imp = null;
@@ -737,14 +738,15 @@ function renderBatch(m) {
     const key = draftKey(imp); const willReuse = !acc && created.has(key); if (!acc) created.add(key);
     const inc = imp.rows.filter((r) => r.include).length, dups = imp.rows.filter((r) => r.dup).length, sms = imp.rows.filter((r) => r.smsMatch).length;
     const st = imp.parsed?.statement;
-    const title = imp.kind === 'cas' ? `Mutual funds · ${st.registrar} CAS` : imp.kind === 'mfsummary' ? `Mutual funds${st.distributor ? ' · ' + st.distributor : ''}` : imp.kind === 'holdings' ? `Zerodha holdings${st.clientId ? ' · ' + st.clientId : ''}` : imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
+    const title = imp.kind === 'cas' ? (imp.parsed.kind === 'hreport' ? `Mutual funds · ${st.holder || ''}` : `Mutual funds · ${st.registrar} CAS`) : imp.kind === 'mfsummary' ? `Mutual funds${st.distributor ? ' · ' + st.distributor : ''}` : imp.kind === 'holdings' ? `Zerodha holdings${st.clientId ? ' · ' + st.clientId : ''}` : imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
     const what = ['holdings', 'mfsummary', 'cas'].includes(imp.kind) ? inr(st.value, 0) : imp.kind === 'card' ? `${inr(st.totalDue, 0)} due ${fmtDate(st.dueDate)}` : imp.kind === 'bankpdf' ? `Balance ${inr(st.closingBalance, 0)}` : `${imp.rows.length} rows`;
     const ok = imp.parsed?.recon?.ok;
     h += `<div class="card"><div class="row"><div class="grow"><div class="t" style="font-weight:600">${esc(title)}</div><div class="small muted">${esc(imp.fileName)}${st?.periodFrom ? ` · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}` : ''}</div></div><div class="num" style="font-weight:600">${what}</div></div>
       <p class="small" style="margin:10px 0 6px">${acc ? `Adds to <b>${esc(accShort(acc))}</b>` : willReuse ? `Adds to the new account above` : `<b>Creates a new account</b>${st?.last4 || st?.cardLast4 ? ' ••' + esc(st.last4 || st.cardLast4) : ''}:`}</p>
+      ${(() => { const hn = st?.holder; if (!hn) return ''; const first = hn.trim().split(/\s+/)[0]; const known = D.members.some((mb) => mb.name.toLowerCase().split(/\s+/)[0] === first.toLowerCase()); return known ? '' : `<p class="small warn" style="margin:0 0 8px">This statement is in the name of ${esc(hn)}. <button class="link" data-act="addHolder" data-name="${esc(first)}" data-i="${i}">Add ${esc(first.charAt(0) + first.slice(1).toLowerCase())} to the household</button></p>`; })()}
       ${!acc && !willReuse && multi() ? `<label class="row small" style="margin:0 0 8px"><span style="flex:none">Belongs to</span><select class="i" data-newowner="${i}" style="min-height:38px;padding:6px 10px">${ownerOptions(imp.owner ??= guessOwner(imp))}</select></label>` : ''}
       ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
-      ${imp.kind === 'cas' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds with units · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches the CAS total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${acc ? 'Replaces the funds in ' + esc(acc.name) + '. ' : ''}Values will update daily from official NAVs.</p>` : imp.kind === 'mfsummary' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span>${st.xirr != null ? ` · XIRR ${st.xirr}%` : ''} ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p>${imp.parsed.sips?.length ? `<p class="tiny muted" style="margin:0 0 8px">SIPs ${inr(imp.parsed.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</p>` : ''}` : imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
+      ${imp.kind === 'cas' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds with units · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${acc ? 'Replaces the funds in ' + esc(acc.name) + '. ' : ''}Values will update daily from official NAVs.</p>` : imp.kind === 'mfsummary' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span>${st.xirr != null ? ` · XIRR ${st.xirr}%` : ''} ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p>${imp.parsed.sips?.length ? `<p class="tiny muted" style="margin:0 0 8px">SIPs ${inr(imp.parsed.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</p>` : ''}` : imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
       <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm earlier entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
       ${(imp.loans || []).map((l, j) => `<label class="row small" style="margin:6px 0"><input type="checkbox" class="chk" data-loan="${i}:${j}" ${l.create ? 'checked' : ''}><span>Payments go to loan account ••${esc(l.no.slice(-4))}. Add it as a home loan?</span></label>
         ${l.create ? `<input class="i num" data-loan-amt="${i}:${j}" inputmode="decimal" placeholder="Outstanding today (₹), optional" value="${esc(l.outstanding)}" style="margin-bottom:6px">` : ''}`).join('')}
@@ -1075,7 +1077,7 @@ const MFAPI = 'https://api.mfapi.in';
 async function getJSON(url) { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) throw new Error(r.status); return r.json(); }
 const dmy = (s) => { const m = String(s).match(/^(\d{2})-(\d{2})-(\d{4})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
 async function findSchemeCode(h) {
-  const ws = h.name.replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 1 && !/^(fund|funds|plan|growth|regular|direct|option|cumulative|the|of|and)$/i.test(w));
+  const ws = h.name.replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 1 && !/^(fund|funds|plan|growth|regular|direct|option|cumulative|the|of|and|reg|dir|gr)$/i.test(w));
   // Search names differ slightly from CAS names ("&", "FoF"), so widen the search until something comes back
   let list = [];
   for (const k of [4, 3, 2]) { list = await getJSON(`${MFAPI}/mf/search?q=${encodeURIComponent(ws.slice(0, k).join(' '))}`).catch(() => []); if (list?.length) break; }
@@ -1085,14 +1087,18 @@ async function findSchemeCode(h) {
     return sc(b) - sc(a);
   }).slice(0, 8);
   for (const c of cands) {
+    if (!h.isin && (/idcw|dividend|bonus/i.test(c.schemeName) || (h.plan === 'Regular' && /direct/i.test(c.schemeName)) || (h.plan === 'Direct' && !/direct/i.test(c.schemeName)))) continue;
     const d = await getJSON(`${MFAPI}/mf/${c.schemeCode}/latest`);
     const m = d.meta || {};
-    if ([m.isin_growth, m.isin_div_reinvestment].includes(h.isin)) return { code: c.schemeCode, latest: d };
+    if (h.isin && [m.isin_growth, m.isin_div_reinvestment].includes(h.isin)) return { code: c.schemeCode, latest: d };
+    // No ISIN on the statement: accept the growth plan whose NAV is within 3% of the statement's NAV
+    const nav = parseFloat(d.data?.[0]?.nav);
+    if (!h.isin && nav > 0 && Math.abs(nav * 100 - h.price) / h.price < 0.03) return { code: c.schemeCode, latest: d };
   }
   return null;
 }
 async function refreshNavs({ force = false } = {}) {
-  const mfs = D.holdings.filter((h) => h.type === 'mf' && h.qty != null && h.isin);
+  const mfs = D.holdings.filter((h) => h.type === 'mf' && h.qty != null && (h.isin || h.name));
   if (!mfs.length || !navigator.onLine) return 0;
   const accs = [...new Set(mfs.map((h) => h.accountId))].map(accById).filter(Boolean);
   if (!force && accs.every((a) => a.navCheckedAt && Date.now() - a.navCheckedAt < 6 * 3600e3)) return 0;
@@ -1505,6 +1511,14 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  addHolder: (d) => {
+    const name = d.name.charAt(0) + d.name.slice(1).toLowerCase();
+    const me = D.members.find((x) => x.id === 'me');
+    let id;
+    if (me && me.name === 'Me') { me.name = name; id = 'me'; } else { id = 'm_' + uid().slice(0, 8); D.members.push({ id, name }); }
+    const imp = ui.batch[+d.i]; imp.owner = id; if (imp.newName && !imp.newName.includes(name)) imp.newName = imp.newName.replace(/ · .*$/, '') + ' · ' + name;
+    save(); render(); toast(`${name} added. This statement will be filed under ${name}.`, 3500);
+  },
   refreshNav: async () => { toast('Checking NAVs…'); const n = await refreshNavs({ force: true }); render(); toast(n ? `${n} NAVs updated` : 'NAVs are already up to date (or the NAV service could not be reached)', 3500); },
   setWho: (d) => { D.settings.who = d.who; save(); render(); },
   memberSheet: (d) => {

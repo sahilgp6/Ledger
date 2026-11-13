@@ -472,3 +472,52 @@ export function parseCas(pages) {
   const reported = tot ? Math.round(parseFloat(tot[2].replace(/,/g, '')) * 100) : null;
   return { kind: 'cas', institution: st.registrar, statement: st, holdings, recon: { ok: reported != null ? Math.abs(reported - st.value) <= 100 : null, reported } };
 }
+
+// ---------- Distributor "Detailed Holdings Report" (units + NAV per scheme) ----------
+export function detectHoldingsReport(text) {
+  return /Detailed Holdings Report/i.test(text) && /SCHEME WISE ALLOCATION/i.test(text);
+}
+export function parseHoldingsReport(pages) {
+  const lines = toLines(pages);
+  const full = lines.map((l) => l.text).join('\n');
+  const st = {};
+  const hp = full.match(/^([A-Z][A-Z .]+?)\s*\(([A-Z]{5}\d{4}[A-Z])\)/m); if (hp) { st.holder = hp[1].trim(); st.pan = hp[2]; }
+  st.distributor = (lines[0]?.text || '').replace(/\s+/g, ' ').trim();
+  const NUM = /^-?[\d,]+(\.\d+)?$/, DATE = /^\d{2}\/\d{2}\/\d{4}$/;
+  const holdings = [];
+  const start = lines.findIndex((l) => /SCHEME WISE ALLOCATION/i.test(l.text));
+  let name = [], last = null;
+  for (let i = start + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (/AMC WISE ALLOCATION/i.test(l.text)) break;
+    if (/^Total\b/.test(l.text)) { name = []; last = null; continue; }
+    if (/Scheme Name|^(Balance|Units|Date|1st|Avg)\b|Detailed Holdings Report|Please read|^\s*[A-Z][A-Z .]+\s*\([A-Z]{5}\d{4}[A-Z]\)\s*$|^[A-Z][A-Z .]+$|^[A-Z]{5}\d{4}[A-Z]$/.test(l.text) && !l.items.some((it) => DATE.test(it.str.trim()))) {
+      if (/^[A-Z][A-Z .]+$/.test(l.text) && l.items[0].x < 60 && last == null && name.length) { /* uppercase scheme words are rare; ignore */ }
+      continue;
+    }
+    const dates = l.items.filter((it) => DATE.test(it.str.trim()));
+    if (dates.length >= 2) {
+      const frag = l.items.filter((it) => it.x < 95).map((it) => it.str).join(' ');
+      const nameStr = [...name, frag].join(' ').replace(/\s+/g, ' ').replace(/-\s+/g, '-').trim();
+      const asset = l.items.find((it) => it.x >= 95 && it.x < 130)?.str.trim() || '';
+      const after = (x) => l.items.filter((it) => it.x > x && NUM.test(it.str.trim())).map((it) => parseFloat(it.str.replace(/,/g, '')));
+      const [units, invested] = after(dates[0].x);
+      const n2 = after(dates[1].x);
+      const [nav, value, , , avgNav, days, gain, absR, xirr] = n2;
+      last = { symbol: nameStr, name: nameStr, asset, type: 'mf', start: dmyToIso(dates[0].str.trim()), navDate: dmyToIso(dates[1].str.trim()), units, nav, avgNav, cost: Math.round(invested * 100), value: Math.round(value * 100), gain: gain != null ? Math.round(gain * 100) : null, xirr: xirr ?? null, folio: '', plan: /\bdir/i.test(nameStr) ? 'Direct' : 'Regular' };
+      holdings.push(last); name = [];
+      continue;
+    }
+    if (l.text.startsWith('(') || (last && /^[A-Z]{0,3}\)?\s*\(Physical\)|^SI\)/.test(l.text))) {
+      if (last) { last.folioText = ((last.folioText || '') + l.text).replace(/\s+/g, ''); const f = last.folioText.match(/\((\d[\d/]*)/); if (f) last.folio = f[1]; }
+      continue;
+    }
+    if (l.items.every((it) => it.x < 95)) { if (last && name.length === 0 && last.folioText && !/\)$/.test(last.folioText)) { last.folioText += l.text; continue; } name.push(l.text); last = null; }
+  }
+  holdings.forEach((h) => delete h.folioText);
+  st.cost = holdings.reduce((t, h) => t + h.cost, 0); st.value = holdings.reduce((t, h) => t + h.value, 0);
+  st.asOn = holdings.map((h) => h.navDate).sort().pop();
+  const tl = lines.find((l, i) => i > start && /^Total\b/.test(l.text));
+  let reported = null; if (tl) { const n = [...new Set(tl.items.filter((it) => NUM.test(it.str.trim())).map((it) => it.str.trim()))].map((s2) => parseFloat(s2.replace(/,/g, ''))); if (n.length >= 2) reported = Math.round(n[1] * 100); }
+  return { kind: 'hreport', institution: st.distributor, statement: st, holdings, recon: { ok: reported != null ? Math.abs(reported - st.value) <= 100 : null, reported } };
+}
