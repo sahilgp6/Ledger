@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -559,8 +559,8 @@ function renderHome(m) {
   m.innerHTML = `<div class="hello"><div class="d">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase()}</div><div class="g">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}${me && me !== 'Me' ? ', ' + esc(me) : ''}</div><div class="s">${summary}</div></div>
   ${whoSwitch()}
   <div class="card"><h2><button class="eye" data-act="toggleMask" aria-pressed="${!!D.settings.masked}" aria-label="${D.settings.masked ? 'Show amounts' : 'Hide amounts'}">Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">${D.settings.masked ? '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.4 4.5-1.1"/>' : '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'}</svg></button></h2>
-    <div class="big num" data-nwval>${inr(nw.net, 0)}</div>
-    ${chartCard('nw')}
+    <div class="big num ${ui.swap ? 'swapin' : ''}" data-nwval>${inr(nw.net, 0)}</div>
+    <div class="${ui.swap ? 'swapin' : ''}">${chartCard('nw')}</div>
     ${mt ? `<p class="small" style="margin:6px 0 0">Stocks today: <b class="num ${mt.chg >= 0 ? 'in' : 'bad'}">${chgTxt(mt.chg, mt.base)}</b></p>` : ''}
     <div class="split" style="margin-top:10px">
       <div><div class="small muted">Assets</div><div class="num">${compact(nw.assets)}</div></div>
@@ -2044,7 +2044,7 @@ const acts = {
     save(); render(); toast(`${name} added. This statement will be filed under ${name}.`, 3500);
   },
   refreshNav: async () => { toast('Checking NAVs…'); const n = await refreshNavs({ force: true }); render(); toast(n ? `${n} NAVs updated` : 'NAVs are already up to date (or the NAV service could not be reached)', 3500); },
-  setWho: (d) => { D.settings.who = d.who; save(); render(); },
+  setWho: (d) => { if (D.settings.who === d.who) return; D.settings.who = d.who; haptic(); ui.draw = true; ui.swap = true; save(); render(); ui.draw = false; ui.swap = false; },
   memberSheet: (d) => {
     const mb = D.members.find((x) => x.id === d.id);
     openSheet(`<h3>${mb ? 'Edit person' : 'Add a person'}</h3><form data-form="member" data-id="${mb?.id || ''}">
