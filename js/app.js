@@ -4,7 +4,7 @@ import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squas
 import { parseSms, smsPayee, splitInbox } from './sms.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.3.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -730,6 +730,7 @@ function renderMore(m) {
   <div class="list">
     <button class="item" data-act="manageCats"><div class="grow">Categories</div><div class="muted">${D.categories.length} ›</div></button>
     <button class="item" data-act="manageRules"><div class="grow">My rules</div><div class="muted">${userRules.length} ›</div></button>
+    <button class="item" data-act="myUpiSheet"><div class="grow">My UPI IDs</div><div class="muted">${(D.settings.myUpi || []).length} ›</div></button>
   </div>
   <div class="day"><span>About</span></div>
   <div class="card small"><p style="margin-top:0"><b>Ledger ${APP_VERSION}</b>. Your data never leaves this phone. It is encrypted with a key unlocked by Face ID or your recovery passphrase. The only network requests are for loading the app itself and, if you turn on Ask Ledger, a one-time download of the AI model from Hugging Face.</p>
@@ -806,8 +807,26 @@ function smsToTx(acc, p, hash) {
   const raw = smsPayee(p);
   const payee = payeeFrom(raw.replace(/^(NEFT|IMPS|RTGS)\s*(Cr|Dr)?-?/i, '')) || raw;
   const t = { accountId: acc.id, date: p.date, amount: p.amount, description: p.merchant || p.channel || 'SMS', payee };
+  if (isMyUpi(p.merchant)) return { id: uid(), ...t, payee: 'Self transfer', time: null, raw: p.text, categoryId: 'self_transfer', notes: '', ref: p.ref, importId: null, hash, source: 'sms', upi: p.merchant };
   const c = categorize(t, D.rules);
-  return { id: uid(), ...t, time: null, raw: p.text, payee: c.payee || payee, categoryId: c.categoryId, notes: '', ref: p.ref, importId: null, hash, source: 'sms' };
+  return { id: uid(), ...t, time: null, raw: p.text, payee: c.payee || payee, categoryId: c.categoryId, notes: '', ref: p.ref, importId: null, hash, source: 'sms', upi: /@/.test(p.merchant) ? p.merchant : undefined };
+}
+const isMyUpi = (h) => !!h && (D.settings.myUpi || []).includes(String(h).toLowerCase());
+// UPI IDs that look like the user's own (start with their first name from a bank statement), not yet confirmed
+function possibleOwnUpi() {
+  const holder = D.accounts.map((a) => a.statement?.holder).find(Boolean);
+  const first = holder ? holder.split(/\s+/)[0].toLowerCase() : null;
+  if (!first || first.length < 3) return [];
+  const asked = new Set([...(D.settings.myUpi || []), ...(D.settings.notMyUpi || [])]);
+  return [...new Set(D.transactions.filter((x) => x.upi && x.upi.toLowerCase().startsWith(first)).map((x) => x.upi.toLowerCase()))].filter((h) => !asked.has(h));
+}
+function markUpi(h, mine) {
+  h = h.toLowerCase();
+  if (mine) {
+    D.settings.myUpi = [...new Set([...(D.settings.myUpi || []), h])];
+    D.transactions.forEach((x) => { if (x.upi?.toLowerCase() === h && !x.catManual) { x.categoryId = 'self_transfer'; x.payee = 'Self transfer'; } });
+  } else D.settings.notMyUpi = [...new Set([...(D.settings.notMyUpi || []), h])];
+  matchTransfers(); save(); render();
 }
 // Adds one parsed SMS. Returns 'added' | 'known' (already covered by a statement row)
 function addSms(acc, p, hash) {
@@ -843,6 +862,7 @@ async function handleInbox(text, source) {
     ${res.attention ? `<p class="warn">${res.attention} need your attention (on the Import tab).</p>` : ''}
     ${res.skipped ? `<p class="small muted">Ignored ${res.skipped}: ${esc(why)}.</p>` : ''}
     ${res.old ? `<p class="small muted">${res.old} were read before and skipped.</p>` : ''}
+    ${possibleOwnUpi().map((h) => `<div class="card" style="background:var(--bg)"><p class="small" style="margin-top:0">Is <b>${esc(h)}</b> your own UPI ID? If yes, money sent to it is a transfer between your accounts, not spending.</p><div class="row"><button class="btn" style="flex:1" data-act="upiMine" data-h="${esc(h)}">Yes, it's mine</button><button class="btn ghost" style="flex:1" data-act="upiNot" data-h="${esc(h)}">No</button></div></div>`).join('')}
     <button class="btn wide" data-act="closeSheet">Done</button>`);
 }
 function inboxItem(it) {
@@ -866,7 +886,7 @@ function assignInbox(id, accId) {
 
 function smsSetupSheet() {
   openSheet(`<h3>Auto-capture bank SMS</h3>
-  <p class="small">A Shortcuts automation saves each HDFC SMS to a text file in iCloud Drive, silently. Ledger reads that file when you tap <b>Read SMS inbox file</b>. Nothing is uploaded anywhere.</p>
+  <p class="small">A Shortcuts automation saves each bank SMS to a text file in iCloud Drive, silently. Ledger reads that file when you tap <b>Read SMS inbox file</b>. Nothing is uploaded anywhere.</p>
   <ol class="small" style="padding-left:18px;line-height:1.5">
     <li>Open <b>Shortcuts</b> → <b>Automation</b> tab → <b>+</b> → <b>Message</b>.</li>
     <li>Set <b>Message Contains</b> to <code>HDFC Bank</code>. Choose <b>Run Immediately</b> and turn off <b>Notify When Run</b>. Tap <b>Next</b>, then <b>New Blank Automation</b>.</li>
@@ -875,7 +895,8 @@ function smsSetupSheet() {
     <li>Tap <b>Done</b>. Next HDFC SMS will create the file.</li>
   </ol>
   <p class="small">In Ledger: Import → <b>Read SMS inbox file</b> → iCloud Drive → Shortcuts → <b>Ledger Inbox.txt</b>. Read it as often as you like; messages already read are skipped, and OTPs, reminders and declined payments are ignored.</p>
-  <p class="small muted">Other banks: add one more automation with that bank's name in step 2. Unfamiliar formats land under "need attention" and Ask Ledger can read them.</p>
+  <p class="small"><b>DNS Bank:</b> make a second automation the same way, with <code>DNS Bank</code> in step 2. Both write to the same file. Any other bank: same again with that bank's name.</p>
+  <p class="small muted">Unfamiliar formats land under "need attention" and Ask Ledger can read them.</p>
   <button class="btn wide" data-act="closeSheet">Got it</button>`);
 }
 
@@ -890,6 +911,15 @@ function matchTransfers() {
     const o = bankOuts.find((b) => !b.transferId && b.amount === -i.amount && daysApart(b.date, i.date) <= 4);
     if (!o) continue;
     const t = uid(); i.transferId = o.transferId = t; i.categoryId = o.categoryId = 'card_payment'; n++;
+  }
+  // Money moved between your own bank/cash accounts
+  const isLedger = (x) => !isCard(x) && typeOf(accById(x.accountId)?.type).mode === 'ledger';
+  const selfish = (x) => !x.transferId && (!x.categoryId || x.categoryId === 'self_transfer');
+  const outs = D.transactions.filter((x) => isLedger(x) && x.amount < 0 && selfish(x));
+  for (const i of D.transactions.filter((x) => isLedger(x) && x.amount > 0 && selfish(x))) {
+    const o = outs.find((b) => !b.transferId && b.accountId !== i.accountId && b.amount === -i.amount && daysApart(b.date, i.date) <= 3 && (b.categoryId === 'self_transfer' || i.categoryId === 'self_transfer'));
+    if (!o) continue;
+    const t = uid(); i.transferId = o.transferId = t; i.categoryId = o.categoryId = 'self_transfer'; n++;
   }
   return n;
 }
@@ -1110,6 +1140,12 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  upiMine: (d, el) => { markUpi(d.h, true); el.closest('.card').remove(); toast('Marked as your own UPI ID'); },
+  upiNot: (d, el) => { markUpi(d.h, false); el.closest('.card').remove(); },
+  myUpiSheet: () => openSheet(`<h3>My UPI IDs</h3><p class="small muted">Money sent to these counts as a transfer between your own accounts.</p>
+    <form data-form="addUpi" class="row" style="margin-bottom:12px"><input class="i" name="h" placeholder="name@bank" autocapitalize="off" required><button class="btn">Add</button></form>
+    ${(D.settings.myUpi || []).map((h, i) => `<div class="item"><div class="grow">${esc(h)}</div><button class="link" data-act="upiDel" data-i="${i}">Remove</button></div>`).join('') || '<p class="small">None yet.</p>'}`),
+  upiDel: (d) => { D.settings.myUpi.splice(+d.i, 1); save(); acts.myUpiSheet(); },
   pwSheet: () => openSheet(`<h3>Saved statement passwords</h3><p class="small muted">Kept inside your encrypted vault. Ledger tries these before asking when you upload a protected PDF.</p>
     ${(D.settings.pdfPasswords || []).length ? `<div class="list">${D.settings.pdfPasswords.map((p, i) => `<div class="item"><div class="grow num">${esc(p.pw.slice(0, 2))}${'•'.repeat(Math.max(3, p.pw.length - 2))}<div class="s">saved ${fmtDate(p.at.slice(0, 10), true)}</div></div><button class="link" data-act="pwDel" data-i="${i}">Delete</button></div>`).join('')}</div>` : '<p>None saved.</p>'}
     <button class="btn wide ghost" data-act="closeSheet">Close</button>`),
@@ -1202,6 +1238,7 @@ const forms = {
   },
   pdfPass: async (f) => { closeSheet(); pendingRemember = !!f.get('remember'); await handlePdf(pendingFile, f.get('pw')); pendingRemember = false; processQueue(); },
   pasteSms: async (f) => { closeSheet(); await handleInbox(f.get('t'), 'paste'); },
+  addUpi: (f) => { markUpi(f.get('h').trim(), true); acts.myUpiSheet(); },
   ask: async (f, form) => { const q = f.get('q'); form.reset(); await ask(q); },
   tx: (f, form) => {
     const amt = parseRupees(f.get('amount')); if (amt == null || amt === 0) return toast('Enter an amount.');
