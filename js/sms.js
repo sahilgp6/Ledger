@@ -2,7 +2,7 @@
 // Returns { ok, amount (paise, signed: negative = money out), last4, isCard, merchant, ref, date, skip }
 
 // Bump when parsing improves: messages skipped by an older version get another look
-export const SMS_PV = 2;
+export const SMS_PV = 3;
 
 const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 const pad = (n) => String(n).padStart(2, '0');
@@ -129,7 +129,21 @@ export function splitInbox(text) {
 }
 
 // A line the "Log to Ledger" Shortcut writes: "250 | Chai with crew | UPI"
+// Dates or times the Shortcut may have written in front of the amount, in any of iOS's formats
+const LEAD_DATE = [
+  /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+(?:Z|\s?[+-]\d{2}:?\d{2})?)?\s*/,
+  /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4},?\s*/,
+  /^\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4},?\s*/,
+  /^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4},?\s*/,
+  /^(?:at\s+)?\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?(?:\s*(?:GMT|IST|UTC))?(?:\s*[+-]\d{2}:?\d{2})?(?=\s|$|\|)\s*/,
+];
+function stripLeadDate(t) {
+  let prev;
+  do { prev = t; for (const re of LEAD_DATE) t = t.replace(re, ''); t = t.replace(/^[|,\s]+/, ''); } while (t !== prev);
+  return t;
+}
 export function parseLog(text) {
+  text = stripLeadDate(String(text).trim());
   let parts = String(text).split(/\s*[|\n]\s*/).map((x) => x.trim()).filter(Boolean);
   // No separators ("250 Chai with crew Credit 5678"): amount first, account words at the end
   if (parts.length === 1) {

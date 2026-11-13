@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -57,6 +57,8 @@ function migrate(d) {
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
   d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= []; d.vault ||= [];
   d.settings.ai ||= { model: null }; d.holdings ||= [];
+  // Older versions read the date in a Shortcut log as the amount (e.g. ₹2,026): drop those so the log is read again
+  if (!d.settings.logFix3) { d.transactions = d.transactions.filter((x) => !(x.source === 'log' && !x.catManual && x.amount % 100 === 0 && Math.abs(x.amount) / 100 >= 1990 && Math.abs(x.amount) / 100 <= 2100)); d.settings.logFix3 = true; }
   if (!d.members?.length) {
     const holder = d.accounts.map((a) => a.statement?.holder).find(Boolean);
     d.members = [{ id: 'me', name: holder ? holder.split(/\s+/)[0].replace(/^./, (c) => c.toUpperCase()).replace(/(?<=^.).*/, (r) => r.toLowerCase()) : 'Me' }];
@@ -583,7 +585,7 @@ const VICON = { Health: 'Health', Life: 'Personal', Accident: 'Health', Licence:
 function vaultIcon(t) { const k = VICON[t] || 'none'; return `<div class="ico tone-${TONE[k] || 'grey'}" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg></div>`; }
 const vhead = (t) => `<h2 class="small" style="margin:14px 0 6px;color:var(--gold-ink);letter-spacing:.12em;text-transform:uppercase">${t}</h2>`;
 function renderVault(m) {
-  setTop('Family vault', { back: 'closeView', action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="vaultEdit">+ Add</button>` });
+  setTop('Vault', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="vaultEdit">+ Add</button>` });
   if (!(D.vault || []).length) { m.innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.3rem;margin-bottom:6px">Your family vault</div><p class="small muted">Insurance policies, claim steps, contacts and documents, encrypted on this phone.</p><button class="btn" data-act="vaultImport">Import a vault file</button><p class="small" style="margin:12px 0 0"><button class="link" data-act="vaultEdit">Or add a policy by hand</button></p></div>`; return; }
   const items = D.vault || [];
   const pol = items.filter((v) => v.kind === 'policy'), docs = items.filter((v) => v.kind === 'doc');
@@ -737,8 +739,8 @@ function render() {
   if (ui.view?.page === 'ask') return renderAsk(m);
   if (ui.view?.page === 'bills') return renderBills(m);
   if (ui.view?.page === 'receipts') return renderReceipts(m);
-  if (ui.view?.page === 'vault') return renderVault(m);
-  ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, more: renderMore }[ui.tab])(m);
+
+  ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, vault: renderVault, more: renderMore }[ui.tab])(m);
   requestAnimationFrame(() => document.querySelectorAll('.whoseg .pill[data-to]').forEach((p2) => { p2.style.transform = `translateX(${p2.dataset.to * 100}%)`; }));
   requestAnimationFrame(() => requestAnimationFrame(() => document.querySelectorAll('.ringarc').forEach((c) => { c.style.strokeDashoffset = c.style.getPropertyValue('--off'); })));
 }
@@ -1455,6 +1457,7 @@ function renderMore(m) {
   <div class="day"><span>Household</span></div>
   <div class="list">${D.members.map((mb) => `<button class="item" data-act="memberSheet" data-id="${mb.id}"><div class="ico">${esc(initials(mb.name))}</div><div class="grow">${esc(mb.name)}<div class="s">${D.accounts.filter((a) => ownerOf(a) === mb.id).length} accounts</div></div><div class="muted">›</div></button>`).join('')}
     <button class="item" data-act="memberSheet"><div class="grow" style="color:var(--brand)">+ Add a person</div></button></div>
+  <div class="list"><button class="item" data-act="tab" data-tab="import"><div class="ico tone-sage" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg></div><div class="grow">Import statements &amp; SMS<div class="s">Bank, card, Zerodha, CAS and SMS inbox</div></div><div class="muted">›</div></button></div>
   <div class="day"><span>Quick add & Shortcut</span></div>
   <div class="list">
     <button class="item" data-act="payWithSheet"><div class="grow">Where quick entries go<div class="s">UPI: ${esc(accShort(payAccount('upi', false)) || 'not set')} · Card: ${esc(accShort(payAccount('card', false)) || 'not set')}</div></div><div class="muted">›</div></button>
@@ -2238,7 +2241,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
-  openVault: () => { ui.view = { page: 'vault' }; render(); window.scrollTo(0, 0); },
+  openVault: () => { ui.tab = 'vault'; ui.view = null; render(); window.scrollTo(0, 0); },
   vaultOpen: (d) => vaultOpen(d.id),
   vaultEdit: (d) => vaultEdit(d.id),
   vaultAttach: async (d) => { const v = D.vault.find((x) => x.id === d.id); const fs = await pickFiles('image/*,application/pdf'); if (!fs.length || !v) return; for (const f of fs) { const rid = await saveReceipt(f, { title: v.title + ' · ' + f.name.replace(/\.\w+$/, ''), categoryId: 'insurance', note: 'Family vault' }); (v.files ||= []).push(rid); } save(); vaultOpen(v.id); done('Attached'); },
@@ -2305,7 +2308,8 @@ const acts = {
   addTx: (d) => txSheet(null, d.acc || ui.view?.id),
   deleteTx: (d) => { if (!confirm('Delete this transaction?')) return; D.transactions = D.transactions.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
   openAccount: (d) => { ui.tab = 'accounts'; ui.view = { page: 'account', id: d.id }; render(); window.scrollTo(0, 0); },
-  addAccount: () => accountSheet(null),
+  addAccount: () => openSheet(`<h3>Add an account</h3><div class="list"><button class="item" data-act="tab" data-tab="import"><div class="grow">Import a statement<div class="s">Ledger sets the account up from it</div></div><div class="muted">›</div></button><button class="item" data-act="addAccountManual"><div class="grow">Add by hand</div><div class="muted">›</div></button></div>`),
+  addAccountManual: () => accountSheet(null),
   editAccount: (d) => accountSheet(accById(d.id)),
   archiveAccount: (d) => { const a = accById(d.id); a.archived = !a.archived; save(); closeSheet(); render(); },
   deleteAccount: (d) => {
