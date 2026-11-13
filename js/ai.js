@@ -70,20 +70,49 @@ export async function remove(id) {
   await l.deleteModelAllInfoInCache(id, appConfig());
 }
 
+// One request at a time: two overlapping requests can trip over each other's JSON grammar
+let chain = Promise.resolve();
+const serial = (fn) => { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; };
+const broken = (e) => /deleted object|GrammarMatcher|BindingError|already deleted/i.test(String(e?.message || e));
+// If WebLLM's grammar state gets stuck ("Cannot pass deleted object ... GrammarMatcher"), restart the model and try again
+async function complete(req) {
+  try { return await engine.chat.completions.create(req); }
+  catch (e) {
+    if (!broken(e)) throw e;
+    const id = engineModel; await unload(); await load(id);
+    return await engine.chat.completions.create(req);
+  }
+}
+const firstJSON = (txt) => { const i = txt.indexOf('{'), j = txt.lastIndexOf('}'); return JSON.parse(i >= 0 && j > i ? txt.slice(i, j + 1) : txt); };
+
 // One JSON answer, constrained by a JSON schema so a small model cannot ramble
-export async function askJSON(system, user, schema, maxTokens = 400) {
-  if (!engine) throw new Error('Model not loaded');
-  const r = await engine.chat.completions.create({
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    temperature: 0, max_tokens: maxTokens,
-    response_format: { type: 'json_object', schema: JSON.stringify(schema) },
+export function askJSON(system, user, schema, maxTokens = 400) {
+  return serial(async () => {
+    if (!engine) throw new Error('Model not loaded');
+    const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+    try {
+      const r = await complete({ messages, temperature: 0, max_tokens: maxTokens, response_format: { type: 'json_object', schema: JSON.stringify(schema) } });
+      return JSON.parse(r.choices?.[0]?.message?.content || '{}');
+    } catch (e) {
+      if (!broken(e)) throw e;
+      // Last resort: no grammar, ask for plain JSON and pick it out of the reply
+      await engine.resetChat?.().catch?.(() => {});
+      const r = await engine.chat.completions.create({ messages: [{ role: 'system', content: system + '\nReply with one JSON object only, no other text. Keys: ' + Object.keys(schema.properties || {}).join(', ') }, messages[1]], temperature: 0, max_tokens: maxTokens });
+      return firstJSON(r.choices?.[0]?.message?.content || '{}');
+    }
   });
-  const txt = r.choices?.[0]?.message?.content || '{}';
-  return JSON.parse(txt);
+}
+// A short written answer (used for advice; the numbers come from the app, the model only explains them)
+export function askText(system, user, maxTokens = 450) {
+  return serial(async () => {
+    if (!engine) throw new Error('Model not loaded');
+    const r = await complete({ messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.3, max_tokens: maxTokens });
+    return (r.choices?.[0]?.message?.content || '').trim();
+  });
 }
 
 // ---------- Prompts ----------
-export const QUERY_INTENTS = ['total_spent', 'total_received', 'list', 'count', 'top_payees', 'top_categories', 'monthly_trend', 'account_balance', 'net_worth', 'unsupported'];
+export const QUERY_INTENTS = ['total_spent', 'total_received', 'list', 'count', 'top_payees', 'top_categories', 'monthly_trend', 'account_balance', 'net_worth', 'advice', 'unsupported'];
 
 export function querySchema(categoryIds) {
   return {
@@ -104,7 +133,7 @@ export function queryPrompt({ today, categories, accounts }) {
   return `You turn questions about personal finances into a search. You never answer the question yourself and never invent numbers.
 Today is ${today}. Currency is Indian rupees. The Indian financial year runs 1 April to 31 March ("this FY" = the one containing today).
 Output JSON with:
-- intent: one of ${QUERY_INTENTS.join(', ')}. Use "unsupported" if the question is not about the user's transactions, accounts or net worth.
+- intent: one of ${QUERY_INTENTS.join(', ')}. Use "advice" when the user asks for tips or a judgement about their money: how to save, cut or optimise spending, budgets, whether they overspend. Use "unsupported" only if the question is not about the user's money at all.
 - payee: merchant or person name words to search for, lowercase, or "" if none. Do not put category words here.
 - category: one category id from the list, or "" if the question names no category.
 - account: words from an account name if the question names an account or card, else "".
@@ -116,6 +145,7 @@ Q: how much did I spend on swiggy since july -> {"intent":"total_spent","payee":
 Q: groceries last month -> {"intent":"total_spent","payee":"","category":"groceries","account":"","from":"<first day of last month>","to":"<last day of last month>"}
 Q: show my amazon orders -> {"intent":"list","payee":"amazon","category":"","account":"","from":"","to":""}
 Q: where does my money go -> {"intent":"top_categories","payee":"","category":"","account":"","from":"","to":""}
+Q: how can I optimise my spends -> {"intent":"advice","payee":"","category":"","account":"","from":"","to":""}
 Q: what's my net worth -> {"intent":"net_worth","payee":"","category":"","account":"","from":"","to":""}`;
 }
 
@@ -145,3 +175,7 @@ export const SMS_SCHEMA = {
   required: ['is_transaction', 'amount', 'direction', 'last4', 'merchant', 'date'],
 };
 export const smsPrompt = (today) => `Extract the transaction from an Indian bank SMS. Today is ${today}. is_transaction is false for OTPs, reminders, declined or upcoming payments. amount in rupees as a number. last4 = last 4 digits of the card or account, or "". merchant = who was paid or who paid, or "". date as YYYY-MM-DD.`;
+
+export const advicePrompt = () => `You are a careful personal finance assistant for someone in India. You get a summary of their real spending, worked out by their app.
+Give 3 to 5 short, specific suggestions to spend better, each one line starting with "- ". Base every suggestion on the numbers given and quote them; never invent figures, merchants or interest rates.
+Prefer: categories that grew, frequent small spends that add up, subscriptions, interest and card fees that can be avoided, and the savings rate. No generic advice, no product recommendations, no disclaimers.`;

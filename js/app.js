@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox, SMS_PV } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.1';
+const APP_VERSION = '0.9.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1522,7 +1522,7 @@ function renderAsk(m) {
   setTop('Ask Ledger', { back: 'closeView' });
   const model = D.settings.ai?.model;
   if (!model) { m.innerHTML = `<div class="card"><p>Ask Ledger needs the on-device model. It downloads once and then works offline.</p><button class="btn wide" data-act="aiSetup">Set up</button></div>`; return; }
-  const ex = ['How much did I spend on Swiggy since July?', 'Top categories last month', 'Show my Amazon orders', 'Spending by month this FY', 'What is my net worth?'];
+  const ex = ['How much did I spend on Swiggy since July?', 'How can I spend less?', 'Top categories last month', 'Show my Amazon orders', 'Spending by month this FY', 'What is my net worth?'];
   m.innerHTML = `<form data-form="ask" class="row" style="margin-bottom:10px"><input class="i" name="q" placeholder="Ask about your money" autocomplete="off" enterkeyhint="send" required><button class="btn">Ask</button></form>
   <div class="chips">${ex.map((q) => `<button class="chip" data-act="askEx" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
   <div class="small muted" id="aiStatus" style="margin:0 4px 10px">${esc(ui.aiStatus)}</div>
@@ -1563,7 +1563,7 @@ function runQuery(plan) {
   const group = (xs, keyFn) => { const mm = new Map(); for (const x of xs) { const k = keyFn(x); mm.set(k, (mm.get(k) || 0) - x.amount); } return [...mm.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]); };
   let head = '', body = '';
   switch (plan.intent) {
-    case 'unsupported': return `<p>I can only answer questions about your transactions, accounts and net worth.</p>`;
+    case 'unsupported': return `<p>I can only answer questions about your money: transactions, accounts, net worth, or tips on spending.</p>`;
     case 'net_worth': { const nw = netWorth(); return `<div class="mid num">${inr(nw.net, 0)}</div><p class="small muted">Assets ${inr(nw.assets, 0)} · liabilities ${inr(nw.liabilities, 0)}</p>`; }
     case 'account_balance': { const as = (accs.length ? accs : D.accounts.filter((a) => !a.archived)); return rows(as.map((a) => [accShort(a), balance(a)])); }
     case 'total_received': head = `<div class="mid num in">${inr(received, 0)}</div><p class="small">received, ${txs.filter((x) => x.amount > 0).length} transactions</p>`; body = list(txs.filter((x) => x.amount > 0)); break;
@@ -1576,6 +1576,36 @@ function runQuery(plan) {
   if (!txs.length) return `<p>No matching transactions.</p><p class="small">${chips}</p><p class="tiny muted">If that looks wrong, try naming the merchant or category differently.</p>`;
   return head + `<p class="small" style="margin:6px 0 0">${chips}</p>` + body;
 }
+// Spending summary the AI turns into advice: last 3 full months against the 3 before
+function spendFacts() {
+  const ym = ymOf(todayIso());
+  const last3 = [-3, -2, -1].map((k) => addMonths(ym, k)), prev3 = [-6, -5, -4].map((k) => addMonths(ym, k));
+  const st = (ms) => ms.map((m2) => monthStats(m2));
+  const a = st(last3), b = st(prev3);
+  const spend = a.reduce((t, x) => t + x.spend, 0), income = a.reduce((t, x) => t + x.income, 0);
+  if (!spend) return null;
+  const sumCats = (xs) => { const mm = new Map(); for (const x of xs) for (const [k, v] of x.byCat) mm.set(k, (mm.get(k) || 0) + v); return mm; };
+  const ca = sumCats(a), cb = sumCats(b), prevHas = b.some((x) => x.spend);
+  const cats = [...ca.entries()].sort((p, q) => q[1] - p[1]).slice(0, 8);
+  const vis = new Set(D.accounts.filter((x) => accVisible(x)).map((x) => x.id));
+  const tx = D.transactions.filter((x) => vis.has(x.accountId) && x.amount < 0 && last3.includes(ymOf(x.date)) && catById(x.categoryId)?.kind !== 'transfer' && catById(x.categoryId)?.kind !== 'income');
+  const byPayee = new Map(); for (const x of tx) { const k = x.payee || x.description; const e = byPayee.get(k) || { n: 0, v: 0, months: new Set() }; e.n++; e.v -= x.amount; e.months.add(ymOf(x.date)); byPayee.set(k, e); }
+  const payees = [...byPayee.entries()].sort((p, q) => q[1].v - p[1].v).slice(0, 8);
+  const small = tx.filter((x) => -x.amount < 50000); const smallV = small.reduce((t, x) => t - x.amount, 0);
+  const recurring = [...byPayee.entries()].filter(([, e]) => e.months.size === 3 && e.n <= 4).sort((p, q) => q[1].v - p[1].v).slice(0, 6);
+  const r0 = (v) => inr(Math.round(v / 100) * 100, 0);
+  const lines = [
+    `Period: ${monthLabel(last3[0])} to ${monthLabel(last3[2])}. Monthly average spending ${r0(spend / 3)}${income ? `, income ${r0(income / 3)}, savings rate ${Math.round((1 - spend / income) * 100)}%` : ''}.`,
+    'Top categories (monthly average' + (prevHas ? ', change vs the 3 months before' : '') + '):',
+    ...cats.map(([k, v]) => `- ${k === '_none' ? 'Uncategorised' : catName(k)}: ${r0(v / 3)}${prevHas && cb.get(k) ? ` (${v >= cb.get(k) ? '+' : ''}${Math.round((v / cb.get(k) - 1) * 100)}%)` : prevHas ? ' (new)' : ''}`),
+    'Top payees over the 3 months:', ...payees.map(([k, e]) => `- ${k}: ${r0(e.v)} in ${e.n} payments`),
+    `Payments under ₹500: ${small.length}, adding up to ${r0(smallV)}.`,
+    recurring.length ? 'Paid every month (possible subscriptions or bills): ' + recurring.map(([k, e]) => `${k} ${r0(e.v / 3)}/month`).join('; ') : '',
+    ca.get('interest_paid') ? `Interest paid: ${r0(ca.get('interest_paid'))}.` : '', ca.get('fees') ? `Bank charges and fees: ${r0(ca.get('fees'))}.` : '',
+  ].filter(Boolean);
+  const html = `<details style="margin-top:10px"><summary class="small">The figures used</summary><p class="small" style="white-space:pre-wrap">${esc(lines.join('\n'))}</p></details>`;
+  return { text: lines.join('\n'), html };
+}
 async function ask(q) {
   q = (q || '').trim(); if (!q) return;
   try {
@@ -1583,7 +1613,15 @@ async function ask(q) {
     setAiStatus('Thinking…');
     const cats = D.categories.map((c) => ({ id: c.id, name: c.name }));
     const plan = await AI.askJSON(AI.queryPrompt({ today: todayIso(), categories: cats, accounts: D.accounts.map((a) => accShort(a)) }), q, AI.querySchema(cats.map((c) => c.id)), 160);
-    ui.ask.unshift({ q, html: runQuery(plan), plan });
+    if (plan.intent === 'advice') {
+      const f = spendFacts(); if (!f) { ui.ask.unshift({ q, html: '<p>There is not enough spending history yet. Import a statement or two first.</p>', plan }); }
+      else {
+        setAiStatus('Looking at your spending…');
+        const txt = await AI.askText(AI.advicePrompt(), f.text);
+        const tips = txt.split(/\n+/).map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter((l) => l.length > 3);
+        ui.ask.unshift({ q, plan, html: `<ul style="padding-left:18px;margin:0">${tips.map((t2) => `<li style="margin-bottom:6px">${esc(t2.replace(/\*\*/g, ''))}</li>`).join('')}</ul>${f.html}<p class="tiny muted">Suggestions are written by the on-device AI from the figures above, which Ledger calculated.</p>` });
+      }
+    } else ui.ask.unshift({ q, html: runQuery(plan), plan });
   } catch (e) { console.error(e); ui.ask.unshift({ q, html: `<p class="bad">${esc(e?.message || String(e) || 'Something went wrong')}</p>${/memory|device lost|out of/i.test(String(e?.message)) ? '<p class="small">The phone ran out of memory for this model. Try the smaller Llama model in More → Ask Ledger.</p>' : ''}` }); }
   setAiStatus(''); render();
 }
@@ -2110,4 +2148,4 @@ async function boot() {
 boot();
 
 // Exposed for automated tests only
-window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, handleInbox, matchTransfers, AI };
+window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, spendFacts, handleInbox, matchTransfers, AI };
