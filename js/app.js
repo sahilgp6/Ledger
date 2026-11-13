@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.8';
+const APP_VERSION = '1.4.9';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -706,7 +706,10 @@ function aiSummary(period = 'last') {
   L.push('Below is a summary of my personal finances in India, exported from my budgeting app. Amounts are in Indian rupees.',
     'Please:', '1. Tell me where most of my money went, and anything unusual.', `2. Compare it with the previous period and explain the biggest changes.`,
     '3. Give me 3 to 5 specific, practical ways to spend less or save more, with rough rupee amounts.', '4. Point out subscriptions or recurring payments worth reviewing.',
-    '5. Flag any risks: overspending, interest, fees, a low savings rate.', 'Keep it concise and practical.', '');
+    '5. Flag any risks: overspending, interest, fees, a low savings rate.');
+  const tgt = D.settings.saveTarget || 0, style = (D.settings.aiStyle || '').trim();
+  if (tgt) L.push(`6. My goal is to save ${r(tgt)} every month. Tell me plainly whether I am on track, and exactly what to cut to close any gap.`);
+  L.push(style ? `Style: ${style}` : 'Keep it concise and practical.', '');
   const hasPrev = b.spend > 0;
   const withData = months.filter((m2) => D.transactions.some((x) => x.date.startsWith(m2) && vis.has(x.accountId)));
   L.push(`PERIOD: ${label}`, hasPrev ? `COMPARED WITH: ${plabel}` : 'COMPARED WITH: no earlier data in the app', `WHOSE MONEY: ${whoName}`);
@@ -715,6 +718,10 @@ function aiSummary(period = 'last') {
   L.push('TOTALS', `- Spending: ${r(a.spend)}${hasPrev ? ` (previous ${r(b.spend)}, ${pct(a.spend, b.spend)})` : ''}`);
   if (a.income) L.push(`- Income: ${r(a.income)}`, `- Saved: ${r(a.income - a.spend)} (${Math.round((1 - a.spend / a.income) * 100)}% of income)`);
   if (withData.length > 1) L.push(`- Monthly average spending: ${r(a.spend / withData.length)}`);
+  if (tgt && a.income) {
+    const mo = Math.max(1, withData.length || 1), saved = (a.income - a.spend) / mo;
+    L.push(`- Savings goal: ${r(tgt)} a month. ${period === 'this' ? 'So far this month' : 'Actual'}: ${r(saved)} a month, ${saved >= tgt ? 'ahead by ' + r(saved - tgt) : 'short by ' + r(tgt - saved)}`);
+  } else if (tgt) L.push(`- Savings goal: ${r(tgt)} a month (no income recorded in this period, so progress can't be worked out)`);
   L.push('', hasPrev ? 'SPENDING BY CATEGORY (previous period in brackets)' : 'SPENDING BY CATEGORY');
   for (const [k, v] of [...a.cats.entries()].sort((x, y) => y[1] - x[1]).slice(0, 15)) { const pv = b.cats.get(k) || 0; L.push(`- ${k === '_none' ? 'Uncategorised' : catName(k)}: ${r(v)} (${hasPrev ? (pv ? r(pv) + ', ' + pct(v, pv) : 'none before') + ', ' : ''}${Math.round(v / Math.max(1, a.spend) * 100)}% of spending)`); }
   L.push('', 'TOP PAYEES');
@@ -739,6 +746,8 @@ function summarySheet(period) {
   period ||= ui.sumPeriod || (+todayIso().slice(8) <= 7 ? 'last' : 'this'); ui.sumPeriod = period;
   const text = aiSummary(period); ui.sumText = text;
   openSheet(`<h3>Summary for AI</h3><p class="small muted" style="margin-top:-6px">Copy this and paste it into Claude, ChatGPT or any AI app for a report and savings ideas. No account numbers or balances by account are included.</p>
+    <div class="split" style="margin-bottom:10px"><label class="f"><span>Save each month (₹)</span><input class="i" id="sumTarget" inputmode="decimal" placeholder="e.g. 30000" value="${D.settings.saveTarget ? D.settings.saveTarget / 100 : ''}"></label>
+    <label class="f"><span>How the AI should talk</span><input class="i" id="sumStyle" placeholder="e.g. Be blunt" value="${esc(D.settings.aiStyle || '')}"></label></div>
     <div class="seg" role="group" aria-label="Period" style="margin-bottom:10px;grid-template-columns:repeat(4,minmax(0,1fr));font-size:.8rem">${SUM_PERIODS.map(([k, t]) => `<button class="${k === period ? 'on' : ''}" data-act="sumPeriod" data-p="${k}" aria-pressed="${k === period}">${t}</button>`).join('')}</div>
     <textarea class="i" readonly style="min-height:300px;font-size:.8rem;line-height:1.45;font-family:ui-monospace,Menlo,monospace">${esc(text)}</textarea>
     <div class="row" style="margin-top:10px"><button class="btn" style="flex:1" data-act="sumCopy">Copy</button>${navigator.share ? '<button class="btn ghost" style="flex:1" data-act="sumShare">Share…</button>' : ''}</div>`);
@@ -2432,6 +2441,7 @@ document.addEventListener('visibilitychange', () => {
 // ---------- events ----------
 const acts = {
   summarySheet: () => summarySheet(),
+  sumRefresh: () => { const top = $('#sheet').scrollTop; summarySheet(ui.sumPeriod); $('#sheet').scrollTop = top; },
   sumPeriod: (d) => { const top = $('#sheet').scrollTop; summarySheet(d.p); $('#sheet').scrollTop = top; },
   sumCopy: async () => { try { await navigator.clipboard.writeText(ui.sumText); done('Copied'); } catch { const t = $('#sheet textarea'); t.removeAttribute('readonly'); t.select(); document.execCommand('copy'); t.setAttribute('readonly', ''); done('Copied'); } },
   sumShare: async () => { try { await navigator.share({ text: ui.sumText }); } catch { /* cancelled */ } },
@@ -3011,3 +3021,9 @@ boot();
 
 // Exposed for automated tests only
 window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recapCard, spendFacts, ask, builtinTips, detectSubs, processBills, billIcs, handleInbox, matchTransfers, AI };
+
+// Savings goal and AI style on the Summary sheet: saved as you leave each box
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); acts.sumRefresh(); }
+  else if (e.target.id === 'sumStyle') { D.settings.aiStyle = e.target.value.trim().slice(0, 300); save(); acts.sumRefresh(); }
+});
