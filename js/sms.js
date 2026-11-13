@@ -133,5 +133,6 @@ export function parseLog(text) {
   if (!(amt > 0)) return null;
   const how = (parts[2] || '').toLowerCase();
   const via = /card|credit/.test(how) ? 'card' : /cash/.test(how) ? 'cash' : /upi|gpay|phonepe|paytm|bank|hdfc|dns/.test(how) ? 'upi' : (parts[2] ? 'upi' : 'upi');
-  return { amount: Math.round(amt * 100), what: parts[1] || 'Expense', via, income: /^(in|received|income|got)/.test(how) };
+  const last4 = (how.match(/\b(\d{4})\b/) || [])[1] || null;
+  return { amount: Math.round(amt * 100), what: parts[1] || 'Expense', via, last4, income: /^(in|received|income|got)/.test(how) };
 }

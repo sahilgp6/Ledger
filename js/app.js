@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -565,7 +565,7 @@ function shortcutHelp() {
     <li>Add <b>Set Variable</b>. Name: <code>Amount</code>, value: <b>Provided Input</b>.</li>
     <li>Add <b>Ask for Input</b>. Type: <b>Text</b>. Prompt: <code>What for?</code></li>
     <li>Add <b>Set Variable</b>. Name: <code>What</code>, value: <b>Provided Input</b>.</li>
-    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>UPI</code>, <code>Card</code>, <code>Cash</code>. Under each item add a <b>Text</b> action with that same word.</li>
+    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>Savings 8381</code>, <code>Card 9550</code>, <code>Cash</code>. Under each item add a <b>Text</b> action with that same text. (Use it for UPI too: UPI from your card is Card 9550.)</li>
     <li>After <b>End Menu</b>, add <b>Set Variable</b>. Name: <code>How</code>, value: <b>Menu Result</b>.</li>
     <li>Add <b>Text</b>. Type <code>===LOG===</code> and a space, insert <b>Current Date</b> (tap it → Date Format: <b>ISO 8601</b>, include time). Press return, then insert <b>Amount</b>, type <code> | </code>, insert <b>What</b>, type <code> | </code>, insert <b>How</b>.</li>
     <li>Add <b>Append to Text File</b>: text = that <b>Text</b>, file <code>Ledger Inbox.txt</code> in the <b>Shortcuts</b> folder, <b>Make New Line</b> on. (The same file your SMS automations use.)</li>
@@ -1509,7 +1509,9 @@ function guessCategory(payee, amount) {
 }
 // One "Log to Ledger" entry. If the bank SMS for it is already in, keep that and add your words to it.
 function addLog(lg, receivedAt, hash) {
-  const acc = payAccount(lg.via); if (!acc) return 'skipped';
+  // "Card 9550" or "UPI 8381": the account with those last 4 digits wins
+  const byDigits = lg.last4 && D.accounts.find((a) => !a.archived && (a.last4 === lg.last4 || (a.smsLast4 || []).includes(lg.last4)));
+  const acc = byDigits || payAccount(lg.via); if (!acc) return 'skipped';
   const date = receivedAt ? isoOf(new Date(receivedAt)) : todayIso();
   const amount = lg.income ? lg.amount : -lg.amount;
   const twin = D.transactions.find((x) => x.accountId === acc.id && x.amount === amount && daysApart(x.date, date) <= 2 && x.source !== 'log' && !x.logged);
