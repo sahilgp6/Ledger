@@ -1,11 +1,11 @@
 import { Vault, passkeySupport, requestPersistence } from './store.js';
 import * as P from './parsers.js';
 import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squash } from './rules.js';
-import { parseSms, smsPayee, splitInbox } from './sms.js';
+import { parseSms, smsPayee, splitInbox, SMS_PV } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.0';
+const APP_VERSION = '0.9.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -101,7 +101,7 @@ function holdingsCard(a) {
   return `<div class="card"><h2>Holdings · ${hs.length}</h2>
     <div class="split"><div><div class="small muted">Invested</div><div class="mid num">${inr(cost, 0)}</div></div>
     <div><div class="small muted">Profit / loss</div><div class="mid num ${pl >= 0 ? 'in' : 'bad'}">${inrS(pl, 0)} <span class="small">${pct(pl, cost)}</span></div></div></div>
-    ${live.length ? `<p class="small" style="margin:8px 0 0">Today: <b class="${dayChg >= 0 ? 'in' : 'bad'}">${inrS(dayChg, 0)} (${dayBase ? (dayChg / dayBase * 100).toFixed(2) : '0.00'}%)</b></p>` : ''}
+    ${live.length ? `<p class="small" style="margin:8px 0 0">Today: <b class="num ${dayChg >= 0 ? 'in' : 'bad'}">${chgTxt(dayChg, dayBase)}</b></p>` : ''}
     ${hs.some((h) => h.type === 'stock' || h.type === 'etf') && !D.settings.priceRelay ? `<p class="small" style="margin:8px 0 0"><button class="link" data-act="stocksSheet">Turn on live stock prices</button></p>` : ''}
     ${a.sips?.length ? `<p class="small" style="margin:8px 0 0">SIPs: <b>${inr(a.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</b> across ${a.sips.length} fund${a.sips.length > 1 ? 's' : ''}</p>` : ''}
     ${hs.some((h) => h.type !== 'mf' && h.priceAt) ? `<p class="small muted" style="margin:8px 0 0">${D.settings.priceRelay ? 'Live prices' : 'Prices about 15 minutes delayed'} · as of ${new Date(hs.filter((h) => h.priceAt).map((h) => h.priceAt).sort().pop()).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}. Tap 🔄 to update.</p>` : hs.some((h) => h.type === 'mf' && h.qty != null) ? `<p class="small muted" style="margin:8px 0 0">NAVs update automatically each day. ${a.navCheckedAt ? 'Last checked ' + new Date(a.navCheckedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''} <button class="link" data-act="refreshNav" data-id="${a.id}">Refresh now</button></p>` : `<p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p>`}</div>
@@ -147,6 +147,153 @@ function netWorth(who = D.settings.who) {
     if (b >= 0 && typeOf(a.type).side === 'asset') assets += b; else liabilities += b;
   }
   return { assets, liabilities, net: assets + liabilities };
+}
+
+// ---------- history & charts ----------
+// Net worth on past days is rebuilt from your data: bank and card balances by walking transactions back,
+// loans and other values from their dated entries. Market value of holdings can't be rebuilt, so Ledger
+// keeps one figure per holdings account per day (and points through today, for the 1D chart) on every refresh.
+const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const isoAdd = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return isoOf(d); };
+const holdAccs = () => D.accounts.filter((a) => !a.archived && D.holdings.some((h) => h.accountId === a.id));
+function recordPrices() {
+  if (!D) return;
+  const today = todayIso(), now = Date.now();
+  D.priceHist ||= {};
+  const row = {};
+  for (const a of holdAccs()) row[a.id] = balance(a);
+  if (!Object.keys(row).length) return;
+  D.priceHist[today] = row;
+  const days = Object.keys(D.priceHist).sort();
+  while (days.length > 1200) delete D.priceHist[days.shift()];
+  if (D.intraday?.date !== today) D.intraday = { date: today, pts: [] };
+  const last = D.intraday.pts[D.intraday.pts.length - 1];
+  const same = last && Object.keys(row).every((k) => last[1][k] === row[k]);
+  if (!last || (!same && now - last[0] > 30e3)) D.intraday.pts.push([now, row]);
+  else if (!same) last[1] = row; // several refreshes within 30s: keep the newest
+  if (D.intraday.pts.length > 400) D.intraday.pts.splice(1, D.intraday.pts.length - 400);
+}
+// Value of a holdings account at the end of a past day
+function holdValueOn(a, date) {
+  const days = Object.keys(D.priceHist || {}).filter((d) => d <= date && D.priceHist[d][a.id] != null).sort();
+  if (days.length) return D.priceHist[days[days.length - 1]][a.id];
+  const v = D.valuations.filter((x) => x.accountId === a.id && x.date <= date).sort((p, q) => p.date.localeCompare(q.date) || p.at - q.at).pop();
+  if (v) return v.value;
+  // Nothing recorded that far back: yesterday's close where we have it, otherwise today's value
+  return D.holdings.filter((h) => h.accountId === a.id).reduce((t, h) => t + (h.qty != null && h.prevClose && h.type !== 'mf' ? Math.round(h.qty * h.prevClose) : holdValue(h)), 0);
+}
+function valueOn(a, date) {
+  const t = typeOf(a.type);
+  if (D.holdings.some((h) => h.accountId === a.id)) return holdValueOn(a, date);
+  const vs = D.valuations.filter((x) => x.accountId === a.id).sort((p, q) => p.date.localeCompare(q.date) || p.at - q.at);
+  const v = vs.filter((x) => x.date <= date).pop() || vs[0];
+  const val = v?.value || 0;
+  return t.side === 'liability' ? -val : val;
+}
+// Daily series of net worth (or of one account) for the given dates, oldest first
+function seriesFor(dates, { who = D.settings.who, accId = null } = {}) {
+  const today = todayIso();
+  const accs = D.accounts.filter((a) => (accId ? a.id === accId : !a.archived && shareOf(a, who) > 0));
+  const sh = (a) => (accId ? 1 : shareOf(a, who));
+  const ledger = accs.filter((a) => typeOf(a.type).mode === 'ledger');
+  const other = accs.filter((a) => typeOf(a.type).mode !== 'ledger');
+  const lshare = new Map(ledger.map((a) => [a.id, sh(a)]));
+  let run = ledger.reduce((t, a) => t + (balance(a) - unbilledEmi(a)) * sh(a), 0);
+  const byDay = new Map();
+  for (const x of D.transactions) if (lshare.has(x.accountId)) byDay.set(x.date, (byDay.get(x.date) || 0) + x.amount * lshare.get(x.accountId));
+  for (const [d, v] of byDay) if (d > today) run -= v;
+  const lv = new Map();
+  let cur = today;
+  const first = dates[0];
+  while (cur >= first) { lv.set(cur, run); run -= byDay.get(cur) || 0; cur = isoAdd(cur, -1); }
+  return dates.map((d) => {
+    let v = lv.get(d) ?? 0;
+    for (const a of other) v += (d >= today ? balance(a) - unbilledEmi(a) : valueOn(a, d)) * sh(a);
+    return Math.round(v);
+  });
+}
+const RANGES = [['1D', 1], ['1W', 7], ['1M', 30], ['3M', 91], ['1Y', 365], ['All', 0]];
+function chartData(range, opts = {}) {
+  const today = todayIso();
+  if (range === '1D') {
+    const base = seriesFor([isoAdd(today, -1)], opts)[0];
+    const now = seriesFor([today], opts)[0];
+    const accs = new Set(holdAccs().filter((a) => (opts.accId ? a.id === opts.accId : shareOf(a, opts.who ?? D.settings.who) > 0)).map((a) => a.id));
+    const hNow = holdAccs().reduce((t, a) => t + (accs.has(a.id) ? balance(a) * (opts.accId ? 1 : shareOf(a, opts.who ?? D.settings.who)) : 0), 0);
+    const pts = (D.intraday?.date === today ? D.intraday.pts : []).map(([t, row]) => {
+      const h = Object.entries(row).reduce((s2, [id, v]) => s2 + (accs.has(id) ? v * (opts.accId ? 1 : shareOf(accById(id) || {}, opts.who ?? D.settings.who)) : 0), 0);
+      return { t, v: Math.round(now - hNow + h) };
+    });
+    const open = new Date(today + 'T09:15:00').getTime();
+    const out = [{ t: Math.min(open, pts[0]?.t ?? open), v: base, label: 'Yesterday' }, ...pts];
+    if (!pts.length || Date.now() - pts[pts.length - 1].t > 60e3) out.push({ t: Date.now(), v: now });
+    return out.map((p) => ({ ...p, label: p.label || new Date(p.t).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }) }));
+  }
+  let days = RANGES.find((r) => r[0] === range)?.[1] ?? 30;
+  if (!days) {
+    const firstTx = D.transactions.reduce((m2, x) => (x.date < m2 ? x.date : m2), today);
+    const firstVal = D.valuations.reduce((m2, x) => (x.date < m2 ? x.date : m2), today);
+    days = Math.max(30, Math.round((new Date(today) - new Date(firstTx < firstVal ? firstTx : firstVal)) / 864e5) + 1);
+  }
+  const step = days > 400 ? 7 : 1;
+  const dates = [];
+  for (let i = days; i > 0; i -= step) dates.push(isoAdd(today, -i));
+  dates.push(today);
+  return seriesFor(dates, opts).map((v, i) => ({ v, label: fmtDate(dates[i], days > 300) }));
+}
+const pctTxt = (chg, base) => (base ? `${chg >= 0 ? '+' : '−'}${Math.abs(chg / Math.abs(base) * 100).toFixed(2)}%` : '');
+const chgTxt = (chg, base) => `${chg >= 0 ? '+' : '−'}${inr(Math.abs(chg), 0)}${base ? ` (${pctTxt(chg, base)})` : ''}`;
+const RANGE_WORD = { '1D': 'today', '1W': 'past week', '1M': 'past month', '3M': 'past 3 months', '1Y': 'past year', All: 'all time' };
+// A line chart with range chips, change in green/red, and touch to read any point
+function chartCard(key, opts = {}) {
+  const range = (D.settings.chartRange ||= {})[key] || '1M';
+  const pts = chartData(range, opts);
+  const first = pts[0].v, last = pts[pts.length - 1].v, chg = last - first, up = chg >= 0;
+  const W = 340, H = 120, pad = 6;
+  const vs = pts.map((p) => p.v);
+  let lo = Math.min(...vs), hi = Math.max(...vs);
+  if (hi === lo) { hi += 100; lo -= 100; }
+  const xOf = (i) => (pts.length === 1 ? W : (i / (pts.length - 1)) * W);
+  const yOf = (v) => pad + (1 - (v - lo) / (hi - lo)) * (H - 2 * pad);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${xOf(i).toFixed(1)},${yOf(p.v).toFixed(1)}`).join('');
+  const col = up ? 'var(--in)' : 'var(--bad)';
+  ui.charts ||= {}; ui.charts[key] = { pts, first };
+  return `<div class="chart" data-chart="${key}">
+    <div class="chg num ${up ? 'in' : 'bad'}" data-chg>${chgTxt(chg, first)} <span class="muted small">${RANGE_WORD[range]}</span></div>
+    <div class="cwrap"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Chart, ${RANGE_WORD[range]}">
+      <defs><linearGradient id="g-${key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".22"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      <line x1="0" x2="${W}" y1="${yOf(first).toFixed(1)}" y2="${yOf(first).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
+      <path d="${line}L${W},${H}L0,${H}Z" fill="url(#g-${key})"/>
+      <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    </svg><i class="cur" hidden></i></div>
+    <div class="row tiny muted" style="justify-content:space-between;margin-top:2px"><span>${esc(pts[0].label)}</span><span data-at></span><span>${range === '1D' ? 'Now' : 'Today'}</span></div>
+    <div class="chips rng">${RANGES.map(([r]) => `<button class="chip ${r === range ? 'on' : ''}" data-act="chartRange" data-key="${key}" data-r="${r}">${r}</button>`).join('')}</div></div>`;
+}
+// Touch or drag across a chart to read the value and change at that point
+function chartTouch(e) {
+  const box = e.target.closest?.('.chart .cwrap'); if (!box) return;
+  const el = box.closest('.chart'), c = ui.charts?.[el.dataset.chart]; if (!c) return;
+  const pt = e.touches?.[0] || e;
+  const r = box.getBoundingClientRect();
+  const f = Math.min(1, Math.max(0, (pt.clientX - r.left) / r.width));
+  const i = Math.round(f * (c.pts.length - 1)), p = c.pts[i];
+  const chg = p.v - c.first;
+  const cur = box.querySelector('.cur'); cur.hidden = false; cur.style.left = `${(c.pts.length === 1 ? 1 : i / (c.pts.length - 1)) * 100}%`;
+  const big = el.parentElement.querySelector('[data-nwval]'); if (big) { big.dataset.keep ||= big.textContent; big.textContent = inr(p.v, 0); }
+  el.querySelector('[data-at]').textContent = p.label;
+  const ch = el.querySelector('[data-chg]'); ch.className = `chg num ${chg >= 0 ? 'in' : 'bad'}`; ch.innerHTML = `${chgTxt(chg, c.first)} <span class="muted small">to ${esc(p.label)}</span>`;
+}
+function chartRelease() {
+  document.querySelectorAll('.chart .cur').forEach((x) => { x.hidden = true; });
+  document.querySelectorAll('[data-nwval][data-keep]').forEach((b) => { b.textContent = b.dataset.keep; delete b.dataset.keep; });
+}
+// Today's market move across visible holdings (stocks and ETFs with live prices)
+function marketsToday(accId) {
+  const live = D.holdings.filter((h) => h.prevClose && h.qty != null && h.type !== 'mf' && h.priceDate === todayIso() && (accId ? h.accountId === accId : shareOf(accById(h.accountId) || {}) > 0));
+  if (!live.length) return null;
+  const chg = live.reduce((t, h) => t + Math.round(h.qty * (h.price - h.prevClose) * (accId ? 1 : shareOf(accById(h.accountId)))), 0);
+  const base = live.reduce((t, h) => t + Math.round(h.qty * h.prevClose * (accId ? 1 : shareOf(accById(h.accountId)))), 0);
+  return { chg, base };
 }
 
 function monthStats(ym) {
@@ -222,7 +369,9 @@ function renderHome(m) {
       <p class="small muted" style="margin-top:12px">Or <button class="link" data-act="addAccount">add an account by hand</button>.</p></div>`;
     return;
   }
+  recordPrices();
   const nw = netWorth();
+  const mt = marketsToday();
   const ym = ymOf(todayIso());
   const visIds = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
   const s = monthStats(ym), prev = monthStats(addMonths(ym, -1));
@@ -235,7 +384,9 @@ function renderHome(m) {
 
   m.innerHTML = `${whoSwitch()}
   <div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2>
-    <div class="big num">${inr(nw.net, 0)}</div>
+    <div class="big num" data-nwval>${inr(nw.net, 0)}</div>
+    ${chartCard('nw')}
+    ${mt ? `<p class="small" style="margin:6px 0 0">Stocks today: <b class="num ${mt.chg >= 0 ? 'in' : 'bad'}">${chgTxt(mt.chg, mt.base)}</b></p>` : ''}
     <div class="split" style="margin-top:10px">
       <div><div class="small muted">Assets</div><div class="num">${compact(nw.assets)}</div></div>
       <div><div class="small muted">Liabilities</div><div class="num">${compact(nw.liabilities)}</div></div>
@@ -331,7 +482,8 @@ function renderAccount(m, id) {
   setTop(a.name, { back: 'closeView', action: (D.holdings.some((h) => h.accountId === a.id && h.qty != null) ? refreshBtn : '') + `<button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
   const b = balance(a);
   const txs = D.transactions.filter((x) => x.accountId === a.id).sort((p, q) => q.date.localeCompare(p.date) || (q.time || '').localeCompare(p.time || ''));
-  let h = `<div class="card"><h2>${esc(t.label)}${a.last4 ? ' ••' + a.last4 : ''}</h2><div class="big num">${inr(b)}</div>`;
+  recordPrices();
+  let h = `<div class="card"><h2>${esc(t.label)}${a.last4 ? ' ••' + a.last4 : ''}</h2><div class="big num" data-nwval>${inr(b)}</div>${chartCard('acc', { accId: a.id })}`;
   const hasHold = D.holdings.some((x) => x.accountId === a.id);
   if (t.mode === 'value' && hasHold) h += `<div class="small muted">${D.settings.priceRelay && D.holdings.some((x) => x.accountId === a.id && x.type !== 'mf') ? 'Market value at live prices' : D.holdings.some((x) => x.accountId === a.id && x.type === 'mf' && x.qty != null) ? 'Market value at latest NAVs' : 'Market value from your last holdings file'}</div>`;
   else if (t.mode === 'value') {
@@ -1019,12 +1171,22 @@ async function handleInbox(text, source) {
     openSheet(`<h3>No messages yet</h3>${blank ? `<p>The file has ${blank} entr${blank > 1 ? 'ies' : 'y'} with a date but no message text. That's what a test run with ▶ writes, so it's expected until a real bank SMS arrives.</p><p class="small muted">If a real HDFC or DNS SMS has arrived since and it still says this, the Shortcut isn't passing the message: in the Text block, tap Shortcut Input and choose the message content.</p>` : '<p>The file is empty.</p>'}<button class="btn wide" data-act="closeSheet">OK</button>`);
     return;
   }
-  const seen = new Set(D.smsSeen.map((s) => s.h));
   const res = { added: 0, known: 0, skipped: 0, attention: 0, old: 0, reasons: {} };
+  // Messages a newer parser can now read: retry anything waiting under "need attention" as unreadable
+  for (const x of [...D.inbox]) {
+    if (x.status !== 'unparsed') continue;
+    const p = parseSms(x.text, x.receivedAt); if (!p.ok) continue;
+    const acc = smsAccount(p.last4, p.isCard);
+    if (acc) { res[addSms(acc, p, x.h)]++; D.inbox = D.inbox.filter((y) => y.id !== x.id); } else Object.assign(x, { status: 'noaccount', parsed: p });
+  }
+  // Already handled = became a transaction, matched a statement row, or waits in the inbox
+  const done = new Set([...D.transactions.map((x) => x.hash), ...D.transactions.filter((x) => x.smsRaw).map((x) => smsHash(x.smsRaw)), ...D.inbox.map((x) => x.h)]);
+  // Skipped by this version of the parser (an older version gets another go)
+  const seen = new Set(D.smsSeen.filter((s) => s.pv === SMS_PV).map((s) => s.h));
   for (const it of items) {
     const h = smsHash(it.text);
-    if (seen.has(h)) { res.old++; continue; }
-    seen.add(h); D.smsSeen.push({ h, at: Date.now() });
+    if (done.has(h) || seen.has(h)) { res.old++; continue; }
+    seen.add(h); done.add(h); D.smsSeen = D.smsSeen.filter((s) => s.h !== h); D.smsSeen.push({ h, at: Date.now(), pv: SMS_PV });
     const p = parseSms(it.text, it.receivedAt);
     if (!p.ok && /OTP|Declined|Upcoming|Statement|request|Empty|Zero/.test(p.skip)) { res.skipped++; res.reasons[p.skip] = (res.reasons[p.skip] || 0) + 1; continue; }
     if (!p.ok) { D.inbox.push({ id: uid(), text: it.text, receivedAt: it.receivedAt, status: 'unparsed', why: p.skip, h }); res.attention++; continue; }
@@ -1121,6 +1283,7 @@ async function refreshNavs({ force = false } = {}) {
       if (nav > 0 && date && date >= (h.priceDate || '')) { h.price = nav * 100; h.priceDate = date; n++; }
     } catch (e) { console.warn('NAV refresh failed for', h.name, e); }
   }
+  recordPrices();
   accs.forEach((a) => { a.navCheckedAt = Date.now(); const d = D.holdings.filter((h) => h.accountId === a.id).map((h) => h.priceDate).sort().pop(); if (d) a.holdingsAsOn = d; });
   save();
   return n;
@@ -1157,6 +1320,7 @@ async function refreshStocks({ force = false } = {}) {
     for (const h of hs) { const row = P2[yahooSym(h.symbol)] || P2[h.symbol.toUpperCase()]; if (row && row[0] > 0) { applyQuote(h, row[0], row[1], row[2] ? row[2] * 1000 : data.updatedAt); n++; } }
   }
   D.settings.stocksCheckedAt = Date.now();
+  recordPrices();
   for (const a of new Set(hs.map((h) => h.accountId))) { const acc = accById(a); if (acc) acc.holdingsAsOn = hs.filter((h) => h.accountId === a).map((h) => h.priceDate).sort().pop(); }
   save();
   return n;
@@ -1585,6 +1749,7 @@ const acts = {
     if (!workerCode) return toast('Still loading, tap again in a second');
     navigator.clipboard.writeText(workerCode).then(() => toast('Relay code copied. Paste it in Cloudflare.')).catch(() => toast('Could not copy. Open sahilgp6.github.io/Ledger/cloudflare-worker.js and copy it from there.', 5000));
   },
+  chartRange: (d) => { (D.settings.chartRange ||= {})[d.key] = d.r; save(); render(); },
   relayOff: () => { D.settings.priceRelay = ''; save(); closeSheet(); render(); },
   refreshAll: async (d, el) => {
     if (el.disabled) return; el.disabled = true; el.style.opacity = '.5';
@@ -1726,6 +1891,10 @@ const acts = {
 document.addEventListener('change', (e) => {
   const id = e.target.dataset?.inboxAcc; if (id && e.target.value) assignInbox(id, e.target.value);
 });
+document.addEventListener('touchstart', chartTouch, { passive: true });
+document.addEventListener('touchmove', (e) => { if (e.target.closest?.('.chart .cwrap')) { e.preventDefault(); chartTouch(e); } }, { passive: false });
+document.addEventListener('touchend', chartRelease);
+document.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') { if (e.target.closest?.('.chart .cwrap')) chartTouch(e); else if (document.querySelector('.chart .cur:not([hidden])')) chartRelease(); } });
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = acts[el.dataset.act]; if (!fn) return;

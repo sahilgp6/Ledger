@@ -1,6 +1,9 @@
 // Bank SMS parsing (Indian banks; tuned on HDFC formats). Pure functions, no network.
 // Returns { ok, amount (paise, signed: negative = money out), last4, isCard, merchant, ref, date, skip }
 
+// Bump when parsing improves: messages skipped by an older version get another look
+export const SMS_PV = 2;
+
 const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -61,10 +64,15 @@ export function parseSms(text, receivedAt) {
   else if (ci >= 0) dir = 'in';
   // "payment of Rs X received towards your credit card" is money into the card
   if (/payment .*\b(received|credited)\b.*card|card.*payment .*\b(received|credited)\b/i.test(t)) dir = 'in';
+  // "Money Transfer: Rs 300 from HDFC Bank A/c **8381 ... to RAHUL": money leaving your account
+  if (!dir && /\bfrom\b[^.]*?\b(?:a\/c|acct|account|bank)\b[^.]*?\bto\b/i.test(t)) dir = 'out';
+  if (!dir && /\bto\b[^.]*?\b(?:your|ur)\s+(?:a\/c|acct|account)\b/i.test(t)) dir = 'in';
   if (!dir) return { ok: false, skip: 'Could not tell debit from credit', text: t };
 
   const lm = t.match(/\b(?:card|a\/c|acct|account|ac)\b\s*(?:no\.?|number)?\s*(?:ending(?: with)?|ending in)?\s*[:#]?\s*[xX*.]*\s*(\d{4})\b/i);
-  const last4 = lm ? lm[1] : null;
+  // Fallback: "HDFC Bank XX8381", "A/c **8381", "Card x9550"
+  const lm2 = lm ? null : t.match(/(?:[xX*]{2,}|\b[xX*])\s?(\d{4})\b/);
+  const last4 = lm ? lm[1] : lm2 ? lm2[1] : null;
   const isCard = lm ? /card/i.test(lm[0]) : /card/i.test(t);
 
   let merchant = '';
