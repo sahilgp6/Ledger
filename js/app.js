@@ -2,10 +2,11 @@ import { Vault, passkeySupport, requestPersistence } from './store.js';
 import * as P from './parsers.js';
 import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squash } from './rules.js';
 import { parseSms, smsPayee, splitInbox, SMS_PV } from './sms.js';
+import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.3';
+const APP_VERSION = '0.9.4';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -395,7 +396,7 @@ function renderHome(m) {
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
       <div class="a num ${d <= 3 ? 'bad' : ''}">${inr(a.statement.totalDue, 0)}</div></button>`; }).join('')}
-  ${D.settings.ai?.model ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAsk"><div class="ico">AI</div><div class="grow"><div class="t">Ask Ledger</div><div class="s">“How much on Swiggy since July?”</div></div><div class="muted">›</div></button>` : ''}
+  ${D.transactions.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAsk"><div class="ico">AI</div><div class="grow"><div class="t">Ask Ledger</div><div class="s">“How can I spend less?”</div></div><div class="muted">›</div></button>` : ''}
   ${D.inbox.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="tab" data-tab="import"><div class="grow"><div class="t">${D.inbox.length} SMS need attention</div><div class="s">Assign an account or enter them by hand</div></div><div class="muted">›</div></button>` : ''}
   ${backupOld ? `<div class="card row"><div class="grow small">No backup in the last 30 days. If this app is deleted, its data goes with it.</div><button class="btn ghost" data-act="backup">Back up</button></div>` : ''}
   <div class="card"><h2>Spent in ${monthLabel(ym)}</h2>
@@ -1520,14 +1521,12 @@ function matchTransfers() {
 // ---------- Ask Ledger ----------
 function renderAsk(m) {
   setTop('Ask Ledger', { back: 'closeView' });
-  const model = D.settings.ai?.model;
-  if (!model) { m.innerHTML = `<div class="card"><p>Ask Ledger needs the on-device model. It downloads once and then works offline.</p><button class="btn wide" data-act="aiSetup">Set up</button></div>`; return; }
   const ex = ['How much did I spend on Swiggy since July?', 'How can I spend less?', 'Top categories last month', 'Show my Amazon orders', 'Spending by month this FY', 'What is my net worth?'];
   m.innerHTML = `<form data-form="ask" class="row" style="margin-bottom:10px"><input class="i" name="q" placeholder="Ask about your money" autocomplete="off" enterkeyhint="send" required><button class="btn">Ask</button></form>
   <div class="chips">${ex.map((q) => `<button class="chip" data-act="askEx" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
   <div class="small muted" id="aiStatus" style="margin:0 4px 10px">${esc(ui.aiStatus)}</div>
   ${ui.ask.map((a) => `<div class="card"><div class="small muted" style="margin-bottom:6px">${esc(a.q)}</div>${a.html}</div>`).join('') ||
-    '<p class="small muted" style="margin:0 4px">Answers are calculated from your data on this phone. The AI only works out what you are asking for, so the numbers are exact. The first question takes a few seconds while the model loads.</p>'}`;
+    `<p class="small muted" style="margin:0 4px">Answers are calculated from your data on this phone, so the numbers are exact. Nothing is sent anywhere.${D.settings.ai?.model ? ' The on-device AI helps with questions Ledger can\'t read on its own.' : ''}</p>`}`;
 }
 function setAiStatus(t) { ui.aiStatus = t; const el = $('#aiStatus'); if (el) el.textContent = t; }
 async function ensureModel() {
@@ -1604,25 +1603,59 @@ function spendFacts() {
     ca.get('interest_paid') ? `Interest paid: ${r0(ca.get('interest_paid'))}.` : '', ca.get('fees') ? `Bank charges and fees: ${r0(ca.get('fees'))}.` : '',
   ].filter(Boolean);
   const html = `<details style="margin-top:10px"><summary class="small">The figures used</summary><p class="small" style="white-space:pre-wrap">${esc(lines.join('\n'))}</p></details>`;
-  return { text: lines.join('\n'), html };
+  const catsD = cats.map(([k, v]) => ({ id: k, name: k === '_none' ? 'Uncategorised' : catName(k), avg: v / 3, prev: cb.get(k) ? cb.get(k) / 3 : null }));
+  return { text: lines.join('\n'), html, data: { spendAvg: spend / 3, incomeAvg: income / 3, cats: catsD, prevHas, payees, small: { n: small.length, v: smallV }, recurring, interest: ca.get('interest_paid') || 0, fees: ca.get('fees') || 0, uncat: ca.get('_none') || 0, spend } };
 }
+// Tips worked out by Ledger itself (used when the on-device AI is off or not working)
+function builtinTips(d) {
+  const r0 = (v) => inr(Math.round(v / 100) * 100, 0), out = [];
+  const disc = new Set(['food_delivery', 'dining', 'shopping', 'entertainment', 'travel', 'personal_care', 'subscriptions', 'fuel', 'cabs', 'groceries']);
+  const grew = d.cats.filter((c) => c.id !== '_none' && c.prev && c.avg >= 200000 && c.avg / c.prev >= 1.15).sort((x, y) => (y.avg - y.prev) - (x.avg - x.prev))[0];
+  if (grew) out.push(`${grew.name} went up ${Math.round((grew.avg / grew.prev - 1) * 100)}% to ${r0(grew.avg)} a month. Getting back to ${r0(grew.prev)} saves ${r0(grew.avg - grew.prev)} a month.`);
+  const top = d.cats.find((c) => c.id !== '_none' && c.id !== grew?.id);
+  if (top) out.push(`${top.name} is your biggest spend at ${r0(top.avg)} a month (${Math.round(top.avg / d.spendAvg * 100)}% of spending)${disc.has(top.id) ? `. Trimming it by a fifth frees ${r0(top.avg / 5)} a month.` : '.'}`);
+  if (d.small.n >= 15) out.push(`${d.small.n} payments under ₹500 added up to ${r0(d.small.v)} over 3 months, about ${r0(d.small.v / 3)} a month. Small spends are where money leaks.`);
+  if (d.recurring.length) out.push(`You pay ${d.recurring.slice(0, 4).map(([k, e]) => `${k} (${r0(e.v / 3)})`).join(', ')} every month. Cancel any you no longer use.`);
+  if (d.interest + d.fees > 0) out.push(`${r0(d.interest + d.fees)} went on interest and bank charges in 3 months. Paying card bills in full and on time avoids most of this.`);
+  if (d.incomeAvg > 0) { const rate = Math.round((1 - d.spendAvg / d.incomeAvg) * 100); out.push(rate >= 0 ? `You kept ${rate}% of your income (${r0(d.incomeAvg - d.spendAvg)} a month).${rate < 20 ? ' Aiming for 20% would mean spending ' + r0(d.incomeAvg * 0.8) + ' a month or less.' : ''}` : `You spent ${r0(d.spendAvg - d.incomeAvg)} a month more than came in. Check that salary and transfers are categorised correctly.`); }
+  if (d.uncat > d.spend * 0.2) out.push(`${r0(d.uncat)} of spending has no category, so these tips miss part of the picture. Categorise it for sharper advice.`);
+  return out.slice(0, 5);
+}
+const aiOn = () => !!D.settings.ai?.model && !ui.aiBroken;
+const tipsHtml = (tips) => `<ul style="padding-left:18px;margin:0">${tips.map((t2) => `<li style="margin-bottom:6px">${esc(t2.replace(/\*\*/g, ''))}</li>`).join('')}</ul>`;
 async function ask(q) {
   q = (q || '').trim(); if (!q) return;
+  const cats = D.categories.map((c) => ({ id: c.id, name: c.name }));
+  const knownText = D.transactions.map((x) => `${x.payee} ${x.description}`).join(' ').toLowerCase();
+  const accounts = D.accounts.filter((a) => !a.archived).map((a) => ({ name: a.name, words: [...new Set([...`${a.name} ${a.institution || ''}`.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && !['bank', 'card', 'account', 'savings', 'credit', 'the'].includes(w)), ...(a.last4 ? [a.last4] : [])])] }));
+  // Ledger reads the question itself first: instant, exact, works with no AI
+  let plan = planQuestion(q, { today: todayIso(), categories: cats, accounts, knownText }), note = '';
+  const vague = plan.intent === 'total_spent' && !plan.payee && !plan.category && !plan.account && !plan.from;
   try {
-    await ensureModel();
-    setAiStatus('Thinking…');
-    const cats = D.categories.map((c) => ({ id: c.id, name: c.name }));
-    const plan = await AI.askJSON(AI.queryPrompt({ today: todayIso(), categories: cats, accounts: D.accounts.map((a) => accShort(a)) }), q, AI.querySchema(cats.map((c) => c.id)), 160);
+    if (vague && aiOn()) {
+      try {
+        await ensureModel(); setAiStatus('Thinking…');
+        plan = await AI.askJSON(AI.queryPrompt({ today: todayIso(), categories: cats, accounts: D.accounts.map((a) => accShort(a)) }), q, AI.querySchema(cats.map((c) => c.id)), 160);
+      } catch (e) { console.error(e); ui.aiBroken = String(e?.message || e); note = 'The on-device AI is not working on this phone right now, so Ledger answered on its own.'; }
+    }
     if (plan.intent === 'advice') {
-      const f = spendFacts(); if (!f) { ui.ask.unshift({ q, html: '<p>There is not enough spending history yet. Import a statement or two first.</p>', plan }); }
+      const f = spendFacts();
+      if (!f) ui.ask.unshift({ q, plan, html: '<p>There is not enough spending history yet. Import a statement or two first.</p>' });
       else {
-        setAiStatus('Looking at your spending…');
-        const txt = await AI.askText(AI.advicePrompt(), f.text);
-        const tips = txt.split(/\n+/).map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter((l) => l.length > 3);
-        ui.ask.unshift({ q, plan, html: `<ul style="padding-left:18px;margin:0">${tips.map((t2) => `<li style="margin-bottom:6px">${esc(t2.replace(/\*\*/g, ''))}</li>`).join('')}</ul>${f.html}<p class="tiny muted">Suggestions are written by the on-device AI from the figures above, which Ledger calculated.</p>` });
+        let tips = null, by = 'Ledger worked these out from the figures below.';
+        if (aiOn()) {
+          try {
+            await ensureModel(); setAiStatus('Looking at your spending…');
+            const txt = await AI.askText(AI.advicePrompt(), f.text);
+            tips = txt.split(/\n+/).map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter((l) => l.length > 3);
+            by = 'Written by the on-device AI from the figures below, which Ledger calculated.';
+          } catch (e) { console.error(e); ui.aiBroken = String(e?.message || e); note = 'The on-device AI is not working on this phone right now, so Ledger answered on its own.'; }
+        }
+        if (!tips?.length) tips = builtinTips(f.data);
+        ui.ask.unshift({ q, plan, html: `${tipsHtml(tips)}${f.html}<p class="tiny muted">${by}</p>${note ? `<p class="tiny muted">${note}</p>` : ''}` });
       }
-    } else ui.ask.unshift({ q, html: runQuery(plan), plan });
-  } catch (e) { console.error(e); ui.ask.unshift({ q, html: `<p class="bad">${esc(e?.message || String(e) || 'Something went wrong')}</p>${/memory|device lost|out of/i.test(String(e?.message)) ? '<p class="small">The phone ran out of memory for this model. Try the smaller Llama model in More → Ask Ledger.</p>' : ''}` }); }
+    } else ui.ask.unshift({ q, plan, html: runQuery(plan) + (note ? `<p class="tiny muted">${note}</p>` : '') });
+  } catch (e) { console.error(e); ui.ask.unshift({ q, html: `<p class="bad">${esc(e?.message || String(e) || 'Something went wrong')}</p>` }); }
   setAiStatus(''); render();
 }
 async function aiSuggest() {
@@ -2148,4 +2181,4 @@ async function boot() {
 boot();
 
 // Exposed for automated tests only
-window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, spendFacts, handleInbox, matchTransfers, AI };
+window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, spendFacts, ask, builtinTips, handleInbox, matchTransfers, AI };
