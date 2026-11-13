@@ -115,9 +115,12 @@ export function splitInbox(text) {
   for (let i = 1; i < parts.length; i += 2) {
     const kind = parts[i].toLowerCase(), chunk = parts[i + 1] || '';
     const nl = chunk.indexOf('\n');
-    const head = (nl >= 0 ? chunk.slice(0, nl) : chunk).trim();
-    const body = (nl >= 0 ? chunk.slice(nl + 1) : '').trim();
-    const h2 = head.replace(/\s+at\s+/i, ' ');
+    let head = (nl >= 0 ? chunk.slice(0, nl) : chunk).trim();
+    let body = (nl >= 0 ? chunk.slice(nl + 1) : '').trim();
+    // A date with more on the same line ("2026-11-13T17:50:00+05:30 250 Chai Card 9550"): split it off
+    const lead = head.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)\s+(.+)$/) || head.match(/^(\d{1,2} [A-Za-z]{3,9},? \d{4}(?:,? at \d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)?)\s+(.+)$/i);
+    if (lead) { head = lead[1]; body = (lead[2] + (body ? '\n' + body : '')).trim(); }
+    const h2 = head.replace(/,?\s+at\s+/i, ' ').replace(',', '');
     const d = head && /\d/.test(head) && !isNaN(Date.parse(h2)) ? new Date(h2).toISOString() : null;
     const t = d ? body : (head + '\n' + body).trim();
     if (t) out.push({ text: t, receivedAt: d, kind });
@@ -127,7 +130,12 @@ export function splitInbox(text) {
 
 // A line the "Log to Ledger" Shortcut writes: "250 | Chai with crew | UPI"
 export function parseLog(text) {
-  const parts = String(text).split(/\s*[|\n]\s*/).map((x) => x.trim()).filter(Boolean);
+  let parts = String(text).split(/\s*[|\n]\s*/).map((x) => x.trim()).filter(Boolean);
+  // No separators ("250 Chai with crew Credit 9550"): amount first, account words at the end
+  if (parts.length === 1) {
+    const m = parts[0].match(/^(?:rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)\s+(.*?)\s*((?:savings|saving|credit|card|cash|upi|hdfc|dns)(?:\s+card)?(?:\s+\d{4})?)?$/i);
+    if (m) parts = [m[1], m[2] || 'Expense', m[3] || ''].filter((x, i) => i < 2 || x);
+  }
   if (!parts.length) return null;
   const amt = parseFloat(String(parts[0]).replace(/[₹,\s]|rs\.?/gi, ''));
   if (!(amt > 0)) return null;
