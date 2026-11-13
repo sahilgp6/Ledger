@@ -759,8 +759,9 @@ function summarySheet(period) {
     <label class="f"><span>How the AI should talk</span><input class="i" id="sumStyle" placeholder="e.g. Be blunt" value="${esc(D.settings.aiStyle || '')}"></label></div>
     <label class="item" style="border:1px solid var(--line);border-radius:12px;margin-bottom:10px"><div class="grow">Include every transaction<div class="s">For a line-by-line review. Longer to paste.</div></div><input type="checkbox" switch id="sumAll" ${D.settings.sumAll ? 'checked' : ''}></label>
     <div class="seg" role="group" aria-label="Period" style="margin-bottom:10px;grid-template-columns:repeat(4,minmax(0,1fr));font-size:.8rem">${SUM_PERIODS.map(([k, t]) => `<button class="${k === period ? 'on' : ''}" data-act="sumPeriod" data-p="${k}" aria-pressed="${k === period}">${t}</button>`).join('')}</div>
-    <textarea class="i" readonly style="min-height:300px;font-size:.8rem;line-height:1.45;font-family:ui-monospace,Menlo,monospace">${esc(text)}</textarea>
-    <div class="row" style="margin-top:10px"><button class="btn" style="flex:1" data-act="sumCopy">Copy</button>${navigator.share ? '<button class="btn ghost" style="flex:1" data-act="sumShare">Share…</button>' : ''}</div>`);
+    <div style="position:relative"><button class="btn ghost" data-act="sumCopy" style="position:absolute;top:8px;right:8px;min-height:34px;padding:6px 12px;font-size:.8rem;background:var(--card)">Copy all</button>
+    <textarea class="i" readonly style="min-height:300px;font-size:.8rem;line-height:1.45;font-family:ui-monospace,Menlo,monospace;padding-top:48px">${esc(text)}</textarea></div>
+    <div class="row" style="position:sticky;bottom:calc(-18px - var(--safe-b));margin:10px -18px calc(-18px - var(--safe-b));padding:10px 18px calc(10px + var(--safe-b));background:var(--card);border-top:1px solid var(--line)"><button class="btn" style="flex:1" data-act="sumCopy">Copy everything</button>${navigator.share ? '<button class="btn ghost" style="flex:1" data-act="sumShare">Share…</button>' : ''}</div>`);
 }
 function recapData(ym) {
   const st = monthStats(ym), prev = monthStats(addMonths(ym, -1));
