@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.5';
+const APP_VERSION = '0.9.6';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1578,6 +1578,7 @@ function loanCard(a) {
     <div class="split"><div><div class="small muted">Monthly EMI</div><div class="mid num">${inr(L.emi, 0)}</div></div><div><div class="small muted">EMIs left</div><div class="mid">${k}</div></div></div>
     <p class="small" style="margin:10px 0 0">${L.nextDue ? `Next on <b>${fmtDate(L.nextDue, true)}</b>` : 'Fully repaid'} · ${L.rate ? `${(+L.rate).toFixed(2)}% a year` : 'no-cost (0%)'} · paid from ${from ? esc(accShort(from)) : 'outside Ledger'}</p>
     ${payoff ? `<p class="small muted" style="margin:6px 0 0">Ends ${fmtDate(payoff, true)}${int ? ` · ${inr(int, 0)} interest still to pay` : ''}</p>` : ''}
+    ${P > 0 && P <= L.emi * 2 && L.rate ? `<p class="small warn" style="margin:8px 0 0">The outstanding (${inr(P, 0)}) is about one EMI, so Ledger thinks this loan is nearly over. If it isn't, tap <b>Update value</b> above and enter what you still owe from your loan statement.</p>` : ''}
     <div class="row" style="margin-top:12px"><button class="btn ghost" style="flex:1" data-act="editAccount" data-id="${a.id}">Edit EMI</button><button class="btn ghost" style="flex:1" data-act="prepaySheet" data-id="${a.id}">Prepay</button></div></div>`;
 }
 
