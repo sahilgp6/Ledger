@@ -416,3 +416,59 @@ export function parseMfSummary(pages) {
   if (gt) { const n = gt.items.filter((it) => NUMRE.test(it.str.trim())).map((it) => parseFloat(it.str.replace(/,/g, ''))); if (n.length >= 4) reported = Math.round(n[3] * 100); }
   return { kind: 'mfsummary', institution: st.distributor, statement: st, holdings, sips, recon: { ok: reported != null ? Math.abs(reported - st.value) <= 100 : null, reported } };
 }
+
+// ---------- CAMS / KFintech Consolidated Account Statement (detailed) ----------
+export function detectCas(text) {
+  return /Consolidated Account Statement/i.test(text) && /Closing Unit Balance/i.test(text) && /Folio No/i.test(text);
+}
+export function parseCas(pages) {
+  // Numbers in CAS PDFs are drawn character by character; glue "4 , 999 . 75" back together
+  const lines = toLines(pages).map((l) => ({ ...l, t: l.text.replace(/\s*([,.\/:])\s*/g, '$1').replace(/(\d)\s*-\s*([A-Za-z]{3})\s*-\s*(\d{4})/g, '$1-$2-$3').replace(/\s+/g, ' ').trim() }));
+  const st = {};
+  const full = lines.map((l) => l.t).join('\n');
+  const per = full.match(/(\d{2}-[A-Za-z]{3}-\d{4}) To (\d{2}-[A-Za-z]{3}-\d{4})/); if (per) { st.periodFrom = dmyToIso(per[1]); st.periodTo = dmyToIso(per[2]); }
+  const pan = full.match(/PAN:([A-Z]{5}\d{4}[A-Z])/); if (pan) st.pan = pan[1];
+  const em = lines.findIndex((l) => /^Email Id:/i.test(l.t)); if (em >= 0) { const h = lines.slice(em + 1, em + 4).map((l) => l.items[0]?.str.trim()).find((x) => /^[A-Za-z .]{5,}$/.test(x || '')); if (h) st.holder = h; }
+  st.registrar = /KFintech/i.test(full) && !/brought to you by CAMS/i.test(full) ? 'KFintech' : 'CAMS';
+  const holdings = [];
+  let cur = null, amc = '';
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].t;
+    if (/Mutual Fund$/.test(t) && !/^(Cost|Market)/.test(t) && lines[i].items.length === 1) amc = t;
+    const fm = t.match(/^Folio No:([\d\/ ]+?)(?:\s+PAN:|$)/);
+    if (fm) { cur = { amc, folio: fm[1].replace(/\s/g, ''), txns: [], schemeText: '' }; continue; }
+    if (cur && !cur.isin) {
+      if (/^Opening Unit Balance/i.test(t)) { cur.isin = (cur.schemeText.match(/ISIN:\s*([A-Z0-9]{12})/) || [])[1] || ''; }
+      else if (!/^Nominee|^KYC/.test(t) && (cur.schemeText || /ISIN|^[A-Z0-9]{3,6}-/.test(t))) cur.schemeText += ' ' + t;
+      continue;
+    }
+    if (!cur) continue;
+    const dm = t.match(/^(\d{2}-[A-Za-z]{3}-\d{4})\s+(.*)$/);
+    if (dm && !/\*\*\*/.test(dm[2])) {
+      const nums = [...dm[2].matchAll(/\(?-?[\d,]+\.\d+\)?/g)].map((m) => m[0]);
+      if (nums.length >= 4) {
+        const n = (s) => (s.startsWith('(') ? -1 : 1) * parseFloat(s.replace(/[(),]/g, ''));
+        const [amount, units, nav, bal] = nums.slice(-4).map(n);
+        cur.txns.push({ date: dmyToIso(dm[1]), type: dm[2].replace(/\s+\(?-?[\d,]+\.\d+.*$/, '').trim(), amount, units, nav, balance: bal });
+      }
+      continue;
+    }
+    const cm = t.match(/^Closing Unit Balance:([\d,.]+).*?NAV on (\d{2}-[A-Za-z]{3}-\d{4}):INR ([\d,.]+).*?Total Cost Value:([\d,.]+).*?Market Value on .*?INR ([\d,.]+)/);
+    if (cm) {
+      const num = (s) => parseFloat(s.replace(/,/g, ''));
+      let name = cur.schemeText.replace(/\s*\(Non-Demat\).*$/i, '').replace(/\s*-\s*ISIN:.*$/i, '').replace(/^\s*[A-Z0-9]{2,8}-/, '').trim();
+      name = name.replace(/\(formerly[^)]*\)/i, '').replace(/\s+/g, ' ').trim();
+      holdings.push({
+        symbol: name, name, amc: cur.amc, folio: cur.folio, isin: cur.isin, type: 'mf',
+        plan: /direct/i.test(name) ? 'Direct' : 'Regular',
+        units: num(cm[1]), nav: num(cm[3]), navDate: dmyToIso(cm[2]), cost: Math.round(num(cm[4]) * 100), value: Math.round(num(cm[5]) * 100), txns: cur.txns,
+      });
+      cur = null;
+    }
+  }
+  st.cost = holdings.reduce((t, h) => t + h.cost, 0); st.value = holdings.reduce((t, h) => t + h.value, 0);
+  st.asOn = holdings.map((h) => h.navDate).sort().pop() || st.periodTo;
+  const tot = full.match(/^Total ([\d,]+\.\d{2}) ([\d,]+\.\d{2})$/m);
+  const reported = tot ? Math.round(parseFloat(tot[2].replace(/,/g, '')) * 100) : null;
+  return { kind: 'cas', institution: st.registrar, statement: st, holdings, recon: { ok: reported != null ? Math.abs(reported - st.value) <= 100 : null, reported } };
+}
