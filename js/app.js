@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.1.3';
+const APP_VERSION = '1.2.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -129,7 +129,8 @@ const accVisible = (a, who = D.settings.who) => shareOf(a, who) > 0;
 function whoSwitch() {
   if (!multi()) return '';
   const opts = [['all', 'Combined'], ...D.members.map((m) => [m.id, m.name])];
-  return `<div class="chips" style="margin-bottom:8px">${opts.map(([id, n]) => `<button class="chip ${D.settings.who === id ? 'on' : ''}" data-act="setWho" data-who="${id}">${esc(n)}</button>`).join('')}</div>`;
+  const idx = Math.max(0, opts.findIndex((o) => o[0] === D.settings.who));
+  return `<div class="whoseg" role="group" aria-label="Whose money" style="grid-template-columns:repeat(${opts.length},minmax(0,1fr))"><span class="pill" data-to="${idx}" style="width:calc((100% - 6px) / ${opts.length});transform:translateX(${(ui.whoFrom ?? idx) * 100}%)"></span>${opts.map(([id, n]) => `<button class="${D.settings.who === id ? 'on' : ''}" data-act="setWho" data-who="${id}" aria-pressed="${D.settings.who === id}">${esc(n)}</button>`).join('')}</div>`;
 }
 function ownerOptions(sel) {
   return [...D.members.map((m) => [m.id, m.name]), ['joint', 'Joint']].map(([id, n]) => `<option value="${id}" ${id === (sel || 'me') ? 'selected' : ''}>${esc(n)}</option>`).join('');
@@ -644,23 +645,36 @@ function render() {
   $('#app').classList.toggle('masked', !!D.settings.masked);
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const m = $('#main');
-  if (ui.view?.page === 'account') return renderAccount(m, ui.view.id);
+  if (ui.view?.page === 'account') { renderAccount(m, ui.view.id); requestAnimationFrame(() => requestAnimationFrame(() => document.querySelectorAll('.ringarc').forEach((c) => { c.style.strokeDashoffset = c.style.getPropertyValue('--off'); }))); return; }
   if (ui.view?.page === 'ask') return renderAsk(m);
   if (ui.view?.page === 'bills') return renderBills(m);
   if (ui.view?.page === 'receipts') return renderReceipts(m);
   ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, more: renderMore }[ui.tab])(m);
+  requestAnimationFrame(() => document.querySelectorAll('.whoseg .pill[data-to]').forEach((p2) => { p2.style.transform = `translateX(${p2.dataset.to * 100}%)`; }));
+  requestAnimationFrame(() => requestAnimationFrame(() => document.querySelectorAll('.ringarc').forEach((c) => { c.style.strokeDashoffset = c.style.getPropertyValue('--off'); })));
 }
 
+const ICON = {
+  Income: '<path d="M12 19V5"/><path d="M6 11l6-6 6 6"/>', Food: '<path d="M3 12h18a9 9 0 0 1-18 0z"/><path d="M8 8c0-2 1-3 1-3M12 8c0-2 1-3 1-3M16 8c0-2 1-3 1-3"/>',
+  Shopping: '<path d="M6 7h12l-1 13H7L6 7z"/><path d="M9 7a3 3 0 0 1 6 0"/>', Transport: '<path d="M5 16l1.5-6A2 2 0 0 1 8.4 8.5h7.2a2 2 0 0 1 1.9 1.5L19 16"/><path d="M4 16h16v3H4z"/><circle cx="7.5" cy="19" r="1"/><circle cx="16.5" cy="19" r="1"/>',
+  Bills: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>', Health: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
+  Pets: '<circle cx="8" cy="9" r="1.6"/><circle cx="16" cy="9" r="1.6"/><circle cx="5.5" cy="13" r="1.4"/><circle cx="18.5" cy="13" r="1.4"/><path d="M8.5 17.5c0-2 1.6-3.5 3.5-3.5s3.5 1.5 3.5 3.5c0 1.5-1.5 2-3.5 2s-3.5-.5-3.5-2z"/>',
+  Personal: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.2-3.6 4-5.5 7-5.5s5.8 1.9 7 5.5"/>', Financial: '<path d="M3 10l9-5 9 5"/><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18"/>',
+  Transfers: '<path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/>', none: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7"/><path d="M12 17h.01"/>',
+};
+const TONE = { Income: 'sage', Food: 'clay', Shopping: 'sand', Transport: 'slate', Bills: 'slate', Health: 'clay', Pets: 'sand', Personal: 'sage', Financial: 'grey', Transfers: 'grey', none: 'grey' };
+const catIcon = (catId) => { const g = catById(catId)?.group; const k = ICON[g] ? g : 'none'; return `<div class="ico tone-${TONE[k]}" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg></div>`; };
 function txItem(x, showAcc = true) {
   const c = catById(x.categoryId);
   const a = accById(x.accountId);
   const sug = !c && x.suggest && catById(x.suggest) ? ` <span class="badge" data-act="acceptSug" data-id="${x.id}">AI: ${esc(catName(x.suggest))} ✓</span>` : '';
   const sub = [c ? c.name : '<span class="warn">Uncategorised</span>' + sug, showAcc && a ? esc(accShort(a)) : '', x.source === 'sms' ? 'from SMS' : x.source === 'log' ? 'logged' : '', x.transferId ? 'matched transfer' : '', D.receipts?.some((r) => r.txId === x.id) ? '📎' : ''].filter(Boolean).join(' · ');
-  return `<button class="item" data-act="editTx" data-id="${x.id}">
-    <div class="ico">${esc(initials(x.payee || x.description))}</div>
+  return `<div class="sw" data-id="${x.id}"><div class="sw-acts"><button data-act="swCat" data-id="${x.id}">Category</button><button data-act="swTransfer" data-id="${x.id}">Transfer</button></div><button class="item" data-act="editTx" data-id="${x.id}">
+    ${catIcon(x.categoryId)}
     <div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${sub}</div></div>
-    <div class="a num ${x.amount > 0 ? 'in' : ''}">${x.amount > 0 ? '+' : ''}${inr(x.amount)}</div></button>`;
+    <div class="a num ${x.amount > 0 ? 'in' : ''}">${x.amount > 0 ? '+' : ''}${inr(x.amount)}</div></button></div>`;
 }
+const dayLabel = (d) => { const n = daysUntil(d); if (n === 0) return 'Today'; if (n === -1) return 'Yesterday'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', ...(dt.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }); };
 
 const hasPriced = () => D.holdings.some((h) => h.qty != null);
 const refreshBtn = `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="refreshAll" aria-label="Refresh prices">🔄</button>`;
@@ -755,21 +769,31 @@ function renderTx(m) {
 }
 function renderTxList() {
   const list = filteredTx();
-  if (!list.length) { $('#txList').innerHTML = `<div class="empty">No transactions here.</div>`; return; }
+  if (!list.length) { $('#txList').innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><svg width="80" height="60" viewBox="0 0 96 72" fill="none" stroke="var(--gold)" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="16" y="12" width="64" height="48" rx="8"/><path d="M28 28h40M28 38h28M28 48h18"/></svg><div class="serif" style="font-size:1.25rem;margin:8px 0 4px">${ui.q ? 'Nothing matches' : 'No transactions here'}</div><p class="small muted">${ui.q ? 'Try a payee, an amount or a category.' : 'Import a statement, read your SMS, or add one with + Add.'}</p></div>`; return; }
   let out = 0, inn = 0;
   for (const x of list) { const k = catById(x.categoryId)?.kind; if (k === 'transfer') continue; if (x.amount < 0) out -= x.amount; else inn += x.amount; }
   let h = `<div class="small muted" style="margin:0 4px 4px">${list.length} transactions · out ${inr(out, 0)} · in ${inr(inn, 0)} <span class="tiny">(excl. transfers)</span></div>`;
   const byDay = {};
   for (const x of list) (byDay[x.date] ||= []).push(x);
   for (const [d, xs] of Object.entries(byDay)) {
-    h += `<div class="day"><span>${fmtDate(d, ui.q)}</span><span class="num">${inr(xs.reduce((s, x) => s + x.amount, 0), 0)}</span></div><div class="list">${xs.map((x) => txItem(x, !ui.acc)).join('')}</div>`;
+    const o = xs.filter((x) => x.amount < 0 && catById(x.categoryId)?.kind !== 'transfer').reduce((t, x) => t - x.amount, 0);
+    const i2 = xs.filter((x) => x.amount > 0 && catById(x.categoryId)?.kind !== 'transfer').reduce((t, x) => t + x.amount, 0);
+    h += `<div class="day"><span>${esc(dayLabel(d))}</span><span class="num">${[o ? inr(o, 0) + ' out' : '', i2 ? inr(i2, 0) + ' in' : ''].filter(Boolean).join(' · ') || 'transfers'}</span></div><div class="list">${xs.map((x) => txItem(x, !ui.acc)).join('')}</div>`;
   }
   $('#txList').innerHTML = h;
 }
 
+const acctTone = (a) => ({ Bank: 'sage', 'Cash & wallets': 'sage', 'Credit cards': 'slate', Investments: 'sand', Deposits: 'sand', Retirement: 'sand' }[typeOf(a.type).group] || 'grey');
+function sparkline(a) {
+  const today = todayIso(), dates = []; for (let i = 29; i > 0; i -= 2) dates.push(isoAdd(today, -i)); dates.push(today);
+  const v = seriesFor(dates, { accId: a.id }); const lo = Math.min(...v), hi = Math.max(...v);
+  if (hi === lo) return '<svg width="64" height="28" viewBox="0 0 60 24" aria-hidden="true"><path d="M0,12 L60,12" stroke="currentColor" stroke-width="1.6" opacity=".5"/></svg>';
+  const d = v.map((y, i) => `${i ? 'L' : 'M'}${(i / (v.length - 1) * 60).toFixed(1)},${(2 + (1 - (y - lo) / (hi - lo)) * 20).toFixed(1)}`).join('');
+  return `<svg width="64" height="28" viewBox="0 0 60 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
 function renderAccounts(m) {
   setTop('Accounts', { action: (hasPriced() ? refreshBtn : '') + `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addAccount">+ Add</button>` });
-  if (!D.accounts.length) { m.innerHTML = `<div class="empty">No accounts yet.<br><br><button class="btn" data-act="addAccount">Add an account</button></div>`; return; }
+  if (!D.accounts.length) { m.innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.3rem;margin-bottom:6px">No accounts yet</div><p class="small muted">Import a bank or card statement and Ledger sets the account up for you.</p><button class="btn" data-act="tab" data-tab="import">Import a statement</button><p class="small" style="margin:12px 0 0"><button class="link" data-act="addAccount">Or add one by hand</button></p></div>`; return; }
   const nw = netWorth();
   const groups = {};
   for (const a of D.accounts.filter((a) => !a.archived && accVisible(a))) (groups[typeOf(a.type).group] ||= []).push(a);
@@ -777,11 +801,12 @@ function renderAccounts(m) {
   m.innerHTML = whoSwitch() + `<div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2><div class="big num">${inr(nw.net, 0)}</div>${D.settings.loansSeparate && loansTotal() ? `<div class="small muted">Loans ${inr(loansTotal(), 0)}, kept out of net worth</div>` : ''}${multi() && D.settings.who !== 'all' && D.accounts.some((a) => ownerOf(a) === 'joint') ? '<div class="tiny muted">Joint accounts count half here.</div>' : ''}</div>` +
     order.filter((g) => groups[g]).map((g) => {
       const total = groups[g].reduce((s2, a) => s2 + Math.round((balance(a) - unbilledEmi(a)) * shareOf(a)), 0);
-      return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="list">${groups[g].map((a) => {
-        const b = balance(a), emi = unbilledEmi(a);
-        return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="ico">${esc(initials(a.institution || a.name))}</div>
-        <div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${esc([multi() ? memberName(ownerOf(a)) : '', a.institution, a.last4 ? '••' + a.last4 : '', typeOf(a.type).label].filter(Boolean).join(' · '))}</div></div>
-        <div style="text-align:right"><div class="a num">${inr(b, 0)}</div>${emi ? `<div class="tiny muted num">+ ${inr(emi, 0)} EMI</div>` : ''}</div></button>`;
+      return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="acards">${groups[g].map((a) => {
+        const b = balance(a), emi = unbilledEmi(a), loan = isLoanType(a.type);
+        const sub = [multi() ? memberName(ownerOf(a)) : '', a.institution, a.last4 ? '••' + a.last4 : '', a.type === 'credit_card' && a.statement?.dueDate && !a.statement.paid && daysUntil(a.statement.dueDate) >= 0 ? 'due ' + fmtDate(a.statement.dueDate) : '', loan && a.loan ? 'EMI ' + inr(a.loan.emi, 0) : ''].filter(Boolean).join(' · ');
+        return `<button class="acard ${loan ? 'outline' : 'tone-' + acctTone(a)}" data-act="openAccount" data-id="${a.id}">
+          <span class="grow"><span class="n">${esc(a.name)}</span><span class="s">${esc(sub || typeOf(a.type).label)}</span><span class="v num">${inr(b, 0)}${emi ? ` <span class="tiny muted">+ ${inr(emi, 0)} EMI</span>` : ''}</span></span>
+          ${loan ? '' : sparkline(a)}</button>`;
       }).join('')}</div>`;
     }).join('') +
     (D.accounts.some((a) => a.archived) ? `<p class="small muted center">Archived: ${D.accounts.filter((a) => a.archived).map((a) => `<button class="link" data-act="openAccount" data-id="${a.id}">${esc(a.name)}</button>`).join(', ')}</p>` : '');
@@ -1790,12 +1815,24 @@ function loanCard(a) {
   let left = P, int = 0, k = 0; while (left > 100 && k++ < 600) { const i = Math.round(left * r); int += i; left -= Math.min(L.emi, left + i) - i; }
   const payoff = L.nextDue ? (() => { let d = L.nextDue; for (let j = 1; j < k; j++) d = nextDateOnDay(L.day, d); return d; })() : null;
   const from = L.paidFrom ? accById(L.paidFrom) : null;
-  return `<div class="card"><h2>EMI</h2>
+  const borrowed = L.borrowed || Math.max(P, ...D.valuations.filter((v) => v.accountId === a.id).map((v) => v.value));
+  const paidPct = borrowed > 0 ? Math.max(0, Math.min(1, 1 - P / borrowed)) : 0;
+  const C = 2 * Math.PI * 52;
+  const ring = `<div class="card loanring"><svg width="132" height="132" viewBox="0 0 120 120" role="img" aria-label="${(paidPct * 100).toFixed(1)}% repaid"><circle cx="60" cy="60" r="52" fill="none" stroke="var(--line)" stroke-width="9"/><circle class="ringarc" cx="60" cy="60" r="52" fill="none" stroke="var(--brand-bg)" stroke-width="9" stroke-linecap="round" transform="rotate(-90 60 60)" style="stroke-dasharray:${C.toFixed(1)};--off:${(C * (1 - paidPct)).toFixed(1)};stroke-dashoffset:${ui.draw ? C.toFixed(1) : (C * (1 - paidPct)).toFixed(1)}"/><text x="60" y="60" text-anchor="middle" class="serif" style="font-size:22px;fill:var(--ink)">${(paidPct * 100).toFixed(1)}%</text><text x="60" y="78" text-anchor="middle" style="font-size:10px;fill:var(--muted)">repaid</text></svg>
+    <div class="grow"><div class="small muted">Still to pay</div><div class="mid num">${inr(P, 0)}</div><div class="small muted" style="margin-top:8px">Borrowed</div><div class="num">${inr(borrowed, 0)} <button class="link tiny" data-act="setBorrowed" data-id="${a.id}">${L.borrowed ? 'Edit' : 'Set'}</button></div></div></div>`;
+  const maxPre = Math.min(P, 2500000 * 100 / 100 * 100);
+  const pre = `<div class="card"><div class="row"><h2 class="grow" style="margin:0"><label for="pp-${a.id}">If I prepay</label></h2><span class="mid num" id="ppAmt" style="color:var(--brand)">Nothing yet</span></div>
+    <input id="pp-${a.id}" class="pp" type="range" min="0" max="${Math.max(5000000, Math.min(maxPre, 250000000))}" step="5000000" value="0" data-acc="${a.id}" aria-label="Prepayment amount">
+    <div class="row tiny muted" style="justify-content:space-between"><span>₹0</span><span>${inr(Math.max(5000000, Math.min(maxPre, 250000000)), 0)}</span></div>
+    <div class="split" style="margin-top:8px"><div><div class="small muted">Interest saved</div><div class="mid num" id="ppSaved" style="color:var(--brand)">₹0</div></div><div><div class="small muted">Loan ends</div><div class="mid num" id="ppEnds">${payoff ? MON[+payoff.slice(5, 7) - 1] + ' ' + payoff.slice(0, 4) : ''}</div></div>
+    <div><div class="small muted">EMIs left</div><div class="num" id="ppEmis">${k}</div></div><div><div class="small muted">Interest still to pay</div><div class="num" id="ppLeft">${inr(int, 0)}</div></div></div>
+    <p class="tiny muted" style="margin:8px 0 0">Ask the bank to reduce the tenure, not the EMI.</p></div>`;
+  return ring + `<div class="card"><h2>EMI</h2>
     <div class="split"><div><div class="small muted">Monthly EMI</div><div class="mid num">${inr(L.emi, 0)}</div></div><div><div class="small muted">EMIs left</div><div class="mid">${k}</div></div></div>
     <p class="small" style="margin:10px 0 0">${L.nextDue ? `Next on <b>${fmtDate(L.nextDue, true)}</b>` : 'Fully repaid'} · ${L.rate ? `${(+L.rate).toFixed(2)}% a year` : 'no-cost (0%)'} · paid from ${from ? esc(accShort(from)) : 'outside Ledger'}</p>
     ${payoff ? `<p class="small muted" style="margin:6px 0 0">Ends ${fmtDate(payoff, true)}${int ? ` · ${inr(int, 0)} interest still to pay` : ''}</p>` : ''}
     ${P > 0 && P <= L.emi * 2 && L.rate ? `<p class="small warn" style="margin:8px 0 0">The outstanding (${inr(P, 0)}) is about one EMI, so Ledger thinks this loan is nearly over. If it isn't, tap <b>Update value</b> above and enter what you still owe from your loan statement.</p>` : ''}
-    <div class="row" style="margin-top:12px"><button class="btn ghost" style="flex:1" data-act="editAccount" data-id="${a.id}">Edit EMI</button><button class="btn ghost" style="flex:1" data-act="prepaySheet" data-id="${a.id}">Prepay</button></div></div>`;
+    <div class="row" style="margin-top:12px"><button class="btn ghost" style="flex:1" data-act="editAccount" data-id="${a.id}">Edit EMI</button><button class="btn ghost" style="flex:1" data-act="prepaySheet" data-id="${a.id}">Record a prepayment</button></div></div>` + (L.rate && P > 0 ? pre : '');
 }
 
 // ---------- manual transfers & balance updates ----------
@@ -2110,6 +2147,10 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  setBorrowed: (d) => { const a = accById(d.id); const v = prompt('How much did you borrow originally? (₹)', a.loan.borrowed ? a.loan.borrowed / 100 : ''); const p2 = v == null ? null : parseRupees(v); if (p2) { a.loan.borrowed = Math.abs(p2); save(); render(); } },
+  swCat: (d) => { swClose(); const x = D.transactions.find((t) => t.id === d.id); if (!x) return; openSheet(`<h3>Category for ${esc(x.payee || 'this payment')}</h3><div class="list">${D.categories.filter((c) => (x.amount < 0) === (c.kind !== 'income') || c.kind === 'transfer').map((c) => `<button class="item" data-act="swSetCat" data-id="${x.id}" data-c="${c.id}">${catIcon(c.id)}<div class="grow">${esc(c.name)}<div class="s">${esc(c.group)}</div></div>${x.categoryId === c.id ? '<div class="in">✓</div>' : ''}</button>`).join('')}</div>`); },
+  swSetCat: (d) => { const x = D.transactions.find((t) => t.id === d.id); if (!x) return; x.categoryId = d.c; x.catManual = true; delete x.suggest; save(); closeSheet(); render(); done(catName(d.c)); },
+  swTransfer: (d) => { swClose(); acts.linkTransferSheet(d); },
   quickAdd: () => quickAdd(),
   qaKey: (d) => { const q = ui.qa; let a = q.amt; if (d.k === '⌫') a = a.slice(0, -1); else if (d.k === '.') { if (!a.includes('.')) a = (a || '0') + '.'; } else if (!/\.\d\d$/.test(a) && a.replace('.', '').length < 9) a = (a === '0' ? '' : a) + d.k; q.amt = a; q.payee = $('#qaPayee')?.value ?? q.payee; haptic(); renderQuick(); },
   qaPayee: (d) => { const q = ui.qa; q.payee = d.p; if (!q.catTouched) q.cat = guessCategory(d.p, -1) || ''; renderQuick(); },
@@ -2243,7 +2284,7 @@ const acts = {
     save(); render(); toast(`${name} added. This statement will be filed under ${name}.`, 3500);
   },
   refreshNav: async () => { toast('Checking NAVs…'); const n = await refreshNavs({ force: true }); render(); toast(n ? `${n} NAVs updated` : 'NAVs are already up to date (or the NAV service could not be reached)', 3500); },
-  setWho: (d) => { if (D.settings.who === d.who) return; D.settings.who = d.who; haptic(); ui.draw = true; ui.swap = true; save(); render(); ui.draw = false; ui.swap = false; },
+  setWho: (d) => { if (D.settings.who === d.who) return; const o2 = [['all'], ...D.members.map((x) => [x.id])]; ui.whoFrom = Math.max(0, o2.findIndex((x) => x[0] === D.settings.who)); D.settings.who = d.who; haptic(); ui.draw = true; ui.swap = true; save(); render(); ui.draw = false; ui.swap = false; ui.whoFrom = null; },
   memberSheet: (d) => {
     const mb = D.members.find((x) => x.id === d.id);
     openSheet(`<h3>${mb ? 'Edit person' : 'Add a person'}</h3><form data-form="member" data-id="${mb?.id || ''}">
@@ -2362,6 +2403,44 @@ const acts = {
 };
 document.addEventListener('change', (e) => {
   const id = e.target.dataset?.inboxAcc; if (id && e.target.value) assignInbox(id, e.target.value);
+});
+// Swipe a transaction left to reveal Category and Transfer (tap anywhere else to close)
+let swS = null, swOpen = null, swMoved = false;
+function swClose() { if (swOpen) { swOpen.style.transform = ''; swOpen.closest('.sw')?.classList.remove('open'); swOpen = null; } }
+document.addEventListener('touchstart', (e) => {
+  const it = e.target.closest?.('.sw > .item'); swMoved = false;
+  if (!it) { if (swOpen && !e.target.closest('.sw-acts')) swClose(); return; }
+  if (swOpen && swOpen !== it) swClose();
+  swS = { it, x: e.touches[0].clientX, y: e.touches[0].clientY, base: it === swOpen ? -152 : 0, dir: null };
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!swS) return;
+  const dx = e.touches[0].clientX - swS.x, dy = e.touches[0].clientY - swS.y;
+  if (!swS.dir) { if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; swS.dir = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v'; }
+  if (swS.dir !== 'h') { swS = null; return; }
+  swMoved = true; e.preventDefault();
+  const x = Math.max(-190, Math.min(0, swS.base + dx));
+  swS.it.style.transition = 'none'; swS.it.style.transform = `translateX(${x}px)`;
+}, { passive: false });
+document.addEventListener('touchend', (e) => {
+  if (!swS) return; const it = swS.it; it.style.transition = '';
+  const m = new DOMMatrixReadOnly(getComputedStyle(it).transform).m41;
+  if (swS.dir === 'h') { if (m < -60) { it.style.transform = 'translateX(-152px)'; it.closest('.sw').classList.add('open'); swOpen = it; haptic(); } else { it.style.transform = ''; it.closest('.sw').classList.remove('open'); if (swOpen === it) swOpen = null; } }
+  swS = null;
+});
+document.addEventListener('click', (e) => { if (swMoved && e.target.closest?.('.sw > .item')) { e.stopPropagation(); e.preventDefault(); swMoved = false; } else if (swOpen && e.target.closest?.('.sw > .item') === swOpen) { e.stopPropagation(); e.preventDefault(); swClose(); } }, true);
+document.addEventListener('input', (e) => {
+  if (!e.target.classList?.contains('pp')) return;
+  const a = accById(e.target.dataset.acc); if (!a?.loan) return;
+  const L = a.loan, P = latestValuation(a.id)?.value || 0, r = mrate(L.rate), amt = +e.target.value;
+  const run = (p0) => { let left = p0, int = 0, k = 0; while (left > 100 && k++ < 600) { const i = Math.round(left * r); int += i; left -= Math.min(L.emi, left + i) - i; } return { k, int }; };
+  const base = run(P), now = run(Math.max(0, P - amt));
+  let d = L.nextDue || todayIso(); for (let j = 1; j < now.k; j++) d = nextDateOnDay(L.day, d);
+  $('#ppAmt').textContent = amt ? inr(amt, 0) : 'Nothing yet';
+  $('#ppSaved').textContent = inr(base.int - now.int, 0);
+  $('#ppEnds').textContent = now.k ? MON[+d.slice(5, 7) - 1] + ' ' + d.slice(0, 4) : 'Paid off';
+  $('#ppEmis').textContent = now.k + (amt ? ` (${base.k - now.k} fewer)` : '');
+  $('#ppLeft').textContent = inr(now.int, 0);
 });
 document.addEventListener('touchstart', chartTouch, { passive: true });
 document.addEventListener('touchmove', (e) => { if (e.target.closest?.('.chart .cwrap')) { e.preventDefault(); chartTouch(e); } }, { passive: false });
