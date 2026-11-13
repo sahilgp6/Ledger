@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.6.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -79,21 +79,24 @@ function balance(a) {
     return b;
   }
   const hs = D.holdings?.filter((h) => h.accountId === a.id);
-  if (hs?.length) return hs.reduce((s2, h) => s2 + Math.round(h.qty * h.price), 0);
+  if (hs?.length) return hs.reduce((s2, h) => s2 + holdValue(h), 0);
   const v = latestValuation(a.id)?.value || 0;
   return t.side === 'liability' ? -v : v;
 }
+const holdValue = (h) => h.qty != null ? Math.round(h.qty * h.price) : (h.value || 0);
+const holdCost = (h) => h.qty != null ? Math.round(h.qty * h.avg) : (h.cost || 0);
 function holdingsCard(a) {
-  const hs = D.holdings.filter((h) => h.accountId === a.id).map((h) => ({ ...h, value: Math.round(h.qty * h.price), cost: Math.round(h.qty * h.avg) })).sort((x, y) => y.value - x.value);
+  const hs = D.holdings.filter((h) => h.accountId === a.id).map((h) => ({ ...h, value: holdValue(h), cost: holdCost(h) })).sort((x, y) => y.value - x.value);
   if (!hs.length) return '';
   const val = hs.reduce((t, h) => t + h.value, 0), cost = hs.reduce((t, h) => t + h.cost, 0), pl = val - cost;
   const pct = (p, c) => c ? `${p >= 0 ? '+' : ''}${(p / c * 100).toFixed(1)}%` : '';
   return `<div class="card"><h2>Holdings · ${hs.length}</h2>
     <div class="split"><div><div class="small muted">Invested</div><div class="mid num">${inr(cost, 0)}</div></div>
     <div><div class="small muted">Profit / loss</div><div class="mid num ${pl >= 0 ? 'in' : 'bad'}">${inrS(pl, 0)} <span class="small">${pct(pl, cost)}</span></div></div></div>
-    <p class="small muted" style="margin:8px 0 0">Prices as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer holdings file to refresh.</p></div>
-    <div class="list">${hs.map((h) => `<div class="item"><div class="ico">${esc(h.symbol.slice(0, 2))}</div>
-      <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}</div></div>
+    ${a.sips?.length ? `<p class="small" style="margin:8px 0 0">SIPs: <b>${inr(a.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</b> across ${a.sips.length} fund${a.sips.length > 1 ? 's' : ''}</p>` : ''}
+    <p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p></div>
+    <div class="list">${hs.map((h) => `<div class="item"><div class="ico">${esc(initials(h.symbol))}</div>
+      <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${h.qty != null ? `${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}` : `${h.folio ? 'Folio ' + esc(h.folio) : ''}${h.xirr != null ? ` · XIRR ${h.xirr}%` : ''}${(a.sips || []).find((x) => x.folio === h.folio) ? ` · SIP ${inr(a.sips.find((x) => x.folio === h.folio).amount, 0)}` : ''}`}</div></div>
       <div style="text-align:right"><div class="a num">${inr(h.value, 0)}</div><div class="tiny num ${h.value >= h.cost ? 'in' : 'bad'}">${inrS(h.value - h.cost, 0)} · ${pct(h.value - h.cost, h.cost)}</div></div></div>`).join('')}</div>`;
 }
 // Card EMIs still to be billed (not yet in the statement balance) are real debt
@@ -338,7 +341,7 @@ function renderImport(m) {
   m.innerHTML = `
   <div class="card"><h2>Add statements</h2>
     <button class="btn wide" data-act="pickFile" data-kind="any">Upload statements</button>
-    <p class="small muted">Pick one or several PDFs or CSVs at once. Ledger recognises each one and sets up the accounts for you. Works now: HDFC credit cards, DNS Bank savings, Zerodha holdings (Excel), any bank CSV or Excel export. CAS for mutual funds is coming. Password-protected files are fine.</p>
+    <p class="small muted">Pick one or several PDFs or CSVs at once. Ledger recognises each one and sets up the accounts for you. Works now: HDFC credit cards, DNS Bank savings, Zerodha holdings (Excel), mutual fund portfolio summaries from your distributor, any bank CSV or Excel export. Password-protected files are fine.</p>
   </div>
   <div class="card"><h2>Bank SMS</h2>
     <button class="btn wide" data-act="pickFile" data-kind="inbox">Read SMS inbox file</button>
@@ -394,6 +397,12 @@ async function draftFromPdf(file, password) {
     const parsed = P.parseHdfcCard(pages);
     const match = D.accounts.find((a) => a.type === 'credit_card' && !a.archived && a.last4 && a.last4 === parsed.statement.cardLast4);
     return { imp: { kind: 'card', fileName: file.name, parsed, accountId: match?.id || '_new', newName: `HDFC ${parsed.statement.product || 'Credit Card'}`, newType: 'credit_card', rows: [] }, pw: opened.pw };
+  }
+  if (P.detectMfSummary(text)) {
+    const parsed = P.parseMfSummary(pages);
+    const st = parsed.statement;
+    const match = D.accounts.find((a) => !a.archived && a.type === 'mutual_fund' && ((st.pan && a.mfKey === `${st.pan}|${st.distributor}`) || (!a.mfKey && a.institution === st.distributor)));
+    return { imp: { kind: 'mfsummary', fileName: file.name, parsed, accountId: match?.id || '_new', newName: 'Mutual funds', newType: 'mutual_fund', rows: [] }, pw: opened.pw };
   }
   if (P.detectBankStatement(text)) {
     const parsed = P.parseBankPdf(pages);
@@ -459,7 +468,7 @@ function txHash(accountId, t, n) { return [accountId, t.date, t.amount, squash(t
 
 function buildRows() {
   const imp = ui.imp;
-  if (imp.kind === 'holdings') { imp.rows = []; return; }
+  if (imp.kind === 'holdings' || imp.kind === 'mfsummary') { imp.rows = []; return; }
   let src;
   if (imp.kind === 'card' || imp.kind === 'bankpdf') src = imp.parsed.transactions;
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
@@ -541,10 +550,10 @@ function csvOpening(imp) {
 }
 
 function buildRowsFor(imp) { const prev = ui.imp; ui.imp = imp; buildRows(); ui.imp = prev; }
-function draftKey(imp) { if (imp.kind === 'holdings') return 'hold:' + (imp.parsed.statement.clientId || ''); return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
+function draftKey(imp) { if (imp.kind === 'holdings') return 'hold:' + (imp.parsed.statement.clientId || ''); if (imp.kind === 'mfsummary') return 'mf:' + (imp.parsed.statement.pan || '') + (imp.parsed.statement.distributor || ''); return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
 // Imports one draft. Returns { acc, added, upgraded } (throws on a problem the user must fix).
 function commitDraft(imp, createdInBatch = {}) {
-  if (imp.kind === 'holdings') return commitHoldings(imp, createdInBatch);
+  if (imp.kind === 'holdings' || imp.kind === 'mfsummary') return commitHoldings(imp, createdInBatch);
   let acc = accById(imp.accountId);
   if (!acc && createdInBatch[draftKey(imp)]) acc = createdInBatch[draftKey(imp)];
   if (!acc) {
@@ -621,19 +630,25 @@ function commitDraft(imp, createdInBatch = {}) {
 }
 function commitHoldings(imp, created) {
   const st = imp.parsed.statement;
+  const isMf = imp.kind === 'mfsummary';
   let acc = accById(imp.accountId) || created[draftKey(imp)];
   if (!acc) {
-    acc = { id: uid(), name: (imp.newName || 'Zerodha').trim(), type: 'stocks', institution: 'Zerodha', last4: '', brokerId: st.clientId || '', currency: 'INR', createdAt: new Date().toISOString() };
+    acc = isMf
+      ? { id: uid(), name: (imp.newName || 'Mutual funds').trim(), type: 'mutual_fund', institution: st.distributor || '', last4: '', mfKey: `${st.pan || ''}|${st.distributor || ''}`, currency: 'INR', createdAt: new Date().toISOString() }
+      : { id: uid(), name: (imp.newName || 'Zerodha').trim(), type: 'stocks', institution: 'Zerodha', last4: '', brokerId: st.clientId || '', currency: 'INR', createdAt: new Date().toISOString() };
     D.accounts.push(acc); created[draftKey(imp)] = acc;
   }
   if (st.clientId && !acc.brokerId) acc.brokerId = st.clientId;
   const importId = uid();
   if (!acc.holdingsAsOn || (st.asOn || '') >= acc.holdingsAsOn) {
-    D.holdings = D.holdings.filter((h) => h.accountId !== acc.id).concat(imp.parsed.holdings.map((h) => ({ id: uid(), accountId: acc.id, importId, ...h, avg: h.avg * 100, price: h.price * 100, priceDate: st.asOn })));
+    const mapH = isMf ? (h) => ({ id: uid(), accountId: acc.id, importId, ...h, qty: null, price: null, priceDate: st.asOn })
+      : (h) => ({ id: uid(), accountId: acc.id, importId, ...h, avg: h.avg * 100, price: h.price * 100, priceDate: st.asOn });
+    D.holdings = D.holdings.filter((h) => h.accountId !== acc.id).concat(imp.parsed.holdings.map(mapH));
     acc.holdingsAsOn = st.asOn || todayIso();
+    if (isMf) acc.sips = imp.parsed.sips || [];
   }
   D.valuations.push({ id: uid(), accountId: acc.id, date: st.asOn || todayIso(), value: st.value, note: 'Holdings file', at: Date.now() });
-  D.imports.push({ id: importId, accountId: acc.id, fileName: imp.fileName, kind: 'holdings', at: new Date().toISOString(), count: imp.parsed.holdings.length, period: st.asOn ? { from: st.asOn, to: st.asOn } : null });
+  D.imports.push({ id: importId, accountId: acc.id, fileName: imp.fileName, kind: imp.kind, at: new Date().toISOString(), count: imp.parsed.holdings.length, period: st.asOn ? { from: st.asOn, to: st.asOn } : null });
   return { acc, added: 0, upgraded: 0 };
 }
 function commitBatch() {
@@ -665,17 +680,17 @@ function renderBatch(m) {
     const key = draftKey(imp); const willReuse = !acc && created.has(key); if (!acc) created.add(key);
     const inc = imp.rows.filter((r) => r.include).length, dups = imp.rows.filter((r) => r.dup).length, sms = imp.rows.filter((r) => r.smsMatch).length;
     const st = imp.parsed?.statement;
-    const title = imp.kind === 'holdings' ? `Zerodha holdings${st.clientId ? ' · ' + st.clientId : ''}` : imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
-    const what = imp.kind === 'holdings' ? inr(st.value, 0) : imp.kind === 'card' ? `${inr(st.totalDue, 0)} due ${fmtDate(st.dueDate)}` : imp.kind === 'bankpdf' ? `Balance ${inr(st.closingBalance, 0)}` : `${imp.rows.length} rows`;
+    const title = imp.kind === 'mfsummary' ? `Mutual funds${st.distributor ? ' · ' + st.distributor : ''}` : imp.kind === 'holdings' ? `Zerodha holdings${st.clientId ? ' · ' + st.clientId : ''}` : imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
+    const what = imp.kind === 'holdings' || imp.kind === 'mfsummary' ? inr(st.value, 0) : imp.kind === 'card' ? `${inr(st.totalDue, 0)} due ${fmtDate(st.dueDate)}` : imp.kind === 'bankpdf' ? `Balance ${inr(st.closingBalance, 0)}` : `${imp.rows.length} rows`;
     const ok = imp.parsed?.recon?.ok;
     h += `<div class="card"><div class="row"><div class="grow"><div class="t" style="font-weight:600">${esc(title)}</div><div class="small muted">${esc(imp.fileName)}${st?.periodFrom ? ` · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}` : ''}</div></div><div class="num" style="font-weight:600">${what}</div></div>
       <p class="small" style="margin:10px 0 6px">${acc ? `Adds to <b>${esc(accShort(acc))}</b>` : willReuse ? `Adds to the new account above` : `<b>Creates a new account</b>${st?.last4 || st?.cardLast4 ? ' ••' + esc(st.last4 || st.cardLast4) : ''}:`}</p>
       ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
-      ${imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
+      ${imp.kind === 'mfsummary' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span>${st.xirr != null ? ` · XIRR ${st.xirr}%` : ''} ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p>${imp.parsed.sips?.length ? `<p class="tiny muted" style="margin:0 0 8px">SIPs ${inr(imp.parsed.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</p>` : ''}` : imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
       <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm earlier entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
       ${(imp.loans || []).map((l, j) => `<label class="row small" style="margin:6px 0"><input type="checkbox" class="chk" data-loan="${i}:${j}" ${l.create ? 'checked' : ''}><span>Payments go to loan account ••${esc(l.no.slice(-4))}. Add it as a home loan?</span></label>
         ${l.create ? `<input class="i num" data-loan-amt="${i}:${j}" inputmode="decimal" placeholder="Outstanding today (₹), optional" value="${esc(l.outstanding)}" style="margin-bottom:6px">` : ''}`).join('')}
-      `}<div class="row">${imp.kind === 'holdings' ? '' : `<button class="chip" data-act="batchOpen" data-i="${i}">Review rows / change account</button>`}<button class="chip" data-act="batchDrop" data-i="${i}">Remove</button></div></div>`;
+      `}<div class="row">${imp.kind === 'holdings' || imp.kind === 'mfsummary' ? '' : `<button class="chip" data-act="batchOpen" data-i="${i}">Review rows / change account</button>`}<button class="chip" data-act="batchDrop" data-i="${i}">Remove</button></div></div>`;
   });
   h += `<button class="btn wide" data-act="commitBatch">Confirm and import</button><div style="height:10px"></div><button class="btn wide ghost" data-act="pickFile" data-kind="any">Add more files</button><div style="height:10px"></div><button class="btn wide ghost" data-act="cancelImport">Cancel</button>`;
   m.innerHTML = h;
@@ -1344,7 +1359,7 @@ const acts = {
     const i = D.imports.find((x) => x.id === d.id); const n = D.transactions.filter((x) => x.importId === i.id).length;
     if (!confirm(`Remove the ${n} transactions added by this import?`)) return;
     D.transactions = D.transactions.filter((x) => x.importId !== i.id); D.imports = D.imports.filter((x) => x.id !== i.id);
-    if (i.kind === 'holdings') D.holdings = D.holdings.filter((h) => h.importId !== i.id);
+    if (i.kind === 'holdings' || i.kind === 'mfsummary') D.holdings = D.holdings.filter((h) => h.importId !== i.id);
     const a = accById(i.accountId);
     if (a?.statement && i.statement && a.statement.statementDate === i.statement.statementDate) {
       const prev = D.imports.filter((x) => x.accountId === a.id && x.statement).sort((p, q) => q.statement.statementDate.localeCompare(p.statement.statementDate))[0];

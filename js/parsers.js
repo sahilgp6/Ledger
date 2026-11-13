@@ -359,3 +359,57 @@ export function parseZerodhaHoldings(sheets) {
   out.recon = { ok: Math.abs(reported - out.statement.value) <= 100, reported };
   return out;
 }
+
+// ---------- Mutual fund distributor "Portfolio Summary" (Investwell-style PDF) ----------
+export function detectMfSummary(text) {
+  return /Portfolio Summary/i.test(text) && /Scheme with Folio/i.test(text) && /Current\s*Value/i.test(text);
+}
+export function parseMfSummary(pages) {
+  const lines = toLines(pages);
+  const full = lines.map((l) => l.text).join('\n');
+  const st = {};
+  const pan = full.match(/\b([A-Z]{5}\d{4}[A-Z])\b/); if (pan) st.pan = pan[1];
+  const dist = lines[0]?.items.find((i) => /services|financial|wealth|capital|advis|investment/i.test(i.str));
+  st.distributor = dist ? dist.str.trim() : '';
+  const asOn = full.match(/till\s+(\d{2}-\d{2}-\d{4})/i) || full.match(/to\s+(\d{2}-\d{2}-\d{4})/i);
+  if (asOn) st.asOn = dmyToIso(asOn[1]);
+  const xirr = full.match(/XIRR\s+([\d.]+)\s*%/); if (xirr) st.xirr = +xirr[1];
+  const holdings = [];
+  const start = lines.findIndex((l) => /Scheme with Folio/i.test(l.text));
+  const sipAt = lines.findIndex((l) => /^SIP Summary/i.test(l.text));
+  let prevText = '', category = '';
+  const NUMRE = /^-?[\d,]+(\.\d+)?$/;
+  for (let i = start + 1; i > 0 && i < (sipAt > 0 ? sipAt : lines.length); i++) {
+    const l = lines[i];
+    if (/Total\s*:/i.test(l.text)) { prevText = ''; continue; }
+    const dateIt = l.items.find((it) => /^\d{2}-\d{2}-\d{4}$/.test(it.str.trim()));
+    if (!dateIt) {
+      if (/\(PAN\s*:/i.test(l.text) || /^\[?\d+[\d/]*\]?$/.test(l.text) || /^(Amount|Value|Payout|Gain)\b/.test(l.text)) continue;
+      if (/^[A-Za-z &-]+:\s*[A-Za-z &-]+$/.test(l.text) && !/\(G\)|fund/i.test(l.text)) { category = l.text; prevText = ''; continue; }
+      prevText = l.text; continue;
+    }
+    const nums = l.items.filter((it) => it.x > dateIt.x && NUMRE.test(it.str.trim())).map((it) => parseFloat(it.str.replace(/,/g, '')));
+    let name = l.items.filter((it) => it.x < dateIt.x).map((it) => it.str).join(' ').trim() || prevText;
+    let folio = (name.match(/\[([\d/]+)\]/) || [])[1];
+    const nextL = lines[i + 1]; if (!folio && nextL && /^\[[\d/]+\]$/.test(nextL.text)) folio = nextL.text.slice(1, -1);
+    name = name.replace(/\s*\[[\d/]+\]\s*/, '').trim();
+    if (nums.length < 4) continue;
+    holdings.push({ symbol: name, name, folio: folio || '', category, type: 'mf', start: dmyToIso(dateIt.str.trim()), invested: Math.round(nums[0] * 100), cost: Math.round(nums[2] * 100), value: Math.round(nums[3] * 100), gain: nums[6] != null ? Math.round(nums[6] * 100) : null, xirr: nums[8] ?? null });
+    prevText = '';
+  }
+  // SIPs: amount in the latest month column
+  const sips = [];
+  if (sipAt > 0) for (let i = sipAt + 1; i < lines.length; i++) {
+    const l = lines[i]; if (/Grand Total/i.test(l.text)) break;
+    const folioIt = l.items.find((it) => /^\d{6,}(\/\d+)?$/.test(it.str.trim()));
+    if (!folioIt) continue;
+    const name = l.items.filter((it) => it.x < folioIt.x).map((it) => it.str).join(' ').trim();
+    const amts = l.items.filter((it) => it.x > folioIt.x && NUMRE.test(it.str.trim())).map((it) => Math.round(parseFloat(it.str.replace(/,/g, '')) * 100));
+    if (amts.length) sips.push({ scheme: name, folio: folioIt.str.trim(), amount: amts[amts.length - 1] });
+  }
+  st.cost = holdings.reduce((t, h) => t + h.cost, 0); st.value = holdings.reduce((t, h) => t + h.value, 0);
+  const gt = lines.find((l) => /^Grand Total/i.test(l.text) && l.page === lines[start]?.page);
+  let reported = null;
+  if (gt) { const n = gt.items.filter((it) => NUMRE.test(it.str.trim())).map((it) => parseFloat(it.str.replace(/,/g, ''))); if (n.length >= 4) reported = Math.round(n[3] * 100); }
+  return { kind: 'mfsummary', institution: st.distributor, statement: st, holdings, sips, recon: { ok: reported != null ? Math.abs(reported - st.value) <= 100 : null, reported } };
+}
