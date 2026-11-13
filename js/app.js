@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.6';
+const APP_VERSION = '0.9.7';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1571,7 +1571,7 @@ function loanCard(a) {
   const L = a.loan; if (!L) return '';
   const P = latestValuation(a.id)?.value || 0, r = mrate(L.rate);
   // remaining interest if the same EMI continues
-  let left = P, int = 0, k = 0; while (left > Math.max(100, L.emi * 0.005) && k++ < 600) { const i = Math.round(left * r); int += i; left -= Math.min(L.emi, left + i) - i; }
+  let left = P, int = 0, k = 0; while (left > 100 && k++ < 600) { const i = Math.round(left * r); int += i; left -= Math.min(L.emi, left + i) - i; }
   const payoff = L.nextDue ? (() => { let d = L.nextDue; for (let j = 1; j < k; j++) d = nextDateOnDay(L.day, d); return d; })() : null;
   const from = L.paidFrom ? accById(L.paidFrom) : null;
   return `<div class="card"><h2>EMI</h2>
