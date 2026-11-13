@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.4.3';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -596,6 +596,16 @@ function renderVault(m) {
   <p class="small" style="margin:0 4px 8px"><button class="link" data-act="vaultImport">Import a vault file</button></p>
   <p class="small muted" style="margin:6px 4px">Everything here is encrypted on this phone, like the rest of Ledger. Attach policy PDFs, e-cards and ID scans to each item. Renewal and premium reminders live in Bills &amp; subscriptions.</p>`;
 }
+// Emails, phone numbers and links in the vault open Mail, the phone or WhatsApp
+function contactLink(val) {
+  const v = String(val).trim();
+  if (/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(v)) return `<a href="mailto:${esc(v)}">${esc(v)}</a>`;
+  if (/^https?:\/\//i.test(v)) return `<a href="${esc(v)}" target="_blank" rel="noopener">${esc(v.replace(/^https?:\/\//, '').replace(/\/$/, ''))}</a>`;
+  const wa = v.match(/^whatsapp\s*:?\s*(\+?[\d\s-]{8,})$/i);
+  if (wa) { const n = wa[1].replace(/[^\d]/g, ''); return `<a href="https://wa.me/${n}" target="_blank" rel="noopener">WhatsApp ${esc(wa[1].trim())}</a>`; }
+  if (/^\+?[\d][\d\s-]{6,}$/.test(v)) return `<a href="tel:${esc(v.replace(/[\s-]/g, ''))}">${esc(v)}</a>`;
+  return esc(v);
+}
 function vaultOpen(id) {
   const v = D.vault.find((x) => x.id === id); if (!v) return;
   const row = (k, val) => val ? `<tr><td class="muted">${k}</td><td>${val}</td></tr>` : '';
@@ -606,7 +616,7 @@ function vaultOpen(id) {
     <table class="t">${row('Insurer', esc(v.provider || ''))}${row('TPA', esc(v.tpa || ''))}${row('Policy no.', esc(v.policyNo || ''))}${row('Covers', esc(v.holder || ''))}${row('Cover', esc(v.cover || ''))}${row('Premium', v.premium ? inr(v.premium, 0) + (v.freq ? ' ' + (per[v.freq] || '') : '') : esc(v.premiumNote || ''))}${row('Next due', v.nextDue ? fmtDate(v.nextDue, true) : '')}${row('Nominee', esc(v.nominee || ''))}</table>
     ${v.notes ? `<p class="small" style="margin-top:12px">${esc(v.notes)}</p>` : ''}
     ${v.claim?.length ? vhead('How to claim') + `<ol class="small" style="padding-left:18px;line-height:1.5;margin:0">${v.claim.map((c) => `<li>${esc(c)}</li>`).join('')}</ol>` : ''}
-    ${v.contacts?.length ? vhead('Contacts') + `<table class="t">${v.contacts.map(([k, val]) => row(esc(k), esc(val))).join('')}</table>` : ''}
+    ${v.contacts?.length ? vhead('Contacts') + `<table class="t">${v.contacts.map(([k, val]) => row(esc(k), contactLink(val))).join('')}</table>` : ''}
     ${vhead('Documents')}
     ${receiptThumbs(files) || '<p class="small muted" style="margin:0 0 8px">None yet: add the policy PDF, e-card or schedule.</p>'}
     <div class="row"><button class="btn ghost" style="flex:1" data-act="vaultAttach" data-id="${v.id}">📎 Attach</button><button class="btn ghost" style="flex:1" data-act="vaultEdit" data-id="${v.id}">Edit</button></div>`);
@@ -2321,11 +2331,17 @@ const acts = {
     try {
       const j = JSON.parse(await fs[0].text()); if (j.format !== 'ledger-vault') throw new Error('Not a Ledger vault file');
       let n = 0;
-      for (const v of j.vault || []) if (!D.vault.some((x) => x.title === v.title)) { D.vault.push({ id: uid(), files: [], ...v }); n++; }
+      for (const v of j.vault || []) {
+        const ex = D.vault.find((x) => x.title === v.title);
+        if (!ex) { D.vault.push({ id: uid(), files: [], ...v }); n++; continue; }
+        // Already there: add any new contacts and claim steps, keep everything else as you edited it
+        for (const c of v.contacts || []) if (!(ex.contacts ||= []).some((y) => y[1] === c[1])) { ex.contacts.push(c); n++; }
+        for (const c of v.claim || []) if (!(ex.claim ||= []).includes(c)) ex.claim.push(c);
+      }
       for (const b of j.bills || []) if (!D.bills.some((x) => x.name === b.name)) D.bills.push({ id: uid(), ...b });
       for (const r of j.rules || []) if (!D.rules.some((x) => x.pattern === r.pattern)) { const rule = { id: uid(), sign: null, payee: null, createdAt: new Date().toISOString(), ...r }; D.rules.unshift(rule); applyRule(rule); }
       if (j.payWith) for (const [via, l4] of Object.entries(j.payWith)) { const a = D.accounts.find((x) => !x.archived && x.last4 === l4); if (a) (D.settings.payWith ||= {})[via] = a.id; }
-      save(); render(); done(`${n} added to the vault`);
+      save(); render(); done(n ? `${n} added to the vault` : 'Vault is up to date');
     } catch (e) { toast(e.message || 'Could not read that file', 4000); }
   },
   vaultDelete: (d) => { if (!confirm('Delete this from the vault? Attached files stay in Receipts.')) return; D.vault = D.vault.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
