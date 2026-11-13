@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.6.1';
+const APP_VERSION = '0.6.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1647,11 +1647,16 @@ $('#restoreFile').addEventListener('change', async (e) => {
 // ---------- boot ----------
 async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    // A new version took over: reload straight away if nothing is in progress, otherwise on next open
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      if (!D || (!ui.batch && !$('#sheet').classList.contains('on'))) { reloading = true; location.reload(); }
+      else toast('Update installed. It applies next time you open Ledger.', 4000);
+    });
     navigator.serviceWorker.register('./sw.js').then((reg) => {
-      reg.addEventListener('updatefound', () => {
-        const nw = reg.installing;
-        nw?.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('Update ready: close and reopen the app', 5000); });
-      });
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
     }).catch(() => {});
   }
   try {
