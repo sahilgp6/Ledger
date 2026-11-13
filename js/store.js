@@ -139,6 +139,23 @@ export class Vault {
 
   async disablePasskey() { delete this.meta.passkey; await kvSet('meta', this.meta); }
 
+  // App lock off: the data key is wrapped by a device key that can never leave this browser's storage
+  // (non-extractable), so Ledger opens without Face ID or the passphrase. Data stays encrypted at rest.
+  get lockOff() { return !!this.meta?.device; }
+  async setLockOff() {
+    const dk = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const w = await wrap(dk, this.raw);
+    await kvSet('deviceKey', dk);
+    this.meta.device = w;
+    await kvSet('meta', this.meta);
+  }
+  async setLockOn() { delete this.meta.device; await kvSet('meta', this.meta); await kvSet('deviceKey', null); }
+  async unlockWithDevice() {
+    const dk = await kvGet('deviceKey');
+    if (!dk || !this.meta.device) throw new Error('No device key');
+    await this._open(await unwrap(dk, this.meta.device));
+  }
+
   async changePassphrase(oldPass, newPass) {
     const p = this.meta.pass;
     try { await unwrap(await passKek(oldPass, unb64(p.salt), p.iter), p); } catch { throw new Error('Current passphrase is wrong.'); }

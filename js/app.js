@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.8';
+const APP_VERSION = '0.9.9';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1182,10 +1182,11 @@ function renderMore(m) {
   <div class="list"><button class="item" data-act="toggleLoans"><div class="grow">Keep loans out of net worth<div class="s">Home, car and personal loans are shown separately</div></div><div class="muted">${D.settings.loansSeparate ? 'On' : 'Off'} ›</div></button></div>
   <div class="day"><span>Security</span></div>
   <div class="list">
-    <button class="item" data-act="toggleFaceId"><div class="grow">Face ID unlock</div><div class="muted">${vault.hasPasskey ? 'On' : 'Off'} ›</div></button>
-    <button class="item" data-act="changePass"><div class="grow">Change recovery passphrase</div><div class="muted">›</div></button>
+    <button class="item" data-act="toggleLock"><div class="grow">App lock<div class="s">${vault.lockOff ? 'Off: Ledger opens without Face ID or passphrase' : 'On: Face ID or passphrase to open'}</div></div><div class="muted">${vault.lockOff ? 'Off' : 'On'} ›</div></button>
+    ${vault.lockOff ? '' : `<button class="item" data-act="toggleFaceId"><div class="grow">Face ID unlock</div><div class="muted">${vault.hasPasskey ? 'On' : 'Off'} ›</div></button>
     <label class="item"><div class="grow">Auto-lock after</div><select id="autoLock" class="chip">${[1, 5, 15, 60].map((n) => `<option value="${n}" ${D.settings.autoLockMin === n ? 'selected' : ''}>${n} min</option>`).join('')}</select></label>
-    <button class="item" data-act="lockNow"><div class="grow">Lock now</div></button>
+    <button class="item" data-act="lockNow"><div class="grow">Lock now</div></button>`}
+    <button class="item" data-act="changePass"><div class="grow">Change recovery passphrase</div><div class="muted">›</div></button>
   </div>
   <div class="day"><span>Your data</span></div>
   <div class="list">
@@ -1210,7 +1211,7 @@ function renderMore(m) {
   <p class="muted" style="margin-bottom:0">Inspired by the open-source Sure app. Not affiliated with it or with any bank.</p></div>
   <button class="btn wide ghost" data-act="forceUpdate">Get the latest version</button><div style="height:10px"></div>
   <button class="btn wide danger" data-act="eraseAll">Erase everything on this phone</button>`;
-  $('#autoLock').addEventListener('change', (e) => { D.settings.autoLockMin = +e.target.value; save(); });
+  $('#autoLock')?.addEventListener('change', (e) => { D.settings.autoLockMin = +e.target.value; save(); });
   storageInfo();
 }
 async function storageInfo() {
@@ -1899,7 +1900,7 @@ function lockApp() { if (!D) return; AI.unload(); vault.saveNow().finally(() => 
 document.addEventListener('visibilitychange', () => {
   if (!D) return;
   if (document.hidden) { hiddenAt = Date.now(); vault.saveNow().catch((e) => vault.onError(e)); }
-  else if (hiddenAt && Date.now() - hiddenAt > (D.settings.autoLockMin || 5) * 60000) lockApp();
+  else if (!vault.lockOff && hiddenAt && Date.now() - hiddenAt > (D.settings.autoLockMin || 5) * 60000) lockApp();
 });
 
 // ---------- events ----------
@@ -2111,6 +2112,11 @@ const acts = {
     catch (e) { await offerFaceId(); toast(e.name === 'NotAllowedError' ? 'Cancelled' : (e.message || 'Could not turn on Face ID'), 3500); }
   },
   skipFace: () => afterUnlock(),
+  toggleLock: () => openSheet(vault.lockOff
+    ? `<h3>Turn app lock on?</h3><p>Ledger will ask for ${vault.hasPasskey ? 'Face ID' : 'your recovery passphrase'} every time it opens, and lock itself after a few minutes away.</p>${vault.hasPasskey ? '' : '<p class="small muted">You can turn on Face ID afterwards in More → Security.</p>'}<button class="btn wide" data-act="lockOnConfirm">Turn app lock on</button>`
+    : `<h3>Turn app lock off?</h3><p>Ledger will open straight away, with no Face ID or passphrase.</p><ul class="small" style="padding-left:18px;line-height:1.5"><li>Anyone holding your unlocked iPhone can see your finances.</li><li>Your data stays encrypted on the phone, and backups still need your recovery passphrase.</li><li>Keep your passphrase safe: you need it to restore a backup or turn the lock back on later.</li></ul><button class="btn wide danger" data-act="lockOffConfirm">Turn app lock off</button><div style="height:10px"></div><button class="btn wide ghost" data-act="closeSheet">Keep it on</button>`),
+  lockOffConfirm: async () => { try { await vault.setLockOff(); closeSheet(); render(); toast('App lock is off. Ledger opens without Face ID.'); } catch (e) { toast('Could not turn the lock off: ' + (e.message || e), 4000); } },
+  lockOnConfirm: async () => { await vault.setLockOn(); closeSheet(); render(); toast('App lock is on'); },
   toggleFaceId: async () => {
     if (vault.hasPasskey) { if (confirm('Turn off Face ID unlock? You will need your passphrase.')) { await vault.disablePasskey(); render(); } return; }
     const sup = await passkeySupport();
@@ -2352,7 +2358,10 @@ async function boot() {
     }).catch(() => {});
   }
   try {
-    if (await vault.exists()) renderUnlock(); else renderSetup();
+    if (await vault.exists()) {
+      if (vault.lockOff) { try { await vault.unlockWithDevice(); await afterUnlock(); return; } catch (e) { console.warn('Lock-off open failed', e); } }
+      renderUnlock();
+    } else renderSetup();
   } catch (e) {
     showLock(`<h1>Storage unavailable</h1><p class="lead">This browser is blocking on-device storage (Private Browsing does this). Open the app normally or from the Home Screen.</p>`);
   }
