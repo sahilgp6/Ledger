@@ -41,7 +41,7 @@ export const DEFAULT_CATEGORIES = [
   C('personal_care', 'Personal care', 'Personal'), C('entertainment', 'Entertainment', 'Personal'), C('education', 'Education', 'Personal'), C('gifts', 'Gifts & donations', 'Personal'), C('family', 'Family support', 'Personal'),
   C('fees', 'Bank charges, fees & GST', 'Financial'), C('interest_paid', 'Interest paid', 'Financial'), C('insurance', 'Insurance', 'Financial'), C('taxes', 'Taxes', 'Financial'),
   C('investments', 'Investments', 'Transfers', 'transfer'), C('card_payment', 'Credit card payment', 'Transfers', 'transfer'), C('emi_conversion', 'EMI conversion & principal', 'Transfers', 'transfer'),
-  C('loan_repayment', 'Loan repayment (principal)', 'Transfers', 'transfer'), C('cash_withdrawal', 'Cash withdrawal', 'Transfers', 'transfer'), C('self_transfer', 'Transfer between my accounts', 'Transfers', 'transfer'),
+  C('loan_repayment', 'Loan repayment (principal)', 'Transfers', 'transfer'), C('cash_withdrawal', 'Cash withdrawal', 'Transfers', 'transfer'), C('self_transfer', 'Transfer between my accounts', 'Transfers', 'transfer'), C('adjustment', 'Balance adjustment', 'Transfers', 'transfer'),
 ];
 
 // Default merchant rules. Order matters: first match wins, so specific patterns come before broad ones.

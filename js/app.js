@@ -4,7 +4,7 @@ import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squas
 import { parseSms, smsPayee, splitInbox } from './sms.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.3.2';
+const APP_VERSION = '0.4.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -208,7 +208,7 @@ function filteredTx() {
   }).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || ''));
 }
 function renderTx(m) {
-  setTop('Activity', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addTx">+ Add</button>` });
+  setTop('Activity', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="transferSheet">⇄</button><button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addTx">+ Add</button>` });
   ui.month ||= ymOf(todayIso());
   m.innerHTML = `
     <input class="search" id="q" type="search" placeholder="Search all transactions" value="${esc(ui.q)}" autocomplete="off">
@@ -271,6 +271,8 @@ function renderAccount(m, id) {
     const v = latestValuation(a.id);
     h += `<div class="small muted">${v ? `Value as on ${fmtDate(v.date, true)}` : 'No value entered yet'}</div><div style="margin-top:12px"><button class="btn" data-act="addValuation" data-id="${a.id}">Update value</button></div>`;
   }
+  if (t.mode === 'ledger') h += `<div class="small muted">${a.balanceSetAt ? `You confirmed this balance on ${fmtDate(a.balanceSetAt, true)}` : a.statement?.periodTo ? `From statements up to ${fmtDate(a.statement.periodTo, true)}, plus later entries` : ''}</div>
+    <div class="row" style="margin-top:12px"><button class="btn" style="flex:1" data-act="setBalance" data-id="${a.id}">Update balance</button><button class="btn ghost" style="flex:1" data-act="transferSheet" data-from="${a.id}">Transfer</button></div>`;
   h += `</div>`;
   const st = a.statement;
   if (a.type === 'credit_card' && st) {
@@ -420,7 +422,7 @@ function buildRows() {
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
   const acc = imp.accountId;
   const existing = new Set(D.transactions.filter((x) => x.accountId === acc).map((x) => x.hash));
-  const smsPool = D.transactions.filter((x) => x.accountId === acc && x.source === 'sms');
+  const smsPool = D.transactions.filter((x) => x.accountId === acc && (x.source === 'sms' || x.source === 'transfer'));
   const claimed = new Set();
   const seen = new Map();
   imp.rows = src.map((t) => {
@@ -470,9 +472,9 @@ function renderImportPreview(m) {
     ${imp.accountId === '_new' ? `<div style="height:10px"></div><input class="i" id="impNewName" placeholder="Account name, e.g. HDFC Savings" value="${esc(imp.newName)}">
       ${!isStmt ? `<div style="height:10px"></div><select class="i" id="impNewType">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
   </div>
-  <div class="row" style="margin:0 4px 8px"><div class="grow small muted">${inc.length} of ${imp.rows.length} selected${dups ? ` · ${dups} already imported` : ''}${imp.rows.some((r) => r.smsMatch) ? ` · ${imp.rows.filter((r) => r.smsMatch).length} match SMS entries` : ''}</div><button class="link" data-act="impAll">${inc.length === imp.rows.length ? 'Select none' : 'Select all'}</button></div>
+  <div class="row" style="margin:0 4px 8px"><div class="grow small muted">${inc.length} of ${imp.rows.length} selected${dups ? ` · ${dups} already imported` : ''}${imp.rows.some((r) => r.smsMatch) ? ` · ${imp.rows.filter((r) => r.smsMatch).length} match earlier entries` : ''}</div><button class="link" data-act="impAll">${inc.length === imp.rows.length ? 'Select none' : 'Select all'}</button></div>
   <div class="list">${imp.rows.map((r, i) => `<label class="item ${r.include ? '' : 'dup'}"><input type="checkbox" class="chk" data-imp="${i}" ${r.include ? 'checked' : ''}>
-    <div class="grow"><div class="t">${esc(r.payee || r.description)}</div><div class="s">${fmtDate(r.date)} · ${r.categoryId ? esc(catName(r.categoryId)) : '<span class="warn">Uncategorised</span>'}${r.dup ? ' · already imported' : ''}${r.smsMatch ? ' · replaces SMS entry' : ''}</div></div>
+    <div class="grow"><div class="t">${esc(r.payee || r.description)}</div><div class="s">${fmtDate(r.date)} · ${r.categoryId ? esc(catName(r.categoryId)) : '<span class="warn">Uncategorised</span>'}${r.dup ? ' · already imported' : ''}${r.smsMatch ? ' · replaces your earlier entry' : ''}</div></div>
     <div class="a num ${r.amount > 0 ? 'in' : ''}">${r.amount > 0 ? '+' : ''}${inr(r.amount)}</div></label>`).join('')}</div>
   ${imp.warnings?.length ? `<p class="small warn">${imp.warnings.slice(0, 5).map(esc).join('<br>')}</p>` : ''}
   <button class="btn wide" data-act="batchBack">Done</button>`;
@@ -522,8 +524,8 @@ function commitDraft(imp, createdInBatch = {}) {
     const sx = r.smsMatch && D.transactions.find((x) => x.id === r.smsMatch);
     if (sx) {
       // The statement is the authoritative record: upgrade the SMS entry, keep what the user set
-      Object.assign(sx, { date: r.date, time: r.time || sx.time || null, description: r.description, raw: r.raw || r.description, ref: r.ref || sx.ref, importId, hash: r.hash, source: 'statement', smsRaw: sx.raw, points: r.points ?? null });
-      if (!sx.payeeManual) sx.payee = r.payee;
+      Object.assign(sx, { date: r.date, time: r.time || sx.time || null, description: r.description, raw: r.raw || r.description, ref: r.ref || sx.ref, importId, hash: r.hash, source: 'statement', smsRaw: sx.source === 'sms' ? sx.raw : sx.smsRaw, points: r.points ?? null });
+      if (!sx.payeeManual && !sx.transferId) sx.payee = r.payee;
       if (!sx.catManual && r.categoryId) sx.categoryId = r.categoryId;
       upgraded++; continue;
     }
@@ -583,7 +585,7 @@ function commitBatch() {
   const tm = matchTransfers();
   save();
   ui.batch = null; ui.imp = null;
-  toast(`${added} transactions added${upgraded ? `, ${upgraded} SMS confirmed` : ''}${tm ? `, ${tm} transfers matched` : ''}`, 3500);
+  toast(`${added} transactions added${upgraded ? `, ${upgraded} earlier entries confirmed` : ''}${tm ? `, ${tm} transfers matched` : ''}`, 3500);
   if (accs.size === 1) { ui.tab = 'accounts'; ui.view = { page: 'account', id: [...accs][0] }; } else { ui.tab = 'accounts'; ui.view = null; }
   render();
 }
@@ -608,7 +610,7 @@ function renderBatch(m) {
     h += `<div class="card"><div class="row"><div class="grow"><div class="t" style="font-weight:600">${esc(title)}</div><div class="small muted">${esc(imp.fileName)}${st?.periodFrom ? ` · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}` : ''}</div></div><div class="num" style="font-weight:600">${what}</div></div>
       <p class="small" style="margin:10px 0 6px">${acc ? `Adds to <b>${esc(accShort(acc))}</b>` : willReuse ? `Adds to the new account above` : `<b>Creates a new account</b>${st?.last4 || st?.cardLast4 ? ' ••' + esc(st.last4 || st.cardLast4) : ''}:`}</p>
       ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
-      <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm SMS entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
+      <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm earlier entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
       ${(imp.loans || []).map((l, j) => `<label class="row small" style="margin:6px 0"><input type="checkbox" class="chk" data-loan="${i}:${j}" ${l.create ? 'checked' : ''}><span>Payments go to loan account ••${esc(l.no.slice(-4))}. Add it as a home loan?</span></label>
         ${l.create ? `<input class="i num" data-loan-amt="${i}:${j}" inputmode="decimal" placeholder="Outstanding today (₹), optional" value="${esc(l.outstanding)}" style="margin-bottom:6px">` : ''}`).join('')}
       <div class="row"><button class="chip" data-act="batchOpen" data-i="${i}">Review rows / change account</button><button class="chip" data-act="batchDrop" data-i="${i}">Remove</button></div></div>`;
@@ -653,6 +655,7 @@ function txSheet(x, accId) {
     ${x.transferId ? (() => { const o = D.transactions.find((t) => t.transferId === x.transferId && t.id !== x.id); return o ? `<p class="tiny muted">Matched with ${inr(o.amount)} on ${esc(accShort(accById(o.accountId)))}, ${fmtDate(o.date, true)}. <button class="link" type="button" data-act="unlinkTransfer" data-id="${x.id}">Unlink</button></p>` : ''; })() : ''}
     <button class="btn wide">Save</button>
   </form>
+  ${isNew || x.transferId ? '' : `<div style="height:10px"></div><button class="btn wide ghost" data-act="linkTransferSheet" data-id="${x.id}">This was a transfer ${x.amount < 0 ? 'to' : 'from'} my other account</button>`}
   ${isNew ? '' : `<div style="height:10px"></div><button class="btn wide danger" data-act="deleteTx" data-id="${x.id}">Delete transaction</button>`}`);
   const orig = x.categoryId || '';
   if (!isNew) $('#txCat').addEventListener('change', (e) => $('#ruleRow').classList.toggle('hidden', e.target.value === orig || !e.target.value));
@@ -832,7 +835,7 @@ function markUpi(h, mine) {
 function addSms(acc, p, hash) {
   // Read late, after the statement already has it? Then just remember we saw it.
   const dupe = D.transactions.find((x) => x.accountId === acc.id && x.source !== 'sms' && x.amount === p.amount && daysApart(x.date, p.date) <= 3 && !x.smsRaw);
-  if (dupe) { dupe.smsRaw = p.text; return 'known'; }
+  if (dupe) { dupe.smsRaw = p.text; if (dupe.source === 'transfer') { dupe.source = 'sms'; dupe.raw = p.text; dupe.ref = p.ref; } return 'known'; }
   D.transactions.push(smsToTx(acc, p, hash));
   return 'added';
 }
@@ -902,6 +905,63 @@ function smsSetupSheet() {
   <p class="small"><b>DNS Bank:</b> make a second automation the same way, with <code>DNS Bank</code> in step 2. Both write to the same file. Any other bank: same again with that bank's name.</p>
   <p class="small muted">Unfamiliar formats land under "need attention" and Ask Ledger can read them.</p>
   <button class="btn wide" data-act="closeSheet">Got it</button>`);
+}
+
+// ---------- manual transfers & balance updates ----------
+const isCardAcc = (a) => a?.type === 'credit_card';
+function transferCat(a, b) { return isCardAcc(a) || isCardAcc(b) ? 'card_payment' : (typeOf(b?.type).side === 'liability' || typeOf(a?.type).side === 'liability') ? 'loan_repayment' : 'self_transfer'; }
+// For loans and investments (balance = latest value), a transfer moves the value
+function adjustValue(a, delta, date, note) {
+  const cur = latestValuation(a.id)?.value || 0;
+  D.valuations.push({ id: uid(), accountId: a.id, date, value: Math.max(0, cur + delta), note, at: Date.now() });
+}
+// Creates both sides of a transfer. amount > 0 = paise moved from `from` to `to`.
+function createTransfer(fromId, toId, amount, date, note = '') {
+  const from = accById(fromId), to = accById(toId), t = uid(), cat = transferCat(from, to);
+  const base = { time: null, notes: note, ref: null, importId: null, source: 'transfer', transferId: t, categoryId: cat, catManual: true, raw: '' };
+  for (const [acc, other, amt, dir] of [[from, to, -amount, 'to'], [to, from, amount, 'from']]) {
+    if (typeOf(acc.type).mode === 'ledger') D.transactions.push({ id: uid(), accountId: acc.id, date, amount: amt, payee: `${dir === 'to' ? 'To' : 'From'} ${other.name}`, description: `Transfer ${dir} ${accShort(other)}`, hash: 'transfer|' + uid(), ...base });
+    else adjustValue(acc, typeOf(acc.type).side === 'liability' ? -amt : amt, date, `Transfer ${dir} ${other.name}`);
+  }
+}
+// Turns one existing entry into a transfer: links the other side if it is there, otherwise adds it
+function linkAsTransfer(x, otherId) {
+  const other = accById(otherId), me = accById(x.accountId);
+  const t = uid(), cat = transferCat(me, other);
+  x.transferId = t; x.categoryId = cat; x.catManual = true;
+  if (!x.payeeManual) x.payee = `${x.amount < 0 ? 'To' : 'From'} ${other.name}`;
+  const hit = D.transactions.find((y) => y.accountId === otherId && !y.transferId && y.amount === -x.amount && daysApart(y.date, x.date) <= 4);
+  if (hit) { hit.transferId = t; hit.categoryId = cat; hit.catManual = true; if (!hit.payeeManual) hit.payee = `${hit.amount < 0 ? 'To' : 'From'} ${me.name}`; return 'linked'; }
+  if (typeOf(other.type).mode !== 'ledger') { adjustValue(other, typeOf(other.type).side === 'liability' ? x.amount : -x.amount, x.date, `Transfer from ${me.name}`); return 'value'; }
+  D.transactions.push({ id: uid(), accountId: otherId, date: x.date, time: null, amount: -x.amount, payee: `${x.amount < 0 ? 'From' : 'To'} ${me.name}`, description: `Transfer ${x.amount < 0 ? 'from' : 'to'} ${accShort(me)}`, raw: '', notes: '', ref: x.ref || null, importId: null, hash: 'transfer|' + uid(), source: 'transfer', transferId: t, categoryId: cat, catManual: true });
+  return 'created';
+}
+function setBalanceSheet(accId) {
+  const a = accById(accId), cur = balance(a);
+  openSheet(`<h3>Update balance</h3><p class="small muted" style="margin-top:-8px">${esc(accShort(a))}</p>
+  <form data-form="setBalance" data-id="${a.id}">
+    <label class="f"><span>${a.type === 'credit_card' ? 'Amount you owe right now' : 'Balance right now'} (₹)</span><input class="i num" name="bal" inputmode="decimal" value="${(Math.abs(cur) / 100).toFixed(2)}" required></label>
+    <label class="f"><span>As on</span><input class="i" type="date" name="date" value="${todayIso()}" required></label>
+    <p class="small" style="margin:0 0 6px">Ledger shows ${inr(cur)}. If yours is different, why?</p>
+    <label class="row small" style="margin:6px 0"><input type="radio" name="why" value="transfer" checked class="chk"><span>I moved money to or from my other account:</span></label>
+    <select class="i" name="other" style="margin:0 0 8px">${accOptions('', (o) => o.id !== a.id)}</select>
+    <label class="row small" style="margin:6px 0"><input type="radio" name="why" value="adjust" class="chk"><span>Just correct it (missing entries, cash, interest)</span></label>
+    <p class="tiny muted">Either way it won't count as spending or income. A transfer also corrects the other account.</p>
+    <button class="btn wide">Save</button>
+  </form>`);
+}
+function transferSheet(fromId) {
+  const live = D.accounts.filter((a) => !a.archived);
+  if (live.length < 2) return toast('Add your other account first.');
+  fromId ||= live[0].id;
+  openSheet(`<h3>Transfer between my accounts</h3><form data-form="transfer">
+    <label class="f"><span>From</span><select class="i" name="from">${accOptions(fromId)}</select></label>
+    <label class="f"><span>To</span><select class="i" name="to">${accOptions((live.find((a) => a.id !== fromId && typeOf(a.type).mode === 'ledger' && a.type !== 'credit_card') || live.find((a) => a.id !== fromId))?.id)}</select></label>
+    <div class="split"><label class="f"><span>Amount (₹)</span><input class="i num" name="amount" inputmode="decimal" required></label>
+    <label class="f"><span>Date</span><input class="i" type="date" name="date" value="${todayIso()}" required></label></div>
+    <label class="f"><span>Note</span><input class="i" name="note" placeholder="optional"></label>
+    <p class="small muted">Money out of one, into the other; neither counts as spending or income. If a statement or SMS later shows the same transfer, it replaces this entry instead of doubling it.</p>
+    <button class="btn wide">Save transfer</button></form>`);
 }
 
 // ---------- transfer matching ----------
@@ -1144,6 +1204,13 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  setBalance: (d) => setBalanceSheet(d.id),
+  transferSheet: (d) => transferSheet(d.from || ui.view?.id || ui.acc),
+  linkTransferSheet: (d) => {
+    const x = D.transactions.find((t) => t.id === d.id);
+    openSheet(`<h3>Transfer ${x.amount < 0 ? 'to' : 'from'} which account?</h3><p class="small muted">${inr(Math.abs(x.amount))} on ${fmtDate(x.date, true)}. If that account already has the matching entry, the two get linked; otherwise Ledger adds it there.</p>
+      <form data-form="linkTransfer" data-id="${x.id}"><select class="i" name="other">${accOptions('', (o) => o.id !== x.accountId)}</select><div style="height:12px"></div><button class="btn wide">Link</button></form>`);
+  },
   upiMine: (d, el) => { markUpi(d.h, true); el.closest('.card').remove(); toast('Marked as your own UPI ID'); },
   upiNot: (d, el) => { markUpi(d.h, false); el.closest('.card').remove(); },
   myUpiSheet: () => openSheet(`<h3>My UPI IDs</h3><p class="small muted">Money sent to these counts as a transfer between your own accounts.</p>
@@ -1242,6 +1309,28 @@ const forms = {
   },
   pdfPass: async (f) => { closeSheet(); pendingRemember = !!f.get('remember'); await handlePdf(pendingFile, f.get('pw')); pendingRemember = false; processQueue(); },
   pasteSms: async (f) => { closeSheet(); await handleInbox(f.get('t'), 'paste'); },
+  setBalance: (f, form) => {
+    const a = accById(form.dataset.id); const v = parseRupees(f.get('bal')); if (v == null) return toast('Enter the balance.');
+    const actual = a.type === 'credit_card' ? -Math.abs(v) : v; const date = f.get('date');
+    const diff = actual - balance(a);
+    a.balanceSetAt = date;
+    const asTransfer = f.get('why') === 'transfer' && f.get('other');
+    if (diff) {
+      if (asTransfer) { if (diff > 0) createTransfer(f.get('other'), a.id, diff, date, 'Balance update'); else createTransfer(a.id, f.get('other'), -diff, date, 'Balance update'); }
+      else D.transactions.push({ id: uid(), accountId: a.id, date, time: null, amount: diff, payee: 'Balance adjustment', description: 'Balance adjustment', raw: '', notes: `Set balance to ${inr(actual)}`, ref: null, importId: null, hash: 'adjust|' + uid(), source: 'adjustment', categoryId: 'adjustment', catManual: true });
+    }
+    save(); closeSheet(); render();
+    toast(!diff ? 'Balance confirmed' : asTransfer ? `${inr(Math.abs(diff))} recorded as a transfer ${diff > 0 ? 'from' : 'to'} ${accById(f.get('other')).name}` : `Adjusted by ${inrS(diff)}`, 3500);
+  },
+  transfer: (f) => {
+    const amt = parseRupees(f.get('amount')); if (!amt) return toast('Enter an amount.');
+    if (f.get('from') === f.get('to')) return toast('Pick two different accounts.');
+    createTransfer(f.get('from'), f.get('to'), Math.abs(amt), f.get('date'), f.get('note').trim()); save(); closeSheet(); render(); toast('Transfer saved');
+  },
+  linkTransfer: (f, form) => {
+    const x = D.transactions.find((t) => t.id === form.dataset.id); const r = linkAsTransfer(x, f.get('other'));
+    save(); closeSheet(); render(); toast(r === 'linked' ? 'Linked with the matching entry' : r === 'created' ? 'Marked as a transfer and added to the other account' : 'Marked as a transfer');
+  },
   addUpi: (f) => { markUpi(f.get('h').trim(), true); acts.myUpiSheet(); },
   ask: async (f, form) => { const q = f.get('q'); form.reset(); await ask(q); },
   tx: (f, form) => {
