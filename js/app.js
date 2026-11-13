@@ -1,12 +1,12 @@
 import { Vault, passkeySupport, requestPersistence } from './store.js';
 import * as P from './parsers.js';
 import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squash } from './rules.js';
-import { parseSms, smsPayee, splitInbox, SMS_PV } from './sms.js';
+import { parseSms, smsPayee, splitInbox, parseLog, SMS_PV } from './sms.js';
 import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -55,7 +55,8 @@ function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
-  d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.settings.ai ||= { model: null }; d.holdings ||= [];
+  d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= [];
+  if (!d.settings.ranjeetDone) { for (const x of d.transactions) if (x.amount < 0 && !x.catManual && /ranjeet/i.test(`${x.payee} ${x.description} ${x.raw || ''}`)) x.categoryId = 'household'; d.settings.ranjeetDone = true; } d.settings.ai ||= { model: null }; d.holdings ||= [];
   if (!d.members?.length) {
     const holder = d.accounts.map((a) => a.statement?.holder).find(Boolean);
     d.members = [{ id: 'me', name: holder ? holder.split(/\s+/)[0].replace(/^./, (c) => c.toUpperCase()).replace(/(?<=^.).*/, (r) => r.toLowerCase()) : 'Me' }];
@@ -442,6 +443,139 @@ function billIcs(b) {
     'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${txt(title)}`, `TRIGGER:${b.remind ? `-P${b.remind - 1}DT15H` : 'PT9H'}`, 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
 }
 
+// ---------- quick add ----------
+function recentPayees() {
+  const seen = new Map();
+  for (const x of [...D.transactions].sort((a, b) => b.date.localeCompare(a.date))) {
+    if (x.amount >= 0 || !x.payee || ['transfer', 'income'].includes(catById(x.categoryId)?.kind)) continue;
+    const k = x.payee.trim(); if (/^(upi payment|card payment|money received|sms)$/i.test(k)) continue;
+    seen.set(k, (seen.get(k) || 0) + 1);
+    if (seen.size >= 30) break;
+  }
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map((e) => e[0]);
+}
+function quickAdd(pre = {}) {
+  ui.qa = { amt: '', payee: '', via: 'upi', cat: '', date: todayIso(), files: [], ...pre };
+  renderQuick();
+}
+function renderQuick() {
+  const q = ui.qa, acc = payAccount(q.via, false);
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'];
+  openSheet(`<h3>Quick add</h3>
+  <div class="qa-amt num" aria-live="polite"><span class="cur">₹</span>${esc(q.amt ? Number(q.amt.replace(/\.$/, '')).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + (q.amt.endsWith('.') ? '.' : '') : '0')}</div>
+  <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k}</button>`).join('')}</div>
+  <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Ranjeet, chai, petrol…" autocomplete="off"></label>
+  <div class="chips">${recentPayees().map((p) => `<button type="button" class="chip ${p === q.payee ? 'on' : ''}" data-act="qaPayee" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>
+  <div class="seg" role="group" aria-label="Paid with">${[['upi', 'UPI'], ['card', 'Card'], ['cash', 'Cash']].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
+  <p class="tiny muted" style="margin:6px 2px 10px">${acc ? 'From ' + esc(accShort(acc)) : q.via === 'cash' ? 'A Cash wallet account will be created' : 'No account set for this yet'} · <button class="link tiny" type="button" data-act="payWithSheet">Change</button></p>
+  <div class="split">
+    <label class="f"><span>Category</span><select class="i" id="qaCat">${catOptions(q.cat || guessCategory(q.payee || '', -1) || '')}</select></label>
+    <label class="f"><span>Date</span><input class="i" type="date" id="qaDate" value="${q.date}"></label>
+  </div>
+  <div class="row" style="margin:0 0 12px"><button type="button" class="btn ghost" style="flex:1" data-act="qaAttach">📎 ${q.files.length ? q.files.length + ' receipt' + (q.files.length > 1 ? 's' : '') : 'Receipt'}</button><button type="button" class="btn ghost" style="flex:1" data-act="qaMore">More options</button></div>
+  <button class="btn wide" data-act="qaSave">Add ${q.amt ? inr(Math.round(parseFloat(q.amt) * 100), 0) : ''}</button>`);
+  const pi = $('#qaPayee');
+  pi?.addEventListener('input', (e) => { q.payee = e.target.value; const g = guessCategory(q.payee, -1); if (g && !q.catTouched) $('#qaCat').value = g; });
+  $('#qaCat')?.addEventListener('change', (e) => { q.cat = e.target.value; q.catTouched = true; });
+  $('#qaDate')?.addEventListener('change', (e) => { q.date = e.target.value; });
+}
+async function qaSave() {
+  const q = ui.qa; const amt = Math.round(parseFloat(q.amt || '0') * 100);
+  if (!amt) return toast('Enter an amount');
+  q.payee = ($('#qaPayee')?.value || q.payee).trim() || 'Expense';
+  const acc = payAccount(q.via); if (!acc) return toast('Set which account UPI payments come from first');
+  const cat = $('#qaCat')?.value || guessCategory(q.payee, -amt) || null;
+  const x = { id: uid(), accountId: acc.id, date: q.date || todayIso(), amount: -amt, payee: q.payee, description: q.payee, categoryId: cat, notes: '', raw: '', hash: 'manual|' + uid(), source: 'manual', importId: null, ref: null, time: new Date().toTimeString().slice(0, 5) };
+  D.transactions.push(x);
+  for (const f of q.files) await saveReceipt(f, { txId: x.id, title: q.payee, date: x.date, categoryId: cat });
+  ui.qa = null; save(); closeSheet(); render(); done(`Added ${inr(amt, 0)}`);
+}
+
+// ---------- receipts & bills ----------
+// Photos are shrunk to about 1600 px and stored encrypted, each on its own; PDFs are kept as they are.
+async function prepFile(file) {
+  if (/^image\//.test(file.type) && !/gif|svg/.test(file.type)) {
+    try {
+      const bmp = await createImageBitmap(file);
+      const s = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.82));
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), type: 'image/jpeg', name: file.name.replace(/\.\w+$/, '') + '.jpg' };
+    } catch (e) { console.warn('Could not shrink image', e); }
+  }
+  if (file.size > 15 * 1024 * 1024) throw new Error('That file is over 15 MB.');
+  return { bytes: new Uint8Array(await file.arrayBuffer()), type: file.type || 'application/octet-stream', name: file.name };
+}
+async function saveReceipt(file, meta) {
+  const p = await prepFile(file);
+  const id = uid();
+  await vault.putFile(id, p.bytes);
+  D.receipts.push({ id, name: p.name, type: p.type, size: p.bytes.length, addedAt: new Date().toISOString(), date: meta.date || todayIso(), title: meta.title || p.name, categoryId: meta.categoryId || null, txId: meta.txId || null, note: meta.note || '' });
+  return id;
+}
+async function receiptFile(r) { const b = await vault.getFile(r.id); return b ? new File([b], r.name, { type: r.type }) : null; }
+function pickFiles(accept, multiple = true) {
+  return new Promise((res) => {
+    const i = document.createElement('input'); i.type = 'file'; i.accept = accept; i.multiple = multiple;
+    i.onchange = () => res([...i.files]); i.click();
+  });
+}
+const receiptsFor = (txId) => D.receipts.filter((r) => r.txId === txId);
+function receiptThumbs(list) {
+  return list.length ? `<div class="rc-row">${list.map((r) => `<button type="button" class="rc-chip" data-act="openReceipt" data-id="${r.id}">${/^image/.test(r.type) ? '🖼' : '📄'} ${esc(r.title.slice(0, 22))}</button>`).join('')}</div>` : '';
+}
+function renderReceipts(m) {
+  setTop('Receipts', { back: 'closeView', action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addReceipt">+ Add</button>` });
+  const q = (ui.rq || '').toLowerCase();
+  const list = D.receipts.filter((r) => !q || `${r.title} ${r.note} ${catName(r.categoryId)} ${r.name}`.toLowerCase().includes(q)).sort((a, b) => b.date.localeCompare(a.date) || b.addedAt.localeCompare(a.addedAt));
+  const byMonth = {}; for (const r of list) (byMonth[r.date.slice(0, 7)] ||= []).push(r);
+  m.innerHTML = `<input class="search" id="rq" type="search" placeholder="Search maintenance, electricity, Amazon…" value="${esc(ui.rq || '')}">
+  ${D.receipts.length ? Object.entries(byMonth).map(([ym, rs]) => `<div class="day"><span>${monthLabel(ym)}</span><span>${rs.length}</span></div><div class="list">${rs.map((r) => { const t = r.txId && D.transactions.find((x) => x.id === r.txId); return `<button class="item" data-act="openReceipt" data-id="${r.id}"><div class="ico">${/^image/.test(r.type) ? '🖼' : '📄'}</div><div class="grow"><div class="t">${esc(r.title)}</div><div class="s">${[fmtDate(r.date, true), r.categoryId ? catName(r.categoryId) : '', t ? inr(t.amount, 0) : '', (r.size / 1024).toFixed(0) + ' KB'].filter(Boolean).map(esc).join(' · ')}</div></div><div class="muted">›</div></button>`; }).join('')}</div>`).join('')
+    : `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.3rem;margin-bottom:6px">No receipts yet</div><p class="small muted">Keep bills like society maintenance, electricity or anything you may need later. Photos and PDFs are stored encrypted on this phone.</p><button class="btn" data-act="addReceipt">Add a receipt or bill</button></div>`}`;
+  $('#rq')?.addEventListener('input', (e) => { ui.rq = e.target.value; const pos = e.target.selectionStart; render(); const el = $('#rq'); el.focus(); el.setSelectionRange(pos, pos); });
+}
+function receiptForm(files) {
+  ui.rcPending = files;
+  openSheet(`<h3>Add ${files.length > 1 ? files.length + ' files' : 'receipt'}</h3><form data-form="receipt">
+    <label class="f"><span>Title</span><input class="i" name="title" value="${esc(files.length === 1 ? files[0].name.replace(/\.\w+$/, '') : '')}" placeholder="Society maintenance, November" required></label>
+    <div class="split"><label class="f"><span>Date</span><input class="i" type="date" name="date" value="${todayIso()}"></label>
+    <label class="f"><span>Category</span><select class="i" name="categoryId">${catOptions('')}</select></label></div>
+    <label class="f"><span>Note</span><input class="i" name="note" placeholder="Optional"></label>
+    <button class="btn wide">Save</button></form>`);
+}
+async function openReceipt(id) {
+  const r = D.receipts.find((x) => x.id === id); if (!r) return;
+  const f = await receiptFile(r); if (!f) return toast('That file is missing on this phone.');
+  if (ui.rcUrl) URL.revokeObjectURL(ui.rcUrl);
+  const url = ui.rcUrl = URL.createObjectURL(f);
+  const t = r.txId && D.transactions.find((x) => x.id === r.txId);
+  openSheet(`<h3>${esc(r.title)}</h3>
+    ${/^image/.test(r.type) ? `<img src="${url}" alt="${esc(r.title)}" style="width:100%;border-radius:14px;display:block;margin-bottom:12px">` : `<a class="btn wide ghost" href="${url}" target="_blank" rel="noopener" style="margin-bottom:12px">Open PDF</a>`}
+    <p class="small muted">${[fmtDate(r.date, true), r.categoryId ? catName(r.categoryId) : '', t ? `${esc(t.payee)} ${inr(t.amount)}` : '', r.note].filter(Boolean).join(' · ')}</p>
+    <div class="row"><button class="btn" style="flex:1" data-act="shareReceipt" data-id="${r.id}">Share or save</button><button class="btn danger" style="flex:1" data-act="deleteReceipt" data-id="${r.id}">Delete</button></div>`);
+}
+
+function shortcutHelp() {
+  openSheet(`<h3>"Log to Ledger" Shortcut</h3>
+  <p class="small">Say <b>"Hey Siri, Log to Ledger"</b>, or press your Action button. It asks how much, what for and how you paid, then saves it to the same inbox file as your bank SMS. Ledger adds it next time you tap <b>Read SMS &amp; logs</b>.</p>
+  <ol class="small" style="padding-left:18px;line-height:1.55">
+    <li>Open <b>Shortcuts</b> → <b>+</b>. Name it <b>Log to Ledger</b>.</li>
+    <li>Add <b>Ask for Input</b>. Input type: <b>Number</b>. Prompt: <code>How much?</code></li>
+    <li>Add <b>Set Variable</b>. Name: <code>Amount</code>, value: <b>Provided Input</b>.</li>
+    <li>Add <b>Ask for Input</b>. Type: <b>Text</b>. Prompt: <code>What for?</code></li>
+    <li>Add <b>Set Variable</b>. Name: <code>What</code>, value: <b>Provided Input</b>.</li>
+    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>UPI</code>, <code>Card</code>, <code>Cash</code>. Under each item add a <b>Text</b> action with that same word.</li>
+    <li>After <b>End Menu</b>, add <b>Set Variable</b>. Name: <code>How</code>, value: <b>Menu Result</b>.</li>
+    <li>Add <b>Text</b>. Type <code>===LOG===</code> and a space, insert <b>Current Date</b> (tap it → Date Format: <b>ISO 8601</b>, include time). Press return, then insert <b>Amount</b>, type <code> | </code>, insert <b>What</b>, type <code> | </code>, insert <b>How</b>.</li>
+    <li>Add <b>Append to Text File</b>: text = that <b>Text</b>, file <code>Ledger Inbox.txt</code> in the <b>Shortcuts</b> folder, <b>Make New Line</b> on. (The same file your SMS automations use.)</li>
+    <li>Optional: <b>Show Notification</b> <code>Logged ₹[Amount] for [What]</code>.</li>
+  </ol>
+  <p class="small"><b>Action button:</b> Settings → Action Button → <b>Shortcut</b> → Log to Ledger.</p>
+  <p class="small muted">The text it writes looks like: <code>250 | Chai | UPI</code>. UPI goes to ${esc(accShort(payAccount('upi', false)) || 'your UPI account')}, Card to ${esc(accShort(payAccount('card', false)) || 'your card')}. If the bank SMS for the same payment also arrives, Ledger keeps one entry and adds your words to it.</p>
+  <button class="btn wide" data-act="closeSheet">Got it</button>`);
+}
+
 function monthStats(ym) {
   let spend = 0, income = 0, uncategorised = 0;
   const byCat = new Map();
@@ -513,6 +647,7 @@ function render() {
   if (ui.view?.page === 'account') return renderAccount(m, ui.view.id);
   if (ui.view?.page === 'ask') return renderAsk(m);
   if (ui.view?.page === 'bills') return renderBills(m);
+  if (ui.view?.page === 'receipts') return renderReceipts(m);
   ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, more: renderMore }[ui.tab])(m);
 }
 
@@ -520,7 +655,7 @@ function txItem(x, showAcc = true) {
   const c = catById(x.categoryId);
   const a = accById(x.accountId);
   const sug = !c && x.suggest && catById(x.suggest) ? ` <span class="badge" data-act="acceptSug" data-id="${x.id}">AI: ${esc(catName(x.suggest))} ✓</span>` : '';
-  const sub = [c ? c.name : '<span class="warn">Uncategorised</span>' + sug, showAcc && a ? esc(accShort(a)) : '', x.source === 'sms' ? 'from SMS' : '', x.transferId ? 'matched transfer' : ''].filter(Boolean).join(' · ');
+  const sub = [c ? c.name : '<span class="warn">Uncategorised</span>' + sug, showAcc && a ? esc(accShort(a)) : '', x.source === 'sms' ? 'from SMS' : x.source === 'log' ? 'logged' : '', x.transferId ? 'matched transfer' : '', D.receipts?.some((r) => r.txId === x.id) ? '📎' : ''].filter(Boolean).join(' · ');
   return `<button class="item" data-act="editTx" data-id="${x.id}">
     <div class="ico">${esc(initials(x.payee || x.description))}</div>
     <div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${sub}</div></div>
@@ -530,7 +665,7 @@ function txItem(x, showAcc = true) {
 const hasPriced = () => D.holdings.some((h) => h.qty != null);
 const refreshBtn = `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="refreshAll" aria-label="Refresh prices">🔄</button>`;
 function renderHome(m) {
-  setTop('', { action: hasPriced() ? refreshBtn : '' });
+  setTop('', { action: (hasPriced() ? refreshBtn : '') + `<button class="btn" style="min-height:40px;padding:6px 14px;border-radius:20px" data-act="quickAdd" aria-label="Quick add">+ Add</button>` });
   if (!D.accounts.length) {
     m.innerHTML = `<div class="card"><h2>Welcome</h2><p>Everything you add stays on this phone, encrypted. Start with a statement.</p>
       <button class="btn wide" data-act="tab" data-tab="import">Import a statement</button>
@@ -550,13 +685,13 @@ function renderHome(m) {
   const top = s.byCat.slice(0, 5); const topMax = Math.max(1, ...top.map((x) => x[1]));
   const dues = D.accounts.filter((a) => accVisible(a) && a.type === 'credit_card' && !a.archived && a.statement?.dueDate && a.statement.totalDue > 0 && daysUntil(a.statement.dueDate) >= -3 && !a.statement.paid);
   const recent = [...D.transactions].filter((x) => visIds.has(x.accountId)).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || '')).slice(0, 5);
-  const backupOld = D.transactions.length && (!D.settings.lastBackupAt || (Date.now() - new Date(D.settings.lastBackupAt)) > 30 * 864e5);
+  const backupOld = D.transactions.length && (!D.settings.lastBackupAt || (Date.now() - new Date(D.settings.lastBackupAt)) > 7 * 864e5);
 
   const hr = new Date().getHours(), me = D.members.find((x) => x.id === 'me')?.name || '';
   const todayOut = D.transactions.filter((x) => x.date === todayIso() && x.amount < 0 && visIds.has(x.accountId) && !['transfer', 'income'].includes(catById(x.categoryId)?.kind)).reduce((t, x) => t - x.amount, 0);
   const nextDue = [...dues.map((a) => ({ t: 'card due', d: a.statement.dueDate })), ...(D.bills || []).filter((b) => b.next && daysUntil(b.next) >= 0).map((b) => ({ t: b.name.toLowerCase().includes('emi') ? b.name : b.name + ' due', d: b.next }))].sort((p, q) => p.d.localeCompare(q.d))[0];
   const summary = [todayOut ? `<span class="money">${inr(todayOut, 0)}</span> spent today` : 'Nothing spent today', nextDue ? `${esc(nextDue.t)} ${dueWord(nextDue.d)}` : ''].filter(Boolean).join(' · ');
-  m.innerHTML = `<div class="hello"><div class="d">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase()}</div><div class="g">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}${me && me !== 'Me' ? ', ' + esc(me) : ''}</div><div class="s">${summary}</div></div>
+  m.innerHTML = `<div class="hello"><div class="d">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase()}</div><div class="g">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}${me && me !== 'Me' ? ', ' + esc(me) : ''}</div><div class="s">${summary}</div><button class="link small" data-act="pickFile" data-kind="inbox" style="margin-top:4px">📥 Read SMS &amp; logs</button></div>
   ${whoSwitch()}
   <div class="card"><h2><button class="eye" data-act="toggleMask" aria-pressed="${!!D.settings.masked}" aria-label="${D.settings.masked ? 'Show amounts' : 'Hide amounts'}">Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">${D.settings.masked ? '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.4 4.5-1.1"/>' : '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'}</svg></button></h2>
     <div class="big num ${ui.swap ? 'swapin' : ''}" data-nwval>${inr(nw.net, 0)}</div>
@@ -574,7 +709,7 @@ function renderHome(m) {
   ${D.transactions.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAsk"><div class="ico">AI</div><div class="grow"><div class="t">Ask Ledger</div><div class="s">“How can I spend less?”</div></div><div class="muted">›</div></button>` : ''}
   ${upcomingCard()}
   ${D.inbox.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="tab" data-tab="import"><div class="grow"><div class="t">${D.inbox.length} SMS need attention</div><div class="s">Assign an account or enter them by hand</div></div><div class="muted">›</div></button>` : ''}
-  ${backupOld ? `<div class="card row"><div class="grow small">No backup in the last 30 days. If this app is deleted, its data goes with it.</div><button class="btn ghost" data-act="backup">Back up</button></div>` : ''}
+  ${backupOld ? `<div class="card row"><div class="grow small"><b>Weekly backup.</b> ${D.settings.lastBackupAt ? 'Last one ' + fmtDate(D.settings.lastBackupAt.slice(0, 10)) + '.' : 'Not backed up yet.'} Save it to iCloud Drive in one tap.</div><button class="btn" data-act="backup">Back up</button></div>` : ''}
   <div class="card"><h2>Spent in ${monthLabel(ym)}</h2>
     <div class="row"><div class="grow"><div class="mid num">${inr(s.spend, 0)}</div>
       <div class="small muted">${prev.spend ? `${s.spend > prev.spend ? '▲' : '▼'} ${inr(Math.abs(s.spend - prev.spend), 0)} vs last month` : ''}</div></div>
@@ -601,7 +736,7 @@ function filteredTx() {
   }).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || ''));
 }
 function renderTx(m) {
-  setTop('Activity', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="transferSheet">⇄</button><button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addTx">+ Add</button>` });
+  setTop('Activity', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="transferSheet">⇄</button><button class="btn" style="min-height:36px;padding:6px 14px;border-radius:18px" data-act="quickAdd">+ Add</button>` });
   ui.month ||= ymOf(todayIso());
   m.innerHTML = `
     ${whoSwitch()}<input class="search" id="q" type="search" placeholder="Search all transactions" value="${esc(ui.q)}" autocomplete="off">
@@ -853,7 +988,7 @@ function buildRows() {
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
   const acc = imp.accountId;
   const existing = new Set(D.transactions.filter((x) => x.accountId === acc).map((x) => x.hash));
-  const smsPool = D.transactions.filter((x) => x.accountId === acc && (x.source === 'sms' || x.source === 'transfer' || x.source === 'emi'));
+  const smsPool = D.transactions.filter((x) => x.accountId === acc && (x.source === 'sms' || x.source === 'transfer' || x.source === 'emi' || x.source === 'log'));
   const claimed = new Set();
   const seen = new Map();
   imp.rows = src.map((t) => {
@@ -1124,6 +1259,7 @@ function txSheet(x, accId) {
       <label class="f"><span>Account</span><select class="i" name="accountId">${accOptions(x.accountId, ledger)}</select></label>
     </div>
     <label class="f"><span>Notes</span><textarea class="i" name="notes">${esc(x.notes)}</textarea></label>
+    ${isNew ? '' : `${receiptThumbs(receiptsFor(x.id))}<button type="button" class="btn ghost wide" data-act="txAttach" data-id="${x.id}" style="margin:0 0 12px">📎 Attach a receipt or bill</button>`}
     ${x.raw ? `<p class="tiny muted">${x.source === 'sms' ? 'SMS' : 'Bank text'}: ${esc(x.raw)}${x.points ? ` · ${x.points} reward points` : ''}</p>` : ''}
     ${x.smsRaw ? `<p class="tiny muted">Confirmed by statement. Original SMS: ${esc(x.smsRaw)}</p>` : ''}
     ${x.transferId ? (() => { const o = D.transactions.find((t) => t.transferId === x.transferId && t.id !== x.id); return o ? `<p class="tiny muted">Matched with ${inr(o.amount)} on ${esc(accShort(accById(o.accountId)))}, ${fmtDate(o.date, true)}. <button class="link" type="button" data-act="unlinkTransfer" data-id="${x.id}">Unlink</button></p>` : ''; })() : ''}
@@ -1204,6 +1340,13 @@ function renderMore(m) {
   <div class="day"><span>Household</span></div>
   <div class="list">${D.members.map((mb) => `<button class="item" data-act="memberSheet" data-id="${mb.id}"><div class="ico">${esc(initials(mb.name))}</div><div class="grow">${esc(mb.name)}<div class="s">${D.accounts.filter((a) => ownerOf(a) === mb.id).length} accounts</div></div><div class="muted">›</div></button>`).join('')}
     <button class="item" data-act="memberSheet"><div class="grow" style="color:var(--brand)">+ Add a person</div></button></div>
+  <div class="day"><span>Quick add & Shortcut</span></div>
+  <div class="list">
+    <button class="item" data-act="payWithSheet"><div class="grow">Where quick entries go<div class="s">UPI: ${esc(accShort(payAccount('upi', false)) || 'not set')} · Card: ${esc(accShort(payAccount('card', false)) || 'not set')}</div></div><div class="muted">›</div></button>
+    <button class="item" data-act="shortcutHelp"><div class="grow">Set up "Log to Ledger" for Siri</div><div class="muted">›</div></button>
+    <button class="item" data-act="openReceipts"><div class="grow">Receipts & bills<div class="s">${D.receipts.length} kept, encrypted</div></div><div class="muted">›</div></button>
+    <button class="item" data-act="toggleBackupReceipts"><div class="grow">Include receipts in backups</div><div class="muted">${D.settings.backupReceipts === false ? 'No' : 'Yes'} ›</div></button>
+  </div>
   <div class="day"><span>Net worth</span></div>
   <div class="list"><button class="item" data-act="toggleLoans"><div class="grow">Keep loans out of net worth<div class="s">Home, car and personal loans are shown separately</div></div><div class="muted">${D.settings.loansSeparate ? 'On' : 'Off'} ›</div></button></div>
   <div class="day"><span>Security</span></div>
@@ -1284,12 +1427,12 @@ let pendingBackup = null;
 async function doBackup() {
   openSheet(`<h3>Back up</h3><p class="small muted">Preparing your encrypted backup…</p>`);
   try {
-    const b = await vault.exportBackup();
+    const b = await vault.exportBackup({ files: D.settings.backupReceipts === false ? [] : D.receipts.map((r) => r.id) });
     const name = `ledger-backup-${todayIso()}.json`;
     pendingBackup = new File([JSON.stringify(b)], name, { type: 'application/json' });
     const url = URL.createObjectURL(pendingBackup);
     openSheet(`<h3>Backup ready</h3>
-      <p class="small">${(pendingBackup.size / 1024).toFixed(0)} KB, encrypted. Save it to <b>Files → iCloud Drive</b> so it survives if the phone or app is lost. Restoring needs your recovery passphrase.</p>
+      <p class="small">${pendingBackup.size > 1048576 ? (pendingBackup.size / 1048576).toFixed(1) + ' MB' : (pendingBackup.size / 1024).toFixed(0) + ' KB'}, encrypted${D.receipts.length ? (D.settings.backupReceipts === false ? ', without receipts' : `, including ${D.receipts.length} receipt${D.receipts.length > 1 ? 's' : ''}`) : ''}. Save it to <b>Files → iCloud Drive</b> so it survives if the phone or app is lost. Restoring needs your recovery passphrase.</p>
       ${navigator.canShare?.({ files: [pendingBackup] }) ? '<button class="btn wide" data-act="shareBackup">Save to Files…</button><div style="height:10px"></div>' : ''}
       <a class="btn wide ghost" href="${url}" download="${name}" data-act="backupDownloaded">Download instead</a>`);
   } catch (e) { console.error(e); openSheet(`<h3>Backup failed</h3><p class="small">${esc(e.message || String(e))}</p><button class="btn wide ghost" data-act="closeSheet">Close</button>`); }
@@ -1346,6 +1489,34 @@ function addSms(acc, p, hash) {
   D.transactions.push(smsToTx(acc, p, hash));
   return 'added';
 }
+// Which account a quick entry or Shortcut log goes to: UPI, card or cash (More → Quick add)
+function payAccount(via, create = true) {
+  const pw = (D.settings.payWith ||= {});
+  let a = pw[via] && accById(pw[via]);
+  if (a && !a.archived) return a;
+  const live = D.accounts.filter((x) => !x.archived && typeOf(x.type).mode === 'ledger' && ownerOf(x) === 'me');
+  if (via === 'card') a = live.find((x) => x.type === 'credit_card' && x.last4 === '9550') || live.find((x) => x.type === 'credit_card');
+  else if (via === 'cash') a = live.find((x) => x.type === 'cash');
+  else a = live.find((x) => x.last4 === '8381') || live.find((x) => /hdfc/i.test(`${x.name} ${x.institution || ''}`) && x.type !== 'credit_card') || live.find((x) => x.type === 'savings');
+  if (!a && via === 'cash' && create) { a = { id: uid(), name: 'Cash wallet', type: 'cash', owner: 'me', opening: { amount: 0 } }; D.accounts.push(a); }
+  if (a) pw[via] = a.id;
+  return a || null;
+}
+function guessCategory(payee, amount) {
+  const prev = [...D.transactions].reverse().find((x) => x.categoryId && (x.payee || '').toLowerCase() === payee.toLowerCase());
+  if (prev) return prev.categoryId;
+  return categorize({ description: payee, payee, amount }, D.rules).categoryId || null;
+}
+// One "Log to Ledger" entry. If the bank SMS for it is already in, keep that and add your words to it.
+function addLog(lg, receivedAt, hash) {
+  const acc = payAccount(lg.via); if (!acc) return 'skipped';
+  const date = receivedAt ? isoOf(new Date(receivedAt)) : todayIso();
+  const amount = lg.income ? lg.amount : -lg.amount;
+  const twin = D.transactions.find((x) => x.accountId === acc.id && x.amount === amount && daysApart(x.date, date) <= 2 && x.source !== 'log' && !x.logged);
+  if (twin) { twin.logged = lg.what; if (!twin.payeeManual) { twin.notes = [twin.notes, lg.what].filter(Boolean).join(' · '); } if (!twin.catManual && !twin.categoryId) twin.categoryId = guessCategory(lg.what, amount); return 'known'; }
+  D.transactions.push({ id: uid(), accountId: acc.id, date, amount, payee: lg.what, description: lg.what, categoryId: guessCategory(lg.what, amount), notes: '', raw: '', hash, source: 'log', importId: null, ref: null, time: receivedAt ? new Date(receivedAt).toTimeString().slice(0, 5) : null });
+  return 'added';
+}
 async function handleInbox(text, source) {
   const items = splitInbox(text);
   if (!items.length) {
@@ -1354,6 +1525,7 @@ async function handleInbox(text, source) {
     return;
   }
   const res = { added: 0, known: 0, skipped: 0, attention: 0, old: 0, reasons: {} };
+  ui.inboxReadAt = Date.now();
   // Messages a newer parser can now read: retry anything waiting under "need attention" as unreadable
   for (const x of [...D.inbox]) {
     if (x.status !== 'unparsed') continue;
@@ -1366,8 +1538,13 @@ async function handleInbox(text, source) {
   // Skipped by this version of the parser (an older version gets another go)
   const seen = new Set(D.smsSeen.filter((s) => s.pv === SMS_PV).map((s) => s.h));
   for (const it of items) {
-    const h = smsHash(it.text);
+    const h = it.kind === 'log' ? 'log|' + (it.receivedAt || '') + '|' + squash(it.text) : smsHash(it.text);
     if (done.has(h) || seen.has(h)) { res.old++; continue; }
+    if (it.kind === 'log') {
+      seen.add(h); done.add(h); D.smsSeen.push({ h, at: Date.now(), pv: SMS_PV });
+      const lg = parseLog(it.text); if (!lg) { res.skipped++; res.reasons['Unreadable log'] = (res.reasons['Unreadable log'] || 0) + 1; continue; }
+      res[addLog(lg, it.receivedAt, h)]++; continue;
+    }
     seen.add(h); done.add(h); D.smsSeen = D.smsSeen.filter((s) => s.h !== h); D.smsSeen.push({ h, at: Date.now(), pv: SMS_PV });
     const p = parseSms(it.text, it.receivedAt);
     if (!p.ok && /OTP|Declined|Upcoming|Statement|request|Empty|Zero/.test(p.skip)) { res.skipped++; res.reasons[p.skip] = (res.reasons[p.skip] || 0) + 1; continue; }
@@ -1382,7 +1559,7 @@ async function handleInbox(text, source) {
   save(); render();
   const why = Object.entries(res.reasons).map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ');
   openSheet(`<h3>SMS read</h3>
-    <p><b>${res.added}</b> new transactions added${res.known ? `, ${res.known} already on a statement` : ''}${tm ? `, ${tm} transfers matched` : ''}.</p>
+    <p><b>${res.added}</b> new transactions added${res.known ? `, ${res.known} already in Ledger (matched)` : ''}${tm ? `, ${tm} transfers matched` : ''}.</p>
     ${res.attention ? `<p class="warn">${res.attention} need your attention (on the Import tab).</p>` : ''}
     ${res.skipped ? `<p class="small muted">Ignored ${res.skipped}: ${esc(why)}.</p>` : ''}
     ${res.old ? `<p class="small muted">${res.old} were read before and skipped.</p>` : ''}
@@ -1931,6 +2108,26 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  quickAdd: () => quickAdd(),
+  qaKey: (d) => { const q = ui.qa; let a = q.amt; if (d.k === '⌫') a = a.slice(0, -1); else if (d.k === '.') { if (!a.includes('.')) a = (a || '0') + '.'; } else if (!/\.\d\d$/.test(a) && a.replace('.', '').length < 9) a = (a === '0' ? '' : a) + d.k; q.amt = a; q.payee = $('#qaPayee')?.value ?? q.payee; haptic(); renderQuick(); },
+  qaPayee: (d) => { const q = ui.qa; q.payee = d.p; if (!q.catTouched) q.cat = guessCategory(d.p, -1) || ''; renderQuick(); },
+  qaVia: (d) => { ui.qa.via = d.v; ui.qa.payee = $('#qaPayee')?.value ?? ui.qa.payee; haptic(); renderQuick(); },
+  qaAttach: async () => { const fs = await pickFiles('image/*,application/pdf'); if (fs.length) { ui.qa.files.push(...fs); ui.qa.payee = $('#qaPayee')?.value ?? ui.qa.payee; renderQuick(); } },
+  qaMore: () => { const q = ui.qa; const acc = payAccount(q.via); txSheet(null, acc?.id); setTimeout(() => { const f = document.querySelector('form[data-form=tx]'); if (!f) return; f.payee.value = $('#qaPayee')?.value || q.payee; if (q.amt) f.amount.value = q.amt; }, 0); },
+  qaSave: () => qaSave(),
+  payWithSheet: () => { const opt = (via, filter) => `<option value="">Not set</option>${accOptions(payAccount(via, false)?.id || '', filter)}`; const led = (a) => typeOf(a.type).mode === 'ledger'; openSheet(`<h3>Where quick entries go</h3><p class="small muted">Used by Quick add and by the "Log to Ledger" Shortcut.</p><form data-form="payWith">
+    <label class="f"><span>UPI payments come from</span><select class="i" name="upi">${opt('upi', (a) => led(a) && a.type !== 'credit_card')}</select></label>
+    <label class="f"><span>Card payments go on</span><select class="i" name="card">${opt('card', (a) => a.type === 'credit_card')}</select></label>
+    <label class="f"><span>Cash</span><select class="i" name="cash">${opt('cash', led)}</select></label>
+    <button class="btn wide">Save</button></form>`); },
+  shortcutHelp: () => shortcutHelp(),
+  openReceipts: () => { ui.view = { page: 'receipts' }; render(); window.scrollTo(0, 0); },
+  addReceipt: async () => { const fs = await pickFiles('image/*,application/pdf'); if (fs.length) receiptForm(fs); },
+  txAttach: async (d) => { const x = D.transactions.find((t) => t.id === d.id); const fs = await pickFiles('image/*,application/pdf'); if (!fs.length || !x) return; for (const f of fs) await saveReceipt(f, { txId: x.id, title: x.payee, date: x.date, categoryId: x.categoryId }); save(); txSheet(x); done('Receipt attached'); },
+  openReceipt: (d) => openReceipt(d.id),
+  shareReceipt: async (d) => { const r = D.receipts.find((x) => x.id === d.id); const f = r && await receiptFile(r); if (!f) return; if (navigator.canShare?.({ files: [f] })) navigator.share({ files: [f] }).catch(() => {}); else { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); } },
+  deleteReceipt: async (d) => { if (!confirm('Delete this receipt? This cannot be undone.')) return; await vault.deleteFile(d.id); D.receipts = D.receipts.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
+  toggleBackupReceipts: () => { D.settings.backupReceipts = D.settings.backupReceipts === false; save(); render(); },
   toggleLoans: () => { D.settings.loansSeparate = !D.settings.loansSeparate; save(); render(); toast(D.settings.loansSeparate ? 'Loans are now kept out of net worth' : 'Loans are now counted in net worth'); },
   openBills: () => { ui.view = { page: 'bills' }; render(); window.scrollTo(0, 0); },
   billSheet: (d) => { ui.pendingLast = null; billSheet(d.id ? D.bills.find((b) => b.id === d.id) : null, d.kind || 'reminder'); },
@@ -2176,6 +2373,8 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  payWith: (f) => { D.settings.payWith = { upi: f.get('upi') || null, card: f.get('card') || null, cash: f.get('cash') || null }; save(); closeSheet(); render(); if (ui.qa) renderQuick(); else toast('Saved'); },
+  receipt: async (f) => { const files = ui.rcPending || []; for (const file of files) await saveReceipt(file, { title: f.get('title').trim() + (files.length > 1 ? ' · ' + file.name : ''), date: f.get('date'), categoryId: f.get('categoryId') || null, note: f.get('note').trim() }); ui.rcPending = null; save(); closeSheet(); render(); done(files.length > 1 ? `${files.length} saved` : 'Receipt saved'); },
   bill: (f, form) => {
     const amt = parseRupees(f.get('amount') || '');
     const next = f.get('next'); if (!next) return toast('Pick a date.');

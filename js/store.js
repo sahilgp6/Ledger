@@ -30,6 +30,10 @@ async function kvSet(key, val) {
   const db = await idb();
   return new Promise((res, rej) => { const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).put(val, key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
 }
+async function kvDel(key) {
+  const db = await idb();
+  return new Promise((res, rej) => { const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).delete(key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
 async function kvClear() {
   const db = await idb();
   return new Promise((res, rej) => { const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).clear(); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
@@ -175,10 +179,28 @@ export class Vault {
     this.onSaved?.();
   }
 
+  // Receipts and documents: each file encrypted with the data key, stored as its own record
+  async putFile(id, bytes) {
+    const iv = rand(12);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, this.key, bytes);
+    await kvSet('f:' + id, { iv, ct });
+  }
+  async getFile(id) {
+    const r = await kvGet('f:' + id); if (!r) return null;
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: r.iv }, this.key, r.ct));
+  }
+  async deleteFile(id) { await kvDel('f:' + id); }
+
   // Backup file: encrypted data plus the passphrase-wrapped key. Restoring needs the recovery passphrase.
-  async exportBackup() {
+  // With files: the receipts too, still encrypted with the same data key.
+  async exportBackup({ files = [] } = {}) {
     await this.saveNow();
-    return { format: 'ledger-backup', v: 1, exportedAt: new Date().toISOString(), pass: this.meta.pass, data: await kvGet('data') };
+    const out = { format: 'ledger-backup', v: 1, exportedAt: new Date().toISOString(), pass: this.meta.pass, data: await kvGet('data') };
+    if (files.length) {
+      out.files = {};
+      for (const id of files) { const r = await kvGet('f:' + id); if (r) out.files[id] = { iv: b64(r.iv), ct: b64(r.ct) }; }
+    }
+    return out;
   }
 
   static async restoreBackup(file, passphrase) {
@@ -190,6 +212,7 @@ export class Vault {
     await kvClear();
     await kvSet('meta', { v: 1, createdAt: new Date().toISOString(), restoredAt: new Date().toISOString(), pass: p });
     await kvSet('data', file.data);
+    for (const [id, r] of Object.entries(file.files || {})) await kvSet('f:' + id, { iv: unb64(r.iv), ct: unb64(r.ct).buffer });
     return data;
   }
 

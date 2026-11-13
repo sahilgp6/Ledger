@@ -109,13 +109,29 @@ export function smsPayee(p) {
 // Pasted text without markers is treated as one message.
 export function splitInbox(text) {
   const s = String(text || '').replace(/\r/g, '');
-  if (!s.includes('===SMS===')) return s.trim() ? [{ text: s.trim(), receivedAt: null }] : [];
-  return s.split('===SMS===').slice(1).map((chunk) => {
+  if (!/===(SMS|LOG)===/.test(s)) return s.trim() ? [{ text: s.trim(), receivedAt: null, kind: 'sms' }] : [];
+  const parts = s.split(/===(SMS|LOG)===/);
+  const out = [];
+  for (let i = 1; i < parts.length; i += 2) {
+    const kind = parts[i].toLowerCase(), chunk = parts[i + 1] || '';
     const nl = chunk.indexOf('\n');
     const head = (nl >= 0 ? chunk.slice(0, nl) : chunk).trim();
     const body = (nl >= 0 ? chunk.slice(nl + 1) : '').trim();
     const h2 = head.replace(/\s+at\s+/i, ' ');
     const d = head && /\d/.test(head) && !isNaN(Date.parse(h2)) ? new Date(h2).toISOString() : null;
-    return { text: d ? body : (head + '\n' + body).trim(), receivedAt: d };
-  }).filter((x) => x.text);
+    const t = d ? body : (head + '\n' + body).trim();
+    if (t) out.push({ text: t, receivedAt: d, kind });
+  }
+  return out;
+}
+
+// A line the "Log to Ledger" Shortcut writes: "250 | Chai with crew | UPI"
+export function parseLog(text) {
+  const parts = String(text).split(/\s*[|\n]\s*/).map((x) => x.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const amt = parseFloat(String(parts[0]).replace(/[₹,\s]|rs\.?/gi, ''));
+  if (!(amt > 0)) return null;
+  const how = (parts[2] || '').toLowerCase();
+  const via = /card|credit/.test(how) ? 'card' : /cash/.test(how) ? 'cash' : /upi|gpay|phonepe|paytm|bank|hdfc|dns/.test(how) ? 'upi' : (parts[2] ? 'upi' : 'upi');
+  return { amount: Math.round(amt * 100), what: parts[1] || 'Expense', via, income: /^(in|received|income|got)/.test(how) };
 }

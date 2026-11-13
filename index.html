@@ -137,11 +137,19 @@ main.anim>*:nth-child(2){animation-delay:.05s}main.anim>*:nth-child(3){animation
 @keyframes draw{to{stroke-dashoffset:0}}
 .masked .money,.masked .big,.masked .mid,.masked .item .a,.masked .num{filter:blur(9px)}
 .money,.big,.mid,.item .a,.num{transition:filter .22s var(--ease)}
+.qa-amt{font-family:var(--serif);font-size:2.8rem;text-align:center;margin:4px 0 10px;letter-spacing:-.02em}.qa-amt .cur{color:var(--muted);font-size:1.6rem;margin-right:4px;vertical-align:.5rem}
+.qa-keys{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.qa-k{min-height:52px;border:0;border-radius:14px;background:var(--chip);font-size:1.35rem;font-weight:500;transition:transform .12s var(--ease),background-color .12s}
+.qa-k:active{transform:scale(.95);background:var(--line)}
+.seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--chip);border-radius:12px;padding:3px;gap:3px}
+.seg button{min-height:40px;border:0;border-radius:9px;background:none;font-weight:500;color:var(--muted);transition:background-color .2s var(--ease),color .2s}
+.seg button.on{background:var(--card);color:var(--ink);font-weight:600;box-shadow:0 1px 3px rgba(15,21,18,.12)}
+.rc-row{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}.rc-chip{border:0;background:var(--chip);border-radius:10px;padding:8px 10px;font-size:.82rem;min-height:36px}
 .swapin{animation:swapin .3s var(--ease) both}
 @keyframes swapin{from{opacity:0;transform:translateY(4px);filter:blur(3px)}to{opacity:1;transform:none;filter:blur(0)}}
 .pop{animation:pop .42s var(--ease) both}
 @keyframes pop{from{opacity:0;transform:scale(.9);filter:blur(4px)}to{opacity:1;transform:none;filter:blur(0)}}
-#done{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:45;background:color-mix(in srgb,var(--card) 96%,transparent);box-shadow:var(--shadow),0 12px 30px rgba(15,21,18,.16);border-radius:20px;padding:20px 26px;display:flex;flex-direction:column;align-items:center;gap:8px;font-weight:600;font-size:0.875rem}
+#done{pointer-events:none;position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:45;background:color-mix(in srgb,var(--card) 96%,transparent);box-shadow:var(--shadow),0 12px 30px rgba(15,21,18,.16);border-radius:20px;padding:20px 26px;display:flex;flex-direction:column;align-items:center;gap:8px;font-weight:600;font-size:0.875rem}
 #done .tick{stroke-dasharray:30;stroke-dashoffset:30;animation:tick .36s var(--ease) .12s forwards}
 @keyframes tick{to{stroke-dashoffset:0}}
 .rngu{position:relative}.rngu .u{position:absolute;bottom:2px;left:0;height:2px;background:linear-gradient(90deg,transparent 30%,var(--gold) 30%,var(--gold) 70%,transparent 70%);transition:transform .28s var(--ease-ios);pointer-events:none}

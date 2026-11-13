@@ -36,7 +36,7 @@ export const DEFAULT_CATEGORIES = [
   C('groceries', 'Groceries', 'Food'), C('food_delivery', 'Food delivery', 'Food'), C('dining', 'Dining out', 'Food'), C('coffee', 'Coffee & snacks', 'Food'),
   C('clothing', 'Clothing & shoes', 'Shopping'), C('online', 'Online shopping', 'Shopping'), C('home', 'Home & garden', 'Shopping'), C('electronics', 'Electronics', 'Shopping'), C('giftcards', 'Gift cards & wallet loads', 'Shopping'),
   C('fuel', 'Fuel', 'Transport'), C('cabs', 'Cabs & autos', 'Transport'), C('car', 'Car service & parts', 'Transport'), C('parking', 'Parking & tolls', 'Transport'), C('travel', 'Travel & holidays', 'Transport'),
-  C('mobile', 'Mobile & internet', 'Bills'), C('electricity', 'Electricity', 'Bills'), C('gas', 'Gas', 'Bills'), C('rent', 'Rent', 'Bills'), C('society', 'Society maintenance', 'Bills'), C('subscriptions', 'Subscriptions & OTT', 'Bills'), C('domestic_help', 'Domestic help', 'Bills'),
+  C('mobile', 'Mobile & internet', 'Bills'), C('electricity', 'Electricity', 'Bills'), C('gas', 'Gas', 'Bills'), C('rent', 'Rent', 'Bills'), C('society', 'Society maintenance', 'Bills'), C('subscriptions', 'Subscriptions & OTT', 'Bills'), C('domestic_help', 'Domestic help', 'Bills'), C('household', 'Household expenses', 'Bills'),
   C('medicines', 'Medicines', 'Health'), C('doctor', 'Doctor & hospital', 'Health'), C('fitness', 'Fitness', 'Health'),
   C('pet_supplies', 'Pet supplies', 'Pets'), C('vet', 'Vet', 'Pets'),
   C('personal_care', 'Personal care', 'Personal'), C('entertainment', 'Entertainment', 'Personal'), C('education', 'Education', 'Personal'), C('gifts', 'Gifts & donations', 'Personal'), C('family', 'Family support', 'Personal'),
@@ -60,6 +60,7 @@ export const DEFAULT_RULES = [
   R('BIGBASKET', 'groceries'), R('SUPERMARKET GROCERY', 'groceries'), R('DMART', 'groceries'), R('AVENUE SUPERMARTS', 'groceries'), R('NATURES BASKET', 'groceries'), R('NATURE S BASKET', 'groceries'),
   R('LICIOUS', 'groceries'), R('FRESHTOHOME', 'groceries'), R('FOODSTORIES', 'groceries'), R('STAR BAZAAR', 'groceries'), R('RELIANCE SMART', 'groceries'), R('RELIANCE FRESH', 'groceries'), R('COUNTRY DELIGHT', 'groceries'), R('MILKBASKET', 'groceries'),
   // Food
+  R('RANJEET', 'household', 'out'),
   R('SWIGGY', 'food_delivery'), R('ZOMATO', 'food_delivery'), R('EATCLUB', 'food_delivery'), R('BOX8', 'food_delivery'),
   R('STARBUCKS', 'coffee'), R('CHAAYOS', 'coffee'), R('THIRD WAVE', 'coffee'), R('BLUE TOKAI', 'coffee'), R('TIM HORTONS', 'coffee'), R('BARISTA', 'coffee'), R('CAFE COFFEE DAY', 'coffee'),
   R('MC DONALDS', 'dining'), R('MCDONALDS', 'dining'), R('DOMINOS', 'dining'), R('KFC', 'dining'), R('BURGER KING', 'dining'), R('PIZZA HUT', 'dining'), R('SUBWAY', 'dining'), R('HOSPITALITY', 'dining'), R('RESTAURANT', 'dining'), R('JOHNNYROCKETS', 'dining'), R('M S CANDIES', 'dining'),
