@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f6b4f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Ledger">
+<meta name="format-detection" content="telephone=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.mfapi.in; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<title>Ledger</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<style>
+:root{
+  --bg:#f4f5f2; --card:#ffffff; --ink:#15201b; --muted:#66706b; --line:#e3e6e1; --brand:#0f6b4f; --brand-2:#e5f2ec;
+  --out:#15201b; --in:#0d7a4f; --warn:#b4540a; --bad:#b42318; --chip:#eef0ec;
+  --r:16px; --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Noto Sans",sans-serif;
+  --tab-h:58px; --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0c0f0d; --card:#161b18; --ink:#eef2ef; --muted:#97a19c; --line:#26302b; --brand:#3fbf8f; --brand-2:#14281f;
+  --out:#eef2ef; --in:#4fd39e; --warn:#f0a050; --bad:#ff7b6e; --chip:#1f2622;
+}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{overflow-x:hidden;margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 var(--font);-webkit-text-size-adjust:100%}
+body{min-height:100dvh;overscroll-behavior-y:none}
+button,input,select,textarea{font:inherit;color:inherit}
+.num{font-variant-numeric:tabular-nums}
+header.top{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:calc(var(--safe-t) + 10px) 18px 10px;display:flex;align-items:center;gap:10px}
+header.top h1{font-size:28px;margin:0;flex:1;letter-spacing:-.02em}
+header.top .back{border:0;background:none;color:var(--brand);font-size:17px;padding:6px 0}
+main{padding:4px 16px calc(var(--tab-h) + var(--safe-b) + 24px)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;display:grid;grid-template-columns:repeat(5,1fr);background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-top:1px solid var(--line);padding-bottom:var(--safe-b)}
+nav.tabs button{border:0;background:none;height:var(--tab-h);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:11px;color:var(--muted)}
+nav.tabs button svg{width:24px;height:24px}
+nav.tabs button.on{color:var(--brand)}
+.card{background:var(--card);border-radius:var(--r);padding:16px;margin:0 0 14px;box-shadow:0 1px 0 var(--line)}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;font-weight:600}
+.big{font-size:34px;font-weight:700;letter-spacing:-.02em}
+.mid{font-size:22px;font-weight:650}
+.muted{color:var(--muted)} .small{font-size:13px} .tiny{font-size:12px}
+.in{color:var(--in)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+.row{display:flex;align-items:center;gap:12px}
+.row .grow,.item .grow{flex:1;min-width:0}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.list{background:var(--card);border-radius:var(--r);overflow:hidden;margin:0 0 14px}
+.item{display:flex;align-items:center;gap:12px;min-width:0;max-width:100%;padding:12px 14px;border-bottom:1px solid var(--line);width:100%;text-align:left;background:none;border-left:0;border-right:0;border-top:0}
+.item:last-child{border-bottom:0}
+.item .t{font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .s{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .a{font-weight:600;white-space:nowrap}
+.ico{width:36px;height:36px;border-radius:10px;background:var(--brand-2);color:var(--brand);display:grid;place-items:center;font-weight:700;font-size:14px;flex:none}
+.day{font-size:13px;color:var(--muted);margin:16px 4px 6px;display:flex;justify-content:space-between}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:12px;padding:12px 16px;background:var(--brand);color:#fff;font-weight:600;min-height:46px}
+.btn.wide{width:100%}
+.btn.ghost{background:var(--chip);color:var(--ink)}
+.btn.danger{background:none;color:var(--bad);border:1px solid color-mix(in srgb,var(--bad) 40%,transparent)}
+.btn:disabled{opacity:.5}
+.link{border:0;background:none;color:var(--brand);padding:6px 0;font-weight:550}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 10px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;border:0;border-radius:999px;padding:7px 12px;background:var(--chip);font-size:14px;white-space:nowrap}
+.chip.on{background:var(--brand);color:#fff}
+select.chip{appearance:none;-webkit-appearance:none;padding-right:24px;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);background-position:calc(100% - 13px) 55%,calc(100% - 9px) 55%;background-size:4px 4px;background-repeat:no-repeat}
+.month{display:flex;align-items:center;justify-content:space-between;margin:0 0 10px}
+.month button{border:0;background:var(--chip);border-radius:10px;width:40px;height:36px;font-size:18px}
+.month b{font-size:17px}
+label.f{display:block;margin:0 0 12px}
+label.f span{display:block;font-size:13px;color:var(--muted);margin:0 0 5px}
+input.i,select.i,textarea.i{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:12px;font-size:16px;min-height:46px}
+textarea.i{min-height:70px}
+.search{width:100%;border:0;background:var(--chip);border-radius:12px;padding:10px 12px;font-size:16px;margin:0 0 10px}
+.bar{height:8px;border-radius:4px;background:var(--chip);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--brand);border-radius:4px}
+.cols{display:flex;align-items:flex-end;gap:8px;height:90px;margin-top:8px}
+.cols div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end}
+.cols i{display:block;width:100%;max-width:34px;background:var(--brand-2);border-radius:6px 6px 2px 2px}
+.cols div.now i{background:var(--brand)}
+.cols span{font-size:11px;color:var(--muted)}
+.badge{display:inline-block;font-size:12px;padding:3px 8px;border-radius:999px;background:var(--brand-2);color:var(--brand);font-weight:600}
+.badge.warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+.badge.bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.empty{text-align:center;padding:40px 20px;color:var(--muted)}
+table.t{width:100%;border-collapse:collapse;font-size:14px}
+table.t td,table.t th{padding:6px 4px;text-align:left;border-bottom:1px solid var(--line)}
+table.t th{font-size:12px;color:var(--muted);font-weight:600}
+table.t td.r,table.t th.r{text-align:right}
+.chk{width:22px;height:22px;accent-color:var(--brand);flex:none}
+.dup{opacity:.45}
+/* Sheet */
+#scrim{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:31;opacity:0;pointer-events:none;transition:opacity .2s}
+#scrim.on{opacity:1;pointer-events:auto}
+#sheet{position:fixed;left:0;right:0;bottom:0;z-index:32;background:var(--card);border-radius:20px 20px 0 0;max-height:92dvh;overflow-y:auto;transform:translateY(105%);transition:transform .25s ease;padding:8px 18px calc(18px + var(--safe-b))}
+#sheet.on{transform:none}
+#sheet .grab{width:40px;height:5px;border-radius:3px;background:var(--line);margin:4px auto 12px}
+#sheet h3{margin:0 0 14px;font-size:20px}
+/* Lock */
+#lock{position:fixed;inset:0;z-index:30;background:var(--bg);display:none;overflow-y:auto;padding:calc(var(--safe-t) + 40px) 22px 30px}
+#lock.on{display:block}
+#lock .logo{width:72px;height:72px;border-radius:18px;margin:0 auto 14px;display:block}
+#lock h1{text-align:center;margin:0 0 6px;font-size:28px}
+#lock p.lead{text-align:center;color:var(--muted);margin:0 auto 26px;max-width:340px}
+#lock .box{max-width:420px;margin:0 auto}
+#toast{position:fixed;left:50%;bottom:calc(var(--tab-h) + var(--safe-b) + 14px);transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;z-index:40;opacity:0;transition:all .2s;pointer-events:none;max-width:90vw;text-align:center}
+#toast.on{opacity:1;transform:translateX(-50%)}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="app" class="hidden">
+  <header class="top" id="top"></header>
+  <main id="main"></main>
+  <nav class="tabs" id="tabs">
+    <button data-act="tab" data-tab="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
+    <button data-act="tab" data-tab="tx"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Activity</button>
+    <button data-act="tab" data-tab="accounts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>Accounts</button>
+    <button data-act="tab" data-tab="import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg>Import</button>
+    <button data-act="tab" data-tab="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>More</button>
+  </nav>
+</div>
+<div id="lock"></div>
+<div id="scrim" data-act="closeSheet"></div>
+<div id="sheet"></div>
+<div id="toast"></div>
+<input type="file" id="file" class="hidden" accept="application/pdf,.pdf,text/csv,.csv,text/plain,.txt">
+<input type="file" id="restoreFile" class="hidden" accept=".json,application/json">
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
