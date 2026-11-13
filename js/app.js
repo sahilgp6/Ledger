@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.6.5';
+const APP_VERSION = '0.7.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -55,6 +55,11 @@ function migrate(d) {
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
   d.inbox ||= []; d.smsSeen ||= []; d.settings.ai ||= { model: null }; d.holdings ||= [];
+  if (!d.members?.length) {
+    const holder = d.accounts.map((a) => a.statement?.holder).find(Boolean);
+    d.members = [{ id: 'me', name: holder ? holder.split(/\s+/)[0].replace(/^./, (c) => c.toUpperCase()).replace(/(?<=^.).*/, (r) => r.toLowerCase()) : 'Me' }];
+  }
+  d.settings.who ||= 'all';
   d.v = DATA_VERSION;
   return d;
 }
@@ -102,11 +107,38 @@ function holdingsCard(a) {
 // Card EMIs still to be billed (not yet in the statement balance) are real debt
 const unbilledEmi = (a) => (a.type === 'credit_card' ? (a.statement?.emiLoans || []).reduce((s, l) => s + (l.principalLeft || 0), 0) : 0);
 
-function netWorth() {
+// ---------- household ----------
+const ownerOf = (a) => a.owner || 'me';
+const memberName = (id) => id === 'joint' ? 'Joint' : D.members.find((m) => m.id === id)?.name || 'Me';
+const multi = () => D.members.length > 1;
+// Share of an account that belongs to the person being viewed: joint accounts count half in each person's view
+function shareOf(a, who = D.settings.who) {
+  if (!multi() || who === 'all') return 1;
+  const o = ownerOf(a);
+  return o === who ? 1 : o === 'joint' ? 0.5 : 0;
+}
+const accVisible = (a, who = D.settings.who) => shareOf(a, who) > 0;
+function whoSwitch() {
+  if (!multi()) return '';
+  const opts = [['all', 'Combined'], ...D.members.map((m) => [m.id, m.name])];
+  return `<div class="chips" style="margin-bottom:8px">${opts.map(([id, n]) => `<button class="chip ${D.settings.who === id ? 'on' : ''}" data-act="setWho" data-who="${id}">${esc(n)}</button>`).join('')}</div>`;
+}
+function ownerOptions(sel) {
+  return [...D.members.map((m) => [m.id, m.name]), ['joint', 'Joint']].map(([id, n]) => `<option value="${id}" ${id === (sel || 'me') ? 'selected' : ''}>${esc(n)}</option>`).join('');
+}
+// Guess who a statement belongs to from the holder name printed on it
+function ownerFromName(name) {
+  if (!name || !multi()) return 'me';
+  const first = name.trim().split(/\s+/)[0].toLowerCase();
+  return D.members.find((m) => m.name.toLowerCase().split(/\s+/)[0] === first)?.id || 'me';
+}
+
+function netWorth(who = D.settings.who) {
   let assets = 0, liabilities = 0;
   for (const a of D.accounts) {
     if (a.archived) continue;
-    const b = balance(a) - unbilledEmi(a);
+    const sh = shareOf(a, who); if (!sh) continue;
+    const b = Math.round((balance(a) - unbilledEmi(a)) * sh);
     if (b >= 0 && typeOf(a.type).side === 'asset') assets += b; else liabilities += b;
   }
   return { assets, liabilities, net: assets + liabilities };
@@ -115,8 +147,10 @@ function netWorth() {
 function monthStats(ym) {
   let spend = 0, income = 0, uncategorised = 0;
   const byCat = new Map();
+  const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
   for (const x of D.transactions) {
     if (!x.date.startsWith(ym)) continue;
+    if (multi() && D.settings.who !== 'all' && !vis.has(x.accountId)) continue;
     const c = catById(x.categoryId);
     if (c?.kind === 'transfer') {
       if (x.interest) { spend += x.interest; byCat.set('interest_paid', (byCat.get('interest_paid') || 0) + x.interest); }
@@ -183,16 +217,17 @@ function renderHome(m) {
   }
   const nw = netWorth();
   const ym = ymOf(todayIso());
+  const visIds = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
   const s = monthStats(ym), prev = monthStats(addMonths(ym, -1));
   const months = [-5, -4, -3, -2, -1, 0].map((k) => { const y = addMonths(ym, k); return { y, v: monthStats(y).spend }; });
   const maxV = Math.max(1, ...months.map((x) => x.v));
   const top = s.byCat.slice(0, 5); const topMax = Math.max(1, ...top.map((x) => x[1]));
-  const dues = D.accounts.filter((a) => a.type === 'credit_card' && !a.archived && a.statement?.dueDate && a.statement.totalDue > 0 && daysUntil(a.statement.dueDate) >= -3 && !a.statement.paid);
-  const recent = [...D.transactions].sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || '')).slice(0, 5);
+  const dues = D.accounts.filter((a) => accVisible(a) && a.type === 'credit_card' && !a.archived && a.statement?.dueDate && a.statement.totalDue > 0 && daysUntil(a.statement.dueDate) >= -3 && !a.statement.paid);
+  const recent = [...D.transactions].filter((x) => visIds.has(x.accountId)).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || '')).slice(0, 5);
   const backupOld = D.transactions.length && (!D.settings.lastBackupAt || (Date.now() - new Date(D.settings.lastBackupAt)) > 30 * 864e5);
 
-  m.innerHTML = `
-  <div class="card"><h2>Net worth</h2>
+  m.innerHTML = `${whoSwitch()}
+  <div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2>
     <div class="big num">${inr(nw.net, 0)}</div>
     <div class="split" style="margin-top:10px">
       <div><div class="small muted">Assets</div><div class="num">${compact(nw.assets)}</div></div>
@@ -224,6 +259,7 @@ function filteredTx() {
     if (!q && !ui.src && !x.date.startsWith(ui.month)) return false;
     if (ui.acc && x.accountId !== ui.acc) return false;
     if (ui.src && x.source !== ui.src) return false;
+    if (multi() && D.settings.who !== 'all' && !ui.acc && !accVisible(accById(x.accountId) || {})) return false;
     if (ui.cat === '_none' ? x.categoryId : ui.cat && x.categoryId !== ui.cat) return false;
     if (q && !`${x.payee} ${x.description} ${x.notes || ''} ${catName(x.categoryId)} ${(x.amount / 100).toFixed(2)}`.toLowerCase().includes(q)) return false;
     return true;
@@ -233,7 +269,7 @@ function renderTx(m) {
   setTop('Activity', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="transferSheet">⇄</button><button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addTx">+ Add</button>` });
   ui.month ||= ymOf(todayIso());
   m.innerHTML = `
-    <input class="search" id="q" type="search" placeholder="Search all transactions" value="${esc(ui.q)}" autocomplete="off">
+    ${whoSwitch()}<input class="search" id="q" type="search" placeholder="Search all transactions" value="${esc(ui.q)}" autocomplete="off">
     ${ui.src ? `<p class="small">Showing unconfirmed SMS entries only. <button class="link" data-act="clearSrc">Show all</button></p>` : ''}
     <div class="month ${ui.q || ui.src ? 'hidden' : ''}"><button data-act="month" data-d="-1">‹</button><b>${monthLabel(ui.month)}</b><button data-act="month" data-d="1">›</button></div>
     <div class="chips">
@@ -266,15 +302,15 @@ function renderAccounts(m) {
   if (!D.accounts.length) { m.innerHTML = `<div class="empty">No accounts yet.<br><br><button class="btn" data-act="addAccount">Add an account</button></div>`; return; }
   const nw = netWorth();
   const groups = {};
-  for (const a of D.accounts.filter((a) => !a.archived)) (groups[typeOf(a.type).group] ||= []).push(a);
+  for (const a of D.accounts.filter((a) => !a.archived && accVisible(a))) (groups[typeOf(a.type).group] ||= []).push(a);
   const order = [...new Set(ACCOUNT_TYPES.map((t) => t.group))];
-  m.innerHTML = `<div class="card"><h2>Net worth</h2><div class="big num">${inr(nw.net, 0)}</div></div>` +
+  m.innerHTML = whoSwitch() + `<div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2><div class="big num">${inr(nw.net, 0)}</div>${multi() && D.settings.who !== 'all' && D.accounts.some((a) => ownerOf(a) === 'joint') ? '<div class="tiny muted">Joint accounts count half here.</div>' : ''}</div>` +
     order.filter((g) => groups[g]).map((g) => {
-      const total = groups[g].reduce((s, a) => s + balance(a) - unbilledEmi(a), 0);
+      const total = groups[g].reduce((s2, a) => s2 + Math.round((balance(a) - unbilledEmi(a)) * shareOf(a)), 0);
       return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="list">${groups[g].map((a) => {
         const b = balance(a), emi = unbilledEmi(a);
         return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="ico">${esc(initials(a.institution || a.name))}</div>
-        <div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${esc([a.institution, a.last4 ? '••' + a.last4 : '', typeOf(a.type).label].filter(Boolean).join(' · '))}</div></div>
+        <div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${esc([multi() ? memberName(ownerOf(a)) : '', a.institution, a.last4 ? '••' + a.last4 : '', typeOf(a.type).label].filter(Boolean).join(' · '))}</div></div>
         <div style="text-align:right"><div class="a num">${inr(b, 0)}</div>${emi ? `<div class="tiny muted num">+ ${inr(emi, 0)} EMI</div>` : ''}</div></button>`;
       }).join('')}</div>`;
     }).join('') +
@@ -550,7 +586,8 @@ function csvOpening(imp) {
 }
 
 function buildRowsFor(imp) { const prev = ui.imp; ui.imp = imp; buildRows(); ui.imp = prev; }
-function draftKey(imp) { if (imp.kind === 'holdings') return 'hold:' + (imp.parsed.statement.clientId || ''); if (imp.kind === 'mfsummary') return 'mf:' + (imp.parsed.statement.pan || '') + (imp.parsed.statement.distributor || ''); return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
+function draftKey(imp) { return (imp.owner || '') + '|' + draftKey0(imp); }
+function draftKey0(imp) { if (imp.kind === 'holdings') return 'hold:' + (imp.parsed.statement.clientId || ''); if (imp.kind === 'mfsummary') return 'mf:' + (imp.parsed.statement.pan || '') + (imp.parsed.statement.distributor || ''); return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
 // Imports one draft. Returns { acc, added, upgraded } (throws on a problem the user must fix).
 function commitDraft(imp, createdInBatch = {}) {
   if (imp.kind === 'holdings' || imp.kind === 'mfsummary') return commitHoldings(imp, createdInBatch);
@@ -563,6 +600,7 @@ function commitDraft(imp, createdInBatch = {}) {
     if (imp.kind === 'card') acc = { id: uid(), name, type: 'credit_card', institution: imp.parsed.institution, last4: imp.parsed.statement.cardLast4 || '', currency: 'INR', createdAt: now };
     else if (imp.kind === 'bankpdf') { const st = imp.parsed.statement; acc = { id: uid(), name, type: imp.newType || 'savings', institution: st.bank || '', last4: st.last4 || '', currency: 'INR', createdAt: now, opening: { amount: st.openingBalance || 0, date: st.periodFrom || imp.rows[0]?.date || todayIso(), source: 'statement' } }; }
     else acc = { id: uid(), name, type: imp.newType || 'savings', institution: '', last4: '', currency: 'INR', createdAt: now, opening: csvOpening(imp) };
+    acc.owner = imp.owner || guessOwner(imp);
     D.accounts.push(acc);
     createdInBatch[draftKey(imp)] = acc;
   }
@@ -636,6 +674,7 @@ function commitHoldings(imp, created) {
     acc = isMf
       ? { id: uid(), name: (imp.newName || 'Mutual funds').trim(), type: 'mutual_fund', institution: st.distributor || '', last4: '', mfKey: `${st.pan || ''}|${st.distributor || ''}`, currency: 'INR', createdAt: new Date().toISOString() }
       : { id: uid(), name: (imp.newName || 'Zerodha').trim(), type: 'stocks', institution: 'Zerodha', last4: '', brokerId: st.clientId || '', currency: 'INR', createdAt: new Date().toISOString() };
+    acc.owner = imp.owner || guessOwner(imp);
     D.accounts.push(acc); created[draftKey(imp)] = acc;
   }
   if (st.clientId && !acc.brokerId) acc.brokerId = st.clientId;
@@ -658,12 +697,21 @@ function commitBatch() {
   try {
     for (const imp of list) { const r = commitDraft(imp, created); added += r.added; upgraded += r.upgraded; accs.add(r.acc.id); }
   } catch (e) { save(); toast(e.message, 4000); return; }
+  // Name the main person from the first statement that prints a holder name
+  const me = D.members.find((x) => x.id === 'me');
+  if (me && me.name === 'Me') { const h = list.map((x) => x.parsed?.statement?.holder).find(Boolean); if (h) me.name = h.split(/\s+/)[0].toLowerCase().replace(/^./, (c) => c.toUpperCase()); }
   const tm = matchTransfers();
   save();
   ui.batch = null; ui.imp = null;
   toast(`${added} transactions added${upgraded ? `, ${upgraded} earlier entries confirmed` : ''}${tm ? `, ${tm} transfers matched` : ''}`, 3500);
   if (accs.size === 1) { ui.tab = 'accounts'; ui.view = { page: 'account', id: [...accs][0] }; } else { ui.tab = 'accounts'; ui.view = null; }
   render();
+}
+function guessOwner(imp) {
+  const st = imp.parsed?.statement || {};
+  const name = st.holder || st.applicant || imp.parsed?.holderName || '';
+  if (name) return ownerFromName(name);
+  return D.settings.who !== 'all' ? D.settings.who : 'me';
 }
 function bankSummary(imp) {
   const st = imp.parsed.statement, rec = imp.parsed.recon;
@@ -676,6 +724,7 @@ function renderBatch(m) {
   const created = new Set();
   let h = `<p class="small muted" style="margin:0 4px 10px">${ui.batch.length} statement${ui.batch.length > 1 ? 's' : ''} ready. Check the accounts, then confirm.</p>`;
   ui.batch.forEach((imp, i) => {
+    if (multi()) imp.owner ??= guessOwner(imp);
     const acc = accById(imp.accountId);
     const key = draftKey(imp); const willReuse = !acc && created.has(key); if (!acc) created.add(key);
     const inc = imp.rows.filter((r) => r.include).length, dups = imp.rows.filter((r) => r.dup).length, sms = imp.rows.filter((r) => r.smsMatch).length;
@@ -685,6 +734,7 @@ function renderBatch(m) {
     const ok = imp.parsed?.recon?.ok;
     h += `<div class="card"><div class="row"><div class="grow"><div class="t" style="font-weight:600">${esc(title)}</div><div class="small muted">${esc(imp.fileName)}${st?.periodFrom ? ` · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}` : ''}</div></div><div class="num" style="font-weight:600">${what}</div></div>
       <p class="small" style="margin:10px 0 6px">${acc ? `Adds to <b>${esc(accShort(acc))}</b>` : willReuse ? `Adds to the new account above` : `<b>Creates a new account</b>${st?.last4 || st?.cardLast4 ? ' ••' + esc(st.last4 || st.cardLast4) : ''}:`}</p>
+      ${!acc && !willReuse && multi() ? `<label class="row small" style="margin:0 0 8px"><span style="flex:none">Belongs to</span><select class="i" data-newowner="${i}" style="min-height:38px;padding:6px 10px">${ownerOptions(imp.owner ??= guessOwner(imp))}</select></label>` : ''}
       ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
       ${imp.kind === 'mfsummary' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span>${st.xirr != null ? ` · XIRR ${st.xirr}%` : ''} ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p>${imp.parsed.sips?.length ? `<p class="tiny muted" style="margin:0 0 8px">SIPs ${inr(imp.parsed.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</p>` : ''}` : imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
       <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm earlier entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
@@ -694,6 +744,7 @@ function renderBatch(m) {
   });
   h += `<button class="btn wide" data-act="commitBatch">Confirm and import</button><div style="height:10px"></div><button class="btn wide ghost" data-act="pickFile" data-kind="any">Add more files</button><div style="height:10px"></div><button class="btn wide ghost" data-act="cancelImport">Cancel</button>`;
   m.innerHTML = h;
+  m.querySelectorAll('[data-newowner]').forEach((el) => el.addEventListener('change', () => { ui.batch[+el.dataset.newowner].owner = el.value; }));
   m.querySelectorAll('[data-newname]').forEach((el) => el.addEventListener('input', () => { ui.batch[+el.dataset.newname].newName = el.value; }));
   m.querySelectorAll('[data-newtype]').forEach((el) => el.addEventListener('change', () => { ui.batch[+el.dataset.newtype].newType = el.value; }));
   m.querySelectorAll('[data-loan]').forEach((el) => el.addEventListener('change', () => { const [i, j] = el.dataset.loan.split(':').map(Number); ui.batch[i].loans[j].create = el.checked; render(); }));
@@ -746,6 +797,7 @@ function accountSheet(a) {
   <form data-form="account" data-id="${a.id}">
     <label class="f"><span>Type</span><select class="i" name="type" id="accType" ${isNew ? '' : 'disabled'}>${typeOptions(a.type)}</select></label>
     <label class="f"><span>Name</span><input class="i" name="name" value="${esc(a.name)}" placeholder="e.g. HDFC Savings, PPF, Zerodha" required></label>
+    ${multi() ? `<label class="f"><span>Belongs to</span><select class="i" name="owner">${ownerOptions(a.owner || (isNew && D.settings.who !== 'all' ? D.settings.who : 'me'))}</select></label>` : ''}
     <div class="split">
       <label class="f"><span>Bank / institution</span><input class="i" name="institution" value="${esc(a.institution)}"></label>
       <label class="f"><span>Last 4 digits</span><input class="i" name="last4" inputmode="numeric" maxlength="4" value="${esc(a.last4)}"></label>
@@ -803,6 +855,9 @@ function renderMore(m) {
   setTop('More');
   const userRules = D.rules;
   m.innerHTML = `
+  <div class="day"><span>Household</span></div>
+  <div class="list">${D.members.map((mb) => `<button class="item" data-act="memberSheet" data-id="${mb.id}"><div class="ico">${esc(initials(mb.name))}</div><div class="grow">${esc(mb.name)}<div class="s">${D.accounts.filter((a) => ownerOf(a) === mb.id).length} accounts</div></div><div class="muted">›</div></button>`).join('')}
+    <button class="item" data-act="memberSheet"><div class="grow" style="color:var(--brand)">+ Add a person</div></button></div>
   <div class="day"><span>Security</span></div>
   <div class="list">
     <button class="item" data-act="toggleFaceId"><div class="grow">Face ID unlock</div><div class="muted">${vault.hasPasskey ? 'On' : 'Off'} ›</div></button>
@@ -1399,6 +1454,22 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  setWho: (d) => { D.settings.who = d.who; save(); render(); },
+  memberSheet: (d) => {
+    const mb = D.members.find((x) => x.id === d.id);
+    openSheet(`<h3>${mb ? 'Edit person' : 'Add a person'}</h3><form data-form="member" data-id="${mb?.id || ''}">
+      <label class="f"><span>Name</span><input class="i" name="name" value="${esc(mb?.name || '')}" placeholder="e.g. Shibani" required></label>
+      <p class="small muted">Each account can belong to one person or be joint. Home, Accounts and Activity can then show each person or everyone combined. Joint accounts count half in each person's view.</p>
+      <button class="btn wide">Save</button></form>
+      ${mb && mb.id !== 'me' ? `<div style="height:10px"></div><button class="btn wide danger" data-act="memberDel" data-id="${mb.id}">Remove ${esc(mb.name)}</button>` : ''}`);
+  },
+  memberDel: (d) => {
+    const n = D.accounts.filter((a) => ownerOf(a) === d.id).length;
+    if (!confirm(`Remove this person?${n ? ` Their ${n} accounts move to ${memberName('me')}.` : ''}`)) return;
+    D.accounts.forEach((a) => { if (a.owner === d.id) a.owner = 'me'; });
+    D.members = D.members.filter((x) => x.id !== d.id); if (D.settings.who === d.id) D.settings.who = 'all';
+    save(); closeSheet(); render();
+  },
   forceUpdate: async () => {
     // Clears only the app's code cache; your data (IndexedDB) is untouched
     try { await vault.saveNow(); } catch (e) { if (!confirm('Your latest changes could not be saved (' + (e.message || e) + '). Reload anyway?')) return; }
@@ -1556,6 +1627,13 @@ const forms = {
     const x = D.transactions.find((t) => t.id === form.dataset.id); const r = linkAsTransfer(x, f.get('other'));
     save(); closeSheet(); render(); toast(r === 'linked' ? 'Linked with the matching entry' : r === 'created' ? 'Marked as a transfer and added to the other account' : 'Marked as a transfer');
   },
+  member: (f, form) => {
+    const name = f.get('name').trim(); if (!name) return;
+    const id = form.dataset.id;
+    if (id) D.members.find((x) => x.id === id).name = name;
+    else D.members.push({ id: 'm_' + uid().slice(0, 8), name });
+    save(); closeSheet(); render(); toast(id ? 'Saved' : `${name} added. Upload their statements, or set "Belongs to" on an account.`, 4000);
+  },
   addUpi: (f) => { markUpi(f.get('h').trim(), true); acts.myUpiSheet(); },
   ask: async (f, form) => { const q = f.get('q'); form.reset(); await ask(q); },
   tx: (f, form) => {
@@ -1586,6 +1664,7 @@ const forms = {
     const type = id ? accById(id).type : f.get('type');
     const t = typeOf(type);
     const vals = { name: f.get('name').trim(), institution: f.get('institution').trim(), last4: f.get('last4').trim() };
+    if (f.get('owner')) vals.owner = f.get('owner');
     let a;
     if (id) { a = accById(id); Object.assign(a, vals); }
     else { a = { id: uid(), type, currency: 'INR', createdAt: new Date().toISOString(), ...vals }; D.accounts.push(a); }

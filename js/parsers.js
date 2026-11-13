@@ -78,6 +78,8 @@ export function parseHdfcCard(pages) {
   if (bp) { const m = bp.split(' - '); statement.periodFrom = dmyToIso(m[0]); statement.periodTo = dmyToIso(m[1] || ''); }
   const card = full.match(/\b(\d{6}X{6}(\d{4}))\b/);
   if (card) statement.cardLast4 = card[2];
+  const ccLine = lines.find((l) => l.items.some((it) => /Credit Card No/i.test(it.str)));
+  if (ccLine && /^[A-Z][A-Z .]{4,}$/.test(ccLine.items[0].str.trim())) statement.holder = ccLine.items[0].str.trim();
   const prod = full.match(/([A-Za-z ]+?) HDFC Bank Credit Card Statement/);
   if (prod) statement.product = prod[1].trim();
 
@@ -369,6 +371,7 @@ export function parseMfSummary(pages) {
   const full = lines.map((l) => l.text).join('\n');
   const st = {};
   const pan = full.match(/\b([A-Z]{5}\d{4}[A-Z])\b/); if (pan) st.pan = pan[1];
+  const hl = full.match(/^([A-Z][A-Z .]{4,}?)\s*\(PAN\s*:/m); if (hl) st.holder = hl[1].trim();
   const dist = lines[0]?.items.find((i) => /services|financial|wealth|capital|advis|investment/i.test(i.str));
   st.distributor = dist ? dist.str.trim() : '';
   const asOn = full.match(/till\s+(\d{2}-\d{2}-\d{4})/i) || full.match(/to\s+(\d{2}-\d{2}-\d{4})/i);
