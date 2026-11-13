@@ -23,6 +23,7 @@ export const ACCOUNT_TYPES = [
   { id: 'car_loan', label: 'Car loan', side: 'liability', mode: 'value', group: 'Loans' },
   { id: 'personal_loan', label: 'Personal loan', side: 'liability', mode: 'value', group: 'Loans' },
   { id: 'education_loan', label: 'Education loan', side: 'liability', mode: 'value', group: 'Loans' },
+  { id: 'emi_loan', label: 'EMI purchase (phone, laptop…)', side: 'liability', mode: 'value', group: 'Loans' },
   { id: 'other_liability', label: 'Other liability', side: 'liability', mode: 'value', group: 'Loans' },
 ];
 export const typeOf = (id) => ACCOUNT_TYPES.find((t) => t.id === id) || ACCOUNT_TYPES[0];

@@ -4,7 +4,7 @@ import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squas
 import { parseSms, smsPayee, splitInbox } from './sms.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -99,7 +99,10 @@ function monthStats(ym) {
   for (const x of D.transactions) {
     if (!x.date.startsWith(ym)) continue;
     const c = catById(x.categoryId);
-    if (c?.kind === 'transfer') continue;
+    if (c?.kind === 'transfer') {
+      if (x.interest) { spend += x.interest; byCat.set('interest_paid', (byCat.get('interest_paid') || 0) + x.interest); }
+      continue;
+    }
     if (c?.kind === 'income') { income += x.amount; continue; }
     if (!c) { uncategorised++; if (x.amount > 0) continue; }
     spend -= x.amount;
@@ -274,6 +277,7 @@ function renderAccount(m, id) {
   if (t.mode === 'ledger') h += `<div class="small muted">${a.balanceSetAt ? `You confirmed this balance on ${fmtDate(a.balanceSetAt, true)}` : a.statement?.periodTo ? `From statements up to ${fmtDate(a.statement.periodTo, true)}, plus later entries` : ''}</div>
     <div class="row" style="margin-top:12px"><button class="btn" style="flex:1" data-act="setBalance" data-id="${a.id}">Update balance</button><button class="btn ghost" style="flex:1" data-act="transferSheet" data-from="${a.id}">Transfer</button></div>`;
   h += `</div>`;
+  if (isLoanType(a.type)) h += a.loan ? loanCard(a) : `<div class="card row"><div class="grow small">Track this loan's EMIs automatically?</div><button class="btn ghost" data-act="editAccount" data-id="${a.id}">Set up EMI</button></div>`;
   const st = a.statement;
   if (a.type === 'credit_card' && st) {
     const d = st.dueDate ? daysUntil(st.dueDate) : null;
@@ -422,7 +426,7 @@ function buildRows() {
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
   const acc = imp.accountId;
   const existing = new Set(D.transactions.filter((x) => x.accountId === acc).map((x) => x.hash));
-  const smsPool = D.transactions.filter((x) => x.accountId === acc && (x.source === 'sms' || x.source === 'transfer'));
+  const smsPool = D.transactions.filter((x) => x.accountId === acc && (x.source === 'sms' || x.source === 'transfer' || x.source === 'emi'));
   const claimed = new Set();
   const seen = new Map();
   imp.rows = src.map((t) => {
@@ -681,7 +685,20 @@ function accountSheet(a) {
       ${a.opening?.source === 'statement' ? '<p class="tiny muted" style="margin-top:-6px">Set from your first statement. Changing it makes it manual.</p>' : ''}
     </div>
     <div id="accValue" class="${isNew && t.mode === 'value' ? '' : 'hidden'}">
-      <label class="f"><span id="valLbl">${t.side === 'liability' ? 'Outstanding amount' : 'Current value'} (₹)</span><input class="i num" name="value" inputmode="decimal"></label>
+      <label class="f"><span id="valLbl">${t.side === 'liability' ? 'Outstanding principal today' : 'Current value'} (₹)</span><input class="i num" name="value" inputmode="decimal"></label>
+    </div>
+    <div id="accLoan" class="${isLoanType(a.type) ? '' : 'hidden'}">
+      <h2 class="small muted" style="text-transform:uppercase;letter-spacing:.06em;margin:4px 0 10px">EMI</h2>
+      <div class="split">
+        <label class="f"><span>EMI amount (₹)</span><input class="i num" name="emi" inputmode="decimal" value="${a.loan?.emi ? (a.loan.emi / 100).toFixed(2) : ''}"></label>
+        <label class="f"><span>EMIs left</span><input class="i num" name="remaining" inputmode="numeric" value="${a.loan?.remaining ?? ''}"></label>
+      </div>
+      <div class="split">
+        <label class="f"><span>Interest % a year</span><input class="i num" name="rate" inputmode="decimal" placeholder="0 = no-cost EMI" value="${a.loan?.rate != null ? +(+a.loan.rate).toFixed(2) : ''}"></label>
+        <label class="f"><span>Next EMI date</span><input class="i" type="date" name="nextDue" value="${a.loan?.nextDue || ''}"></label>
+      </div>
+      <label class="f"><span>Paid from</span><select class="i" name="paidFrom"><option value="">Outside Ledger (another account, cash, someone else)</option>${accOptions(a.loan?.paidFrom || '', (o) => typeOf(o.type).mode === 'ledger')}</select></label>
+      <p class="tiny muted" style="margin-top:-6px">Fill in what you know: with any two of outstanding, EMI and EMIs left (plus the rate), Ledger works out the rest. Each month it records the EMI, splits off the interest as an expense and lowers what you owe.</p>
     </div>
     <button class="btn wide">Save</button>
   </form>
@@ -691,8 +708,9 @@ function accountSheet(a) {
     const nt = typeOf(e.target.value);
     $('#accLedger').classList.toggle('hidden', nt.mode !== 'ledger');
     $('#accValue').classList.toggle('hidden', nt.mode !== 'value');
+    $('#accLoan').classList.toggle('hidden', !isLoanType(nt.id));
     $('#openLbl').textContent = (nt.id === 'credit_card' ? 'Amount owed on start date' : 'Balance on start date') + ' (₹)';
-    $('#valLbl').textContent = (nt.side === 'liability' ? 'Outstanding amount' : 'Current value') + ' (₹)';
+    $('#valLbl').textContent = (nt.side === 'liability' ? 'Outstanding principal today' : 'Current value') + ' (₹)';
   });
 }
 
@@ -905,6 +923,93 @@ function smsSetupSheet() {
   <p class="small"><b>DNS Bank:</b> make a second automation the same way, with <code>DNS Bank</code> in step 2. Both write to the same file. Any other bank: same again with that bank's name.</p>
   <p class="small muted">Unfamiliar formats land under "need attention" and Ask Ledger can read them.</p>
   <button class="btn wide" data-act="closeSheet">Got it</button>`);
+}
+
+// ---------- loans & EMIs ----------
+const LOAN_TYPES = ['home_loan', 'car_loan', 'personal_loan', 'education_loan', 'emi_loan', 'other_liability'];
+const isLoanType = (t) => LOAN_TYPES.includes(t);
+const mrate = (annualPct) => (annualPct || 0) / 1200;
+// EMI for principal P (paise), monthly rate r, n months
+const emiFor = (P, r, n) => r ? Math.round(P * r * (1 + r) ** n / ((1 + r) ** n - 1)) : Math.ceil(P / n);
+const principalFor = (E, r, n) => r ? Math.round(E * ((1 + r) ** n - 1) / (r * (1 + r) ** n)) : E * n;
+function monthsFor(P, E, r) {
+  if (P <= 0) return 0;
+  if (!r) return Math.ceil(P / E);
+  const x = 1 - (r * P) / E; if (x <= 0) return null; // EMI does not even cover the interest
+  return Math.ceil(-Math.log(x) / Math.log(1 + r));
+}
+function rateFor(P, E, n) { // annual %, by bisection
+  if (E * n <= P) return 0;
+  let lo = 0, hi = 0.05;
+  for (let i = 0; i < 80; i++) { const mid = (lo + hi) / 2; if (emiFor(P, mid, n) > E) hi = mid; else lo = mid; }
+  return lo * 1200;
+}
+function nextDateOnDay(day, after) {
+  const d = new Date(after + 'T00:00:00'); let y = d.getFullYear(), m = d.getMonth();
+  const mk = (yy, mm) => { const last = new Date(yy, mm + 1, 0).getDate(); return `${yy}-${String(mm + 1).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`; };
+  let c = mk(y, m); if (c <= after) { m++; if (m > 11) { m = 0; y++; } c = mk(y, m); }
+  return c;
+}
+function setupLoan(a, { outstanding, emi, remaining, rate, nextDue, paidFrom }) {
+  const prev = a.loan || {};
+  let P = outstanding != null ? Math.abs(outstanding) : (latestValuation(a.id)?.value ?? null);
+  if (P === 0 && !a.loan) P = null;
+  emi = emi != null ? Math.abs(emi) : prev.emi ?? null;
+  remaining = Number.isFinite(remaining) && remaining > 0 ? remaining : null;
+  let r = rate;
+  let note = '';
+  if (P == null && emi && remaining && r != null) { P = principalFor(emi, mrate(r), remaining); note = `Outstanding worked out as ${inr(P, 0)}.`; }
+  if (P != null && emi && remaining && r == null) { r = rateFor(P, emi, remaining); note = r ? `Interest worked out as ${r.toFixed(2)}% a year.` : 'Treated as a no-cost EMI (0%).'; }
+  if (P != null && !emi && remaining) { emi = emiFor(P, mrate(r || 0), remaining); note = `EMI worked out as ${inr(emi)}.`; }
+  if (P != null && emi && !remaining) { remaining = monthsFor(P, emi, mrate(r || 0)); if (remaining == null) return { error: 'That EMI does not cover the interest. Check the amounts.' }; note = `${remaining} EMIs left.`; }
+  if (P == null || !emi) {
+    if (!emi && !remaining) { a.loan = null; return { note: '' }; } // plain loan without EMI tracking
+    return { error: 'Add the outstanding principal, or the EMI, EMIs left and rate.' };
+  }
+  if (r == null) r = 0;
+  const day = nextDue ? +nextDue.slice(8, 10) : prev.day || new Date().getDate();
+  a.loan = { emi, rate: r, day, remaining, paidFrom: paidFrom || null, nextDue: nextDue || prev.nextDue || nextDateOnDay(day, todayIso()), paid: prev.paid || 0 };
+  const cur = latestValuation(a.id)?.value;
+  // If the next EMI date is already past, the outstanding you entered is from before that EMI
+  const setDate = a.loan.nextDue < todayIso() ? (() => { const d = new Date(a.loan.nextDue + 'T00:00:00'); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })() : todayIso();
+  if (cur !== P) D.valuations.push({ id: uid(), accountId: a.id, date: setDate, value: P, note: 'Loan set up', at: Date.now() });
+  return { note };
+}
+// Records every EMI that has fallen due. Returns how many were recorded.
+function processEmis() {
+  let n = 0; const today = todayIso();
+  for (const a of D.accounts) {
+    const L = a.loan; if (!L || a.archived) continue;
+    let guard = 0;
+    while (L.nextDue && L.nextDue <= today && guard++ < 600) {
+      const P = latestValuation(a.id)?.value || 0;
+      if (P <= 0) { L.nextDue = null; break; }
+      const interest = Math.round(P * mrate(L.rate));
+      const pay = Math.min(L.emi, P + interest);
+      const principal = pay - interest;
+      const newP = Math.max(0, P - principal);
+      D.valuations.push({ id: uid(), accountId: a.id, date: L.nextDue, value: newP, note: `EMI paid: ${inr(principal)} principal, ${inr(interest)} interest`, at: Date.now() });
+      const from = L.paidFrom && accById(L.paidFrom);
+      if (from) D.transactions.push({ id: uid(), accountId: from.id, date: L.nextDue, time: null, amount: -pay, payee: `EMI · ${a.name}`, description: `EMI ${a.name}`, raw: '', notes: interest ? `${inr(principal)} principal + ${inr(interest)} interest` : 'No-cost EMI', ref: null, importId: null, hash: 'emi|' + uid(), source: 'emi', categoryId: 'loan_repayment', catManual: true, interest, loanId: a.id });
+      L.paid = (L.paid || 0) + 1; L.remaining = Math.max(0, (L.remaining || 0) - 1);
+      L.nextDue = newP > 0 ? nextDateOnDay(L.day, L.nextDue) : null;
+      n++;
+    }
+  }
+  return n;
+}
+function loanCard(a) {
+  const L = a.loan; if (!L) return '';
+  const P = latestValuation(a.id)?.value || 0, r = mrate(L.rate);
+  // remaining interest if the same EMI continues
+  let left = P, int = 0, k = 0; while (left > Math.max(100, L.emi * 0.005) && k++ < 600) { const i = Math.round(left * r); int += i; left -= Math.min(L.emi, left + i) - i; }
+  const payoff = L.nextDue ? (() => { let d = L.nextDue; for (let j = 1; j < k; j++) d = nextDateOnDay(L.day, d); return d; })() : null;
+  const from = L.paidFrom ? accById(L.paidFrom) : null;
+  return `<div class="card"><h2>EMI</h2>
+    <div class="split"><div><div class="small muted">Monthly EMI</div><div class="mid num">${inr(L.emi, 0)}</div></div><div><div class="small muted">EMIs left</div><div class="mid">${k}</div></div></div>
+    <p class="small" style="margin:10px 0 0">${L.nextDue ? `Next on <b>${fmtDate(L.nextDue, true)}</b>` : 'Fully repaid'} · ${L.rate ? `${(+L.rate).toFixed(2)}% a year` : 'no-cost (0%)'} · paid from ${from ? esc(accShort(from)) : 'outside Ledger'}</p>
+    ${payoff ? `<p class="small muted" style="margin:6px 0 0">Ends ${fmtDate(payoff, true)}${int ? ` · ${inr(int, 0)} interest still to pay` : ''}</p>` : ''}
+    <div class="row" style="margin-top:12px"><button class="btn ghost" style="flex:1" data-act="editAccount" data-id="${a.id}">Edit EMI</button><button class="btn ghost" style="flex:1" data-act="prepaySheet" data-id="${a.id}">Prepay</button></div></div>`;
 }
 
 // ---------- manual transfers & balance updates ----------
@@ -1133,6 +1238,7 @@ async function offerFaceId() {
 }
 async function afterUnlock() {
   D = migrate(vault.data); vault.data = D;
+  if (processEmis()) save();
   hideLock(); render();
   requestPersistence().then(() => storageInfo());
 }
@@ -1204,6 +1310,15 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  prepaySheet: (d) => {
+    const a = accById(d.id);
+    openSheet(`<h3>Prepay ${esc(a.name)}</h3><form data-form="prepay" data-id="${a.id}">
+      <div class="split"><label class="f"><span>Amount (₹)</span><input class="i num" name="amount" inputmode="decimal" required></label>
+      <label class="f"><span>Date</span><input class="i" type="date" name="date" value="${todayIso()}" required></label></div>
+      <label class="f"><span>Paid from</span><select class="i" name="from"><option value="">Outside Ledger</option>${accOptions(a.loan?.paidFrom || '', (o) => typeOf(o.type).mode === 'ledger')}</select></label>
+      <label class="f"><span>After prepaying</span><select class="i" name="mode"><option value="tenure">Keep the EMI, finish sooner</option><option value="emi">Keep the end date, lower the EMI</option></select></label>
+      <button class="btn wide">Record prepayment</button></form>`);
+  },
   setBalance: (d) => setBalanceSheet(d.id),
   transferSheet: (d) => transferSheet(d.from || ui.view?.id || ui.acc),
   linkTransferSheet: (d) => {
@@ -1309,6 +1424,19 @@ const forms = {
   },
   pdfPass: async (f) => { closeSheet(); pendingRemember = !!f.get('remember'); await handlePdf(pendingFile, f.get('pw')); pendingRemember = false; processQueue(); },
   pasteSms: async (f) => { closeSheet(); await handleInbox(f.get('t'), 'paste'); },
+  prepay: (f, form) => {
+    const a = accById(form.dataset.id), amt = parseRupees(f.get('amount')); if (!amt) return toast('Enter an amount.');
+    const date = f.get('date');
+    if (f.get('from')) createTransfer(f.get('from'), a.id, Math.abs(amt), date, 'Loan prepayment');
+    else adjustValue(a, -Math.abs(amt), date, 'Prepayment');
+    const L = a.loan, P = latestValuation(a.id)?.value || 0;
+    if (L && P > 0) {
+      if (f.get('mode') === 'emi') L.emi = emiFor(P, mrate(L.rate), Math.max(1, L.remaining || 1));
+      else L.remaining = monthsFor(P, L.emi, mrate(L.rate)) || L.remaining;
+    } else if (L && P <= 0) L.nextDue = null;
+    save(); closeSheet(); render();
+    toast(L ? (f.get('mode') === 'emi' ? `New EMI ${inr(L.emi, 0)}` : `${L.remaining} EMIs left now`) : 'Prepayment recorded', 3500);
+  },
   setBalance: (f, form) => {
     const a = accById(form.dataset.id); const v = parseRupees(f.get('bal')); if (v == null) return toast('Enter the balance.');
     const actual = a.type === 'credit_card' ? -Math.abs(v) : v; const date = f.get('date');
@@ -1371,7 +1499,14 @@ const forms = {
       if (!a.opening || a.opening.amount !== signed || a.opening.date !== date) a.opening = { amount: signed, date, source: 'manual' };
     } else if (!id) {
       const v = parseRupees(f.get('value') || '');
-      if (v != null) D.valuations.push({ id: uid(), accountId: a.id, date: todayIso(), value: Math.abs(v), note: '', at: Date.now() });
+      if (v != null && !isLoanType(type)) D.valuations.push({ id: uid(), accountId: a.id, date: todayIso(), value: Math.abs(v), note: '', at: Date.now() });
+    }
+    if (isLoanType(type)) {
+      const r = setupLoan(a, { outstanding: id ? null : parseRupees(f.get('value') || ''), emi: parseRupees(f.get('emi') || ''), remaining: parseInt(f.get('remaining'), 10), rate: f.get('rate') === '' ? null : parseFloat(f.get('rate')), nextDue: f.get('nextDue'), paidFrom: f.get('paidFrom') || null });
+      if (r.error) { toast(r.error, 4000); if (!id) D.accounts = D.accounts.filter((x) => x.id !== a.id); return; }
+      const n = processEmis();
+      const note = (r.note || '').replace(/^\d+ EMIs left\.$/, '');
+      if (note || n) toast(`${note}${n ? ` ${n} past EMI${n > 1 ? 's' : ''} recorded, ${a.loan?.remaining} left.` : ''}`.trim(), 4500);
     }
     save(); closeSheet(); if (!id) { ui.tab = 'accounts'; ui.view = { page: 'account', id: a.id }; } render();
   },
