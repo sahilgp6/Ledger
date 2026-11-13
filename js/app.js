@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.8.2';
+const APP_VERSION = '0.9.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -94,15 +94,20 @@ function holdingsCard(a) {
   const hs = D.holdings.filter((h) => h.accountId === a.id).map((h) => ({ ...h, value: holdValue(h), cost: holdCost(h) })).sort((x, y) => y.value - x.value);
   if (!hs.length) return '';
   const val = hs.reduce((t, h) => t + h.value, 0), cost = hs.reduce((t, h) => t + h.cost, 0), pl = val - cost;
+  const live = hs.filter((h) => h.prevClose && h.qty != null && h.type !== 'mf' && h.priceDate === todayIso());
+  const dayChg = live.reduce((t, h) => t + Math.round(h.qty * (h.price - h.prevClose)), 0);
+  const dayBase = live.reduce((t, h) => t + Math.round(h.qty * h.prevClose), 0);
   const pct = (p, c) => c ? `${p >= 0 ? '+' : ''}${(p / c * 100).toFixed(1)}%` : '';
   return `<div class="card"><h2>Holdings · ${hs.length}</h2>
     <div class="split"><div><div class="small muted">Invested</div><div class="mid num">${inr(cost, 0)}</div></div>
     <div><div class="small muted">Profit / loss</div><div class="mid num ${pl >= 0 ? 'in' : 'bad'}">${inrS(pl, 0)} <span class="small">${pct(pl, cost)}</span></div></div></div>
+    ${live.length ? `<p class="small" style="margin:8px 0 0">Today: <b class="${dayChg >= 0 ? 'in' : 'bad'}">${inrS(dayChg, 0)} (${dayBase ? (dayChg / dayBase * 100).toFixed(2) : '0.00'}%)</b></p>` : ''}
+    ${hs.some((h) => h.type === 'stock' || h.type === 'etf') && !D.settings.priceRelay ? `<p class="small" style="margin:8px 0 0"><button class="link" data-act="stocksSheet">Turn on live stock prices</button></p>` : ''}
     ${a.sips?.length ? `<p class="small" style="margin:8px 0 0">SIPs: <b>${inr(a.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</b> across ${a.sips.length} fund${a.sips.length > 1 ? 's' : ''}</p>` : ''}
-    ${hs.some((h) => h.type === 'mf' && h.qty != null) ? `<p class="small muted" style="margin:8px 0 0">NAVs update automatically each day. ${a.navCheckedAt ? 'Last checked ' + new Date(a.navCheckedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''} <button class="link" data-act="refreshNav" data-id="${a.id}">Refresh now</button></p>` : `<p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p>`}</div>
+    ${hs.some((h) => h.type !== 'mf' && h.priceAt) ? `<p class="small muted" style="margin:8px 0 0">${D.settings.priceRelay ? 'Live prices' : 'Prices about 15 minutes delayed'} · as of ${new Date(hs.filter((h) => h.priceAt).map((h) => h.priceAt).sort().pop()).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}. Tap 🔄 to update.</p>` : hs.some((h) => h.type === 'mf' && h.qty != null) ? `<p class="small muted" style="margin:8px 0 0">NAVs update automatically each day. ${a.navCheckedAt ? 'Last checked ' + new Date(a.navCheckedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''} <button class="link" data-act="refreshNav" data-id="${a.id}">Refresh now</button></p>` : `<p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p>`}</div>
     <div class="list">${hs.map((h) => `<div class="item"><div class="ico">${esc(initials(h.symbol))}</div>
       <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${h.qty != null && h.type === 'mf' ? `${(+h.qty.toFixed(3)).toLocaleString('en-IN')} units × NAV ₹${(h.price / 100).toFixed(4)} (${fmtDate(h.priceDate)})` : h.qty != null ? `${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}` : `${h.folio ? 'Folio ' + esc(h.folio) : ''}${h.xirr != null ? ` · XIRR ${h.xirr}%` : ''}${(a.sips || []).find((x) => x.folio === h.folio) ? ` · SIP ${inr(a.sips.find((x) => x.folio === h.folio).amount, 0)}` : ''}`}</div></div>
-      <div style="text-align:right"><div class="a num">${inr(h.value, 0)}</div><div class="tiny num ${h.value >= h.cost ? 'in' : 'bad'}">${inrS(h.value - h.cost, 0)} · ${pct(h.value - h.cost, h.cost)}</div></div></div>`).join('')}</div>`;
+      <div style="text-align:right"><div class="a num">${inr(h.value, 0)}</div><div class="tiny num ${h.value >= h.cost ? 'in' : 'bad'}">${inrS(h.value - h.cost, 0)} · ${pct(h.value - h.cost, h.cost)}</div>${h.prevClose && h.type !== 'mf' ? `<div class="tiny num ${h.price >= h.prevClose ? 'in' : 'bad'}">today ${h.price >= h.prevClose ? '+' : ''}${((h.price / h.prevClose - 1) * 100).toFixed(2)}%</div>` : ''}</div></div>`).join('')}</div>`;
 }
 // Card EMIs still to be billed (not yet in the statement balance) are real debt
 const unbilledEmi = (a) => (a.type === 'credit_card' ? (a.statement?.emiLoans || []).reduce((s, l) => s + (l.principalLeft || 0), 0) : 0);
@@ -207,9 +212,10 @@ function txItem(x, showAcc = true) {
     <div class="a num ${x.amount > 0 ? 'in' : ''}">${x.amount > 0 ? '+' : ''}${inr(x.amount)}</div></button>`;
 }
 
+const hasPriced = () => D.holdings.some((h) => h.qty != null);
 const refreshBtn = `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="refreshAll" aria-label="Refresh prices">🔄</button>`;
 function renderHome(m) {
-  setTop('Ledger', { action: D.holdings.some((h) => h.type === 'mf' && h.qty != null) ? refreshBtn : '' });
+  setTop('Ledger', { action: hasPriced() ? refreshBtn : '' });
   if (!D.accounts.length) {
     m.innerHTML = `<div class="card"><h2>Welcome</h2><p>Everything you add stays on this phone, encrypted. Start with a statement.</p>
       <button class="btn wide" data-act="tab" data-tab="import">Import a statement</button>
@@ -299,7 +305,7 @@ function renderTxList() {
 }
 
 function renderAccounts(m) {
-  setTop('Accounts', { action: (D.holdings.some((h) => h.type === 'mf' && h.qty != null) ? refreshBtn : '') + `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addAccount">+ Add</button>` });
+  setTop('Accounts', { action: (hasPriced() ? refreshBtn : '') + `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addAccount">+ Add</button>` });
   if (!D.accounts.length) { m.innerHTML = `<div class="empty">No accounts yet.<br><br><button class="btn" data-act="addAccount">Add an account</button></div>`; return; }
   const nw = netWorth();
   const groups = {};
@@ -322,12 +328,12 @@ function renderAccount(m, id) {
   const a = accById(id);
   if (!a) { ui.view = null; return render(); }
   const t = typeOf(a.type);
-  setTop(a.name, { back: 'closeView', action: (D.holdings.some((h) => h.accountId === a.id && h.type === 'mf' && h.qty != null) ? refreshBtn : '') + `<button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
+  setTop(a.name, { back: 'closeView', action: (D.holdings.some((h) => h.accountId === a.id && h.qty != null) ? refreshBtn : '') + `<button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
   const b = balance(a);
   const txs = D.transactions.filter((x) => x.accountId === a.id).sort((p, q) => q.date.localeCompare(p.date) || (q.time || '').localeCompare(p.time || ''));
   let h = `<div class="card"><h2>${esc(t.label)}${a.last4 ? ' ••' + a.last4 : ''}</h2><div class="big num">${inr(b)}</div>`;
   const hasHold = D.holdings.some((x) => x.accountId === a.id);
-  if (t.mode === 'value' && hasHold) h += `<div class="small muted">Market value from your last holdings file</div>`;
+  if (t.mode === 'value' && hasHold) h += `<div class="small muted">${D.settings.priceRelay && D.holdings.some((x) => x.accountId === a.id && x.type !== 'mf') ? 'Market value at live prices' : D.holdings.some((x) => x.accountId === a.id && x.type === 'mf' && x.qty != null) ? 'Market value at latest NAVs' : 'Market value from your last holdings file'}</div>`;
   else if (t.mode === 'value') {
     const v = latestValuation(a.id);
     h += `<div class="small muted">${v ? `Value as on ${fmtDate(v.date, true)}` : 'No value entered yet'}</div><div style="margin-top:12px"><button class="btn" data-act="addValuation" data-id="${a.id}">Update value</button></div>`;
@@ -884,6 +890,8 @@ function renderMore(m) {
     <button class="item" data-act="exportCsv"><div class="grow">Export transactions (CSV)</div><div class="muted">›</div></button>
     <div class="item"><div class="grow">Storage<div class="s" id="storageInfo">Checking…</div></div></div>
   </div>
+  <div class="day"><span>Prices</span></div>
+  <div class="list"><button class="item" data-act="stocksSheet"><div class="grow">Live stock prices<div class="s">${D.settings.priceRelay ? 'On, via your Cloudflare relay' : 'Off'}</div></div><div class="muted">›</div></button></div>
   <div class="day"><span>On-device AI</span></div>
   <div class="list"><button class="item" data-act="aiSetup"><div class="grow">Ask Ledger<div class="s">${D.settings.ai?.model ? esc(AI.modelById(D.settings.ai.model)?.label || '') : 'Off'}</div></div><div class="muted">›</div></button></div>
   <div class="day"><span>Categorising</span></div>
@@ -1116,6 +1124,65 @@ async function refreshNavs({ force = false } = {}) {
   accs.forEach((a) => { a.navCheckedAt = Date.now(); const d = D.holdings.filter((h) => h.accountId === a.id).map((h) => h.priceDate).sort().pop(); if (d) a.holdingsAsOn = d; });
   save();
   return n;
+}
+
+// ---------- stock & ETF prices ----------
+// Primary: your own Cloudflare relay (near-live; only ticker symbols are sent).
+// Fallback: a price file built by the Ledger repo for every NSE symbol (so it reveals nothing about you).
+const PRICES_URL = 'https://raw.githubusercontent.com/sahilgp6/Ledger/prices/prices.json';
+const yahooSym = (s2) => String(s2).toUpperCase().replace(/-(E|F|BE|BZ|SM|ST|EQ)$/, '');
+const hasStocks = () => D.holdings.some((h) => (h.type === 'stock' || h.type === 'etf') && h.qty != null);
+function applyQuote(h, price, prev, when) {
+  h.price = price * 100; h.prevClose = prev ? prev * 100 : null;
+  const t = when ? new Date(when) : new Date(); h.priceAt = t.toISOString();
+  h.priceDate = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+}
+async function refreshStocks({ force = false } = {}) {
+  const hs = D.holdings.filter((h) => (h.type === 'stock' || h.type === 'etf') && h.qty != null);
+  if (!hs.length || !navigator.onLine) return 0;
+  const relay = (D.settings.priceRelay || '').replace(/\/+$/, '');
+  if (!force && D.settings.stocksCheckedAt && Date.now() - D.settings.stocksCheckedAt < (relay ? 60e3 : 10 * 60e3)) return 0;
+  let n = 0;
+  if (relay) {
+    const syms = [...new Set(hs.map((h) => yahooSym(h.symbol)))];
+    for (let i = 0; i < syms.length; i += 50) {
+      const r = await fetch(`${relay}/quote?symbols=${encodeURIComponent(syms.slice(i, i + 50).join(','))}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('price relay replied ' + r.status);
+      const { quotes } = await r.json();
+      for (const h of hs) { const q = quotes?.[yahooSym(h.symbol)]; if (q?.price > 0) { applyQuote(h, q.price, q.prevClose, q.time); n++; } }
+    }
+  } else {
+    const data = await getJSON(PRICES_URL + '?t=' + Math.floor(Date.now() / 60000));
+    const P2 = data.prices || {};
+    for (const h of hs) { const row = P2[yahooSym(h.symbol)] || P2[h.symbol.toUpperCase()]; if (row && row[0] > 0) { applyQuote(h, row[0], row[1], row[2] ? row[2] * 1000 : data.updatedAt); n++; } }
+  }
+  D.settings.stocksCheckedAt = Date.now();
+  for (const a of new Set(hs.map((h) => h.accountId))) { const acc = accById(a); if (acc) acc.holdingsAsOn = hs.filter((h) => h.accountId === a).map((h) => h.priceDate).sort().pop(); }
+  save();
+  return n;
+}
+const marketOpen = () => { const t = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60e3); const d = t.getDay(), m = t.getHours() * 60 + t.getMinutes(); return d >= 1 && d <= 5 && m >= 555 && m <= 935; };
+// While Ledger is open in market hours, live prices refresh every 2 minutes
+setInterval(() => {
+  if (!D || document.hidden || !D.settings.priceRelay || !marketOpen() || !hasStocks()) return;
+  refreshStocks().then((n) => { if (n && !$('#sheet').classList.contains('on') && !ui.batch) render(); }).catch(() => {});
+}, 120e3);
+let workerCode = '';
+function stocksSheet() {
+  fetch(new URL('../cloudflare-worker.js', import.meta.url)).then((r) => r.text()).then((t) => { workerCode = t; }).catch(() => {});
+  openSheet(`<h3>Live stock prices</h3>
+  <p class="small">Ledger gets stock and ETF prices through your own free Cloudflare relay. Only ticker symbols are sent; quantities and values stay on this phone. Prices are about a minute behind and refresh every 2 minutes while Ledger is open in market hours.</p>
+  <ol class="small" style="padding-left:18px;line-height:1.55">
+    <li>Tap <b>Copy relay code</b> below.</li>
+    <li>Open <b>dash.cloudflare.com</b> in Safari and sign up (free).</li>
+    <li>Go to <b>Workers &amp; Pages → Create → Create Worker</b>, name it <code>ledger-prices</code>, tap <b>Deploy</b>.</li>
+    <li>Tap <b>Edit code</b>, select all, paste, then <b>Deploy</b>.</li>
+    <li>Copy the worker's address (ends in <code>.workers.dev</code>) and paste it below.</li>
+  </ol>
+  <button class="btn wide ghost" data-act="copyWorker">Copy relay code</button><div style="height:12px"></div>
+  <form data-form="relay"><label class="f"><span>Relay address</span><input class="i" name="url" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://ledger-prices.yourname.workers.dev" value="${esc(D.settings.priceRelay || '')}"></label>
+  <button class="btn wide">Save and test</button></form>
+  ${D.settings.priceRelay ? `<div style="height:10px"></div><button class="btn wide danger" data-act="relayOff">Turn off live prices</button>` : ''}`);
 }
 
 // ---------- loans & EMIs ----------
@@ -1433,6 +1500,7 @@ async function afterUnlock() {
   D = migrate(vault.data); vault.data = D;
   if (processEmis()) save();
   refreshNavs().then((n) => { if (n && D) render(); }).catch(() => {});
+  refreshStocks().then((n) => { if (n && D) render(); }).catch(() => {});
   hideLock(); render();
   requestPersistence().then(() => storageInfo());
 }
@@ -1512,15 +1580,27 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  stocksSheet: () => stocksSheet(),
+  copyWorker: () => {
+    if (!workerCode) return toast('Still loading, tap again in a second');
+    navigator.clipboard.writeText(workerCode).then(() => toast('Relay code copied. Paste it in Cloudflare.')).catch(() => toast('Could not copy. Open sahilgp6.github.io/Ledger/cloudflare-worker.js and copy it from there.', 5000));
+  },
+  relayOff: () => { D.settings.priceRelay = ''; save(); closeSheet(); render(); },
   refreshAll: async (d, el) => {
     if (el.disabled) return; el.disabled = true; el.style.opacity = '.5';
-    toast('Refreshing fund NAVs…');
+    toast('Refreshing prices…');
     const e = processEmis();
-    let n = 0; try { n = await refreshNavs({ force: true }); } catch (err) { console.warn(err); }
+    let n = 0, sN = 0, sErr = false;
+    try { n = await refreshNavs({ force: true }); } catch (err) { console.warn(err); }
+    try { sN = await refreshStocks({ force: true }); } catch (err) { console.warn(err); sErr = true; }
     if (e) save();
     render();
     const funds = D.holdings.filter((h) => h.type === 'mf' && h.qty != null).length;
-    toast(n ? `Updated ${n} of ${funds} fund NAVs` : navigator.onLine ? 'No newer NAVs yet (they update once a day, in the evening), or the NAV service could not be reached' : 'You are offline', 4000);
+    const stocks = D.holdings.filter((h) => (h.type === 'stock' || h.type === 'etf') && h.qty != null).length;
+    const parts = [];
+    if (stocks) parts.push(sErr ? 'stock prices unavailable right now' : `${sN} of ${stocks} stock prices updated`);
+    if (funds) parts.push(n ? `${n} of ${funds} fund NAVs updated` : 'fund NAVs already current');
+    toast(navigator.onLine ? (parts.join(' · ') || 'Nothing to refresh').replace(/^./, (c) => c.toUpperCase()) : 'You are offline', 4000);
   },
   addHolder: (d) => {
     const name = d.name.charAt(0) + d.name.slice(1).toLowerCase();
@@ -1710,6 +1790,19 @@ const forms = {
     if (id) D.members.find((x) => x.id === id).name = name;
     else D.members.push({ id: 'm_' + uid().slice(0, 8), name });
     save(); closeSheet(); render(); toast(id ? 'Saved' : `${name} added. Upload their statements, or set "Belongs to" on an account.`, 4000);
+  },
+  relay: async (f) => {
+    let url = (f.get('url') || '').trim().replace(/\/+$/, '');
+    if (!url) return toast('Paste the relay address first.');
+    if (!/^https:\/\//.test(url)) url = 'https://' + url;
+    try {
+      const r = await fetch(url + '/quote?symbols=NIFTYBEES', { cache: 'no-store' });
+      const j = await r.json();
+      if (!j.quotes?.NIFTYBEES?.price) throw new Error(j.error || 'no price came back');
+      D.settings.priceRelay = url; save();
+      const n = await refreshStocks({ force: true }).catch(() => 0);
+      closeSheet(); render(); toast(`Live prices on: NIFTYBEES ₹${j.quotes.NIFTYBEES.price}. ${n} holdings updated.`, 4500);
+    } catch (e) { toast('The relay did not answer correctly: ' + (e.message || e), 5000); }
   },
   addUpi: (f) => { markUpi(f.get('h').trim(), true); acts.myUpiSheet(); },
   ask: async (f, form) => { const q = f.get('q'); form.reset(); await ask(q); },
