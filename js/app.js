@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.9';
+const APP_VERSION = '1.5.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -740,6 +740,15 @@ function aiSummary(period = 'last') {
   }
   const nw = netWorth(); if (nw.assets || nw.liabilities) L.push('', 'NET WORTH', `- ${r(nw.net)} (assets ${r(nw.assets)}, debts ${r(-nw.liabilities)}${loans.length && D.settings.loansSeparate ? ', loans listed above not included' : ''})`);
   const uncat = a.cats.get('_none'); if (uncat) L.push('', `NOTE: ${r(uncat)} of spending is not categorised yet.`);
+  if (D.settings.sumAll) {
+    // Every transaction, oldest first. Transfers between my own accounts and card bill payments are left out.
+    const all = D.transactions.filter((x) => vis.has(x.accountId) && months.includes(ymOf(x.date)) && catById(x.categoryId)?.kind !== 'transfer')
+      .sort((p, q) => p.date.localeCompare(q.date) || q.amount - p.amount);
+    const MAX = 800;
+    L.push('', `EVERY TRANSACTION (${all.length}${all.length > MAX ? `, first ${MAX} shown` : ''}; date | payee | amount, minus is money out | category | account)`);
+    for (const x of all.slice(0, MAX)) L.push(`${x.date.slice(8)}/${x.date.slice(5, 7)} | ${clean(x.payee || x.description)} | ${x.amount < 0 ? '-' : '+'}${inr(Math.abs(x.amount), 0).replace('₹', '')} | ${catName(x.categoryId)} | ${clean(accById(x.accountId)?.name)}`);
+    L.push('Please also review this list: flag duplicate charges, anything that looks wrong or unexpected, and items in the wrong category.');
+  }
   return L.join('\n');
 }
 function summarySheet(period) {
@@ -748,6 +757,7 @@ function summarySheet(period) {
   openSheet(`<h3>Summary for AI</h3><p class="small muted" style="margin-top:-6px">Copy this and paste it into Claude, ChatGPT or any AI app for a report and savings ideas. No account numbers or balances by account are included.</p>
     <div class="split" style="margin-bottom:10px"><label class="f"><span>Save each month (₹)</span><input class="i" id="sumTarget" inputmode="decimal" placeholder="e.g. 30000" value="${D.settings.saveTarget ? D.settings.saveTarget / 100 : ''}"></label>
     <label class="f"><span>How the AI should talk</span><input class="i" id="sumStyle" placeholder="e.g. Be blunt" value="${esc(D.settings.aiStyle || '')}"></label></div>
+    <label class="item" style="border:1px solid var(--line);border-radius:12px;margin-bottom:10px"><div class="grow">Include every transaction<div class="s">For a line-by-line review. Longer to paste.</div></div><input type="checkbox" switch id="sumAll" ${D.settings.sumAll ? 'checked' : ''}></label>
     <div class="seg" role="group" aria-label="Period" style="margin-bottom:10px;grid-template-columns:repeat(4,minmax(0,1fr));font-size:.8rem">${SUM_PERIODS.map(([k, t]) => `<button class="${k === period ? 'on' : ''}" data-act="sumPeriod" data-p="${k}" aria-pressed="${k === period}">${t}</button>`).join('')}</div>
     <textarea class="i" readonly style="min-height:300px;font-size:.8rem;line-height:1.45;font-family:ui-monospace,Menlo,monospace">${esc(text)}</textarea>
     <div class="row" style="margin-top:10px"><button class="btn" style="flex:1" data-act="sumCopy">Copy</button>${navigator.share ? '<button class="btn ghost" style="flex:1" data-act="sumShare">Share…</button>' : ''}</div>`);
@@ -3025,5 +3035,6 @@ window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recap
 // Savings goal and AI style on the Summary sheet: saved as you leave each box
 document.addEventListener('change', (e) => {
   if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); acts.sumRefresh(); }
+  else if (e.target.id === 'sumAll') { D.settings.sumAll = e.target.checked; save(); acts.sumRefresh(); }
   else if (e.target.id === 'sumStyle') { D.settings.aiStyle = e.target.value.trim().slice(0, 300); save(); acts.sumRefresh(); }
 });
