@@ -4,7 +4,7 @@ import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squas
 import { parseSms, smsPayee, splitInbox } from './sms.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.3.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -838,7 +838,11 @@ function addSms(acc, p, hash) {
 }
 async function handleInbox(text, source) {
   const items = splitInbox(text);
-  if (!items.length) return toast('No SMS found in that file.');
+  if (!items.length) {
+    const blank = (String(text).match(/===SMS===/g) || []).length;
+    openSheet(`<h3>No messages yet</h3>${blank ? `<p>The file has ${blank} entr${blank > 1 ? 'ies' : 'y'} with a date but no message text. That's what a test run with ▶ writes, so it's expected until a real bank SMS arrives.</p><p class="small muted">If a real HDFC or DNS SMS has arrived since and it still says this, the Shortcut isn't passing the message: in the Text block, tap Shortcut Input and choose the message content.</p>` : '<p>The file is empty.</p>'}<button class="btn wide" data-act="closeSheet">OK</button>`);
+    return;
+  }
   const seen = new Set(D.smsSeen.map((s) => s.h));
   const res = { added: 0, known: 0, skipped: 0, attention: 0, old: 0, reasons: {} };
   for (const it of items) {
