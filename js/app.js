@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -466,7 +466,7 @@ function renderQuick() {
   <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k}</button>`).join('')}</div>
   <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Ranjeet, chai, petrol…" autocomplete="off"></label>
   <div class="chips">${recentPayees().map((p) => `<button type="button" class="chip ${p === q.payee ? 'on' : ''}" data-act="qaPayee" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>
-  <div class="seg" role="group" aria-label="Paid with">${[['upi', 'UPI'], ['card', 'Card'], ['cash', 'Cash']].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
+  <div class="seg" role="group" aria-label="Paid from">${[['upi', 'Savings' + (payAccount('upi', false)?.last4 ? ' ••' + payAccount('upi', false).last4 : '')], ['card', 'Card' + (payAccount('card', false)?.last4 ? ' ••' + payAccount('card', false).last4 : '')], ['cash', 'Cash']].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
   <p class="tiny muted" style="margin:6px 2px 10px">${acc ? 'From ' + esc(accShort(acc)) : q.via === 'cash' ? 'A Cash wallet account will be created' : 'No account set for this yet'} · <button class="link tiny" type="button" data-act="payWithSheet">Change</button></p>
   <div class="split">
     <label class="f"><span>Category</span><select class="i" id="qaCat">${catOptions(q.cat || guessCategory(q.payee || '', -1) || '')}</select></label>
