@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.7';
+const APP_VERSION = '0.9.8';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -61,6 +61,7 @@ function migrate(d) {
     d.members = [{ id: 'me', name: holder ? holder.split(/\s+/)[0].replace(/^./, (c) => c.toUpperCase()).replace(/(?<=^.).*/, (r) => r.toLowerCase()) : 'Me' }];
   }
   d.settings.who ||= 'all';
+  if (d.settings.loansSeparate === undefined) d.settings.loansSeparate = true;
   d.v = DATA_VERSION;
   return d;
 }
@@ -139,10 +140,15 @@ function ownerFromName(name) {
   return D.members.find((m) => m.name.toLowerCase().split(/\s+/)[0] === first)?.id || 'me';
 }
 
+// Loans (home, car, personal, EMI) can be kept out of net worth and shown on their own
+const inNetWorth = (a) => !(D.settings.loansSeparate && isLoanType(a.type));
+function loansTotal(who = D.settings.who) {
+  return D.accounts.filter((a) => !a.archived && isLoanType(a.type) && shareOf(a, who) > 0).reduce((t, a) => t + Math.round(balance(a) * shareOf(a, who)), 0);
+}
 function netWorth(who = D.settings.who) {
   let assets = 0, liabilities = 0;
   for (const a of D.accounts) {
-    if (a.archived) continue;
+    if (a.archived || !inNetWorth(a)) continue;
     const sh = shareOf(a, who); if (!sh) continue;
     const b = Math.round((balance(a) - unbilledEmi(a)) * sh);
     if (b >= 0 && typeOf(a.type).side === 'asset') assets += b; else liabilities += b;
@@ -194,7 +200,7 @@ function valueOn(a, date) {
 // Daily series of net worth (or of one account) for the given dates, oldest first
 function seriesFor(dates, { who = D.settings.who, accId = null } = {}) {
   const today = todayIso();
-  const accs = D.accounts.filter((a) => (accId ? a.id === accId : !a.archived && shareOf(a, who) > 0));
+  const accs = D.accounts.filter((a) => (accId ? a.id === accId : !a.archived && inNetWorth(a) && shareOf(a, who) > 0));
   const sh = (a) => (accId ? 1 : shareOf(a, who));
   const ledger = accs.filter((a) => typeOf(a.type).mode === 'ledger');
   const other = accs.filter((a) => typeOf(a.type).mode !== 'ledger');
@@ -513,6 +519,7 @@ function renderHome(m) {
   recordPrices();
   if (processBills()) save();
   const nw = netWorth();
+  const loans = loansTotal();
   const mt = marketsToday();
   const ym = ymOf(todayIso());
   const visIds = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
@@ -531,8 +538,9 @@ function renderHome(m) {
     ${mt ? `<p class="small" style="margin:6px 0 0">Stocks today: <b class="num ${mt.chg >= 0 ? 'in' : 'bad'}">${chgTxt(mt.chg, mt.base)}</b></p>` : ''}
     <div class="split" style="margin-top:10px">
       <div><div class="small muted">Assets</div><div class="num">${compact(nw.assets)}</div></div>
-      <div><div class="small muted">Liabilities</div><div class="num">${compact(nw.liabilities)}</div></div>
-    </div></div>
+      <div><div class="small muted">${D.settings.loansSeparate ? 'Card dues & other' : 'Liabilities'}</div><div class="num">${compact(nw.liabilities)}</div></div>
+    </div>
+    ${D.settings.loansSeparate && loans ? `<button class="item" style="margin:10px -4px 0;padding:10px 4px;border-top:1px solid var(--line)" data-act="tab" data-tab="accounts"><div class="grow"><div class="small muted">Loans, kept out of net worth</div><div class="num">${inr(loans, 0)}</div></div><div class="muted">›</div></button>` : ''}</div>
   ${dues.map((a) => { const d = daysUntil(a.statement.dueDate); return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAccount" data-id="${a.id}">
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
@@ -605,7 +613,7 @@ function renderAccounts(m) {
   const groups = {};
   for (const a of D.accounts.filter((a) => !a.archived && accVisible(a))) (groups[typeOf(a.type).group] ||= []).push(a);
   const order = [...new Set(ACCOUNT_TYPES.map((t) => t.group))];
-  m.innerHTML = whoSwitch() + `<div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2><div class="big num">${inr(nw.net, 0)}</div>${multi() && D.settings.who !== 'all' && D.accounts.some((a) => ownerOf(a) === 'joint') ? '<div class="tiny muted">Joint accounts count half here.</div>' : ''}</div>` +
+  m.innerHTML = whoSwitch() + `<div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2><div class="big num">${inr(nw.net, 0)}</div>${D.settings.loansSeparate && loansTotal() ? `<div class="small muted">Loans ${inr(loansTotal(), 0)}, kept out of net worth</div>` : ''}${multi() && D.settings.who !== 'all' && D.accounts.some((a) => ownerOf(a) === 'joint') ? '<div class="tiny muted">Joint accounts count half here.</div>' : ''}</div>` +
     order.filter((g) => groups[g]).map((g) => {
       const total = groups[g].reduce((s2, a) => s2 + Math.round((balance(a) - unbilledEmi(a)) * shareOf(a)), 0);
       return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="list">${groups[g].map((a) => {
@@ -1170,6 +1178,8 @@ function renderMore(m) {
   <div class="day"><span>Household</span></div>
   <div class="list">${D.members.map((mb) => `<button class="item" data-act="memberSheet" data-id="${mb.id}"><div class="ico">${esc(initials(mb.name))}</div><div class="grow">${esc(mb.name)}<div class="s">${D.accounts.filter((a) => ownerOf(a) === mb.id).length} accounts</div></div><div class="muted">›</div></button>`).join('')}
     <button class="item" data-act="memberSheet"><div class="grow" style="color:var(--brand)">+ Add a person</div></button></div>
+  <div class="day"><span>Net worth</span></div>
+  <div class="list"><button class="item" data-act="toggleLoans"><div class="grow">Keep loans out of net worth<div class="s">Home, car and personal loans are shown separately</div></div><div class="muted">${D.settings.loansSeparate ? 'On' : 'Off'} ›</div></button></div>
   <div class="day"><span>Security</span></div>
   <div class="list">
     <button class="item" data-act="toggleFaceId"><div class="grow">Face ID unlock</div><div class="muted">${vault.hasPasskey ? 'On' : 'Off'} ›</div></button>
@@ -1708,7 +1718,7 @@ function runQuery(plan) {
   let head = '', body = '';
   switch (plan.intent) {
     case 'unsupported': return `<p>I can only answer questions about your money: transactions, accounts, net worth, or tips on spending.</p>`;
-    case 'net_worth': { const nw = netWorth(); return `<div class="mid num">${inr(nw.net, 0)}</div><p class="small muted">Assets ${inr(nw.assets, 0)} · liabilities ${inr(nw.liabilities, 0)}</p>`; }
+    case 'net_worth': { const nw = netWorth(), ln = loansTotal(); return `<div class="mid num">${inr(nw.net, 0)}</div><p class="small muted">Assets ${inr(nw.assets, 0)} · liabilities ${inr(nw.liabilities, 0)}${D.settings.loansSeparate && ln ? ` · loans ${inr(ln, 0)} kept separate` : ''}</p>`; }
     case 'account_balance': { const as = (accs.length ? accs : D.accounts.filter((a) => !a.archived)); return rows(as.map((a) => [accShort(a), balance(a)])); }
     case 'total_received': head = `<div class="mid num in">${inr(received, 0)}</div><p class="small">received, ${txs.filter((x) => x.amount > 0).length} transactions</p>`; body = list(txs.filter((x) => x.amount > 0)); break;
     case 'top_payees': head = `<p>Top payees by spending</p>`; body = rows(group(spendTx, (x) => x.payee || x.description).slice(0, 10)); break;
@@ -1894,6 +1904,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  toggleLoans: () => { D.settings.loansSeparate = !D.settings.loansSeparate; save(); render(); toast(D.settings.loansSeparate ? 'Loans are now kept out of net worth' : 'Loans are now counted in net worth'); },
   openBills: () => { ui.view = { page: 'bills' }; render(); window.scrollTo(0, 0); },
   billSheet: (d) => { ui.pendingLast = null; billSheet(d.id ? D.bills.find((b) => b.id === d.id) : null, d.kind || 'reminder'); },
   subAdd: (d) => { const f = ui.found?.[+d.i]; if (!f) return; billSheet(null, 'subscription', { name: f.name, amount: f.amount, every: f.every, next: f.next, accountId: f.accountId, match: f.name.toLowerCase().split(/\s+/).slice(0, 2).join(' '), remind: 1 }); },
