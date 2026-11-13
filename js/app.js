@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.3';
+const APP_VERSION = '1.4.4';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -2335,7 +2335,12 @@ const acts = {
         const ex = D.vault.find((x) => x.title === v.title);
         if (!ex) { D.vault.push({ id: uid(), files: [], ...v }); n++; continue; }
         // Already there: add any new contacts and claim steps, keep everything else as you edited it
-        for (const c of v.contacts || []) if (!(ex.contacts ||= []).some((y) => y[1] === c[1])) { ex.contacts.push(c); n++; }
+        if (v.contacts?.length) { // file order and labels win; contacts you added by hand stay at the end
+          const old = ex.contacts || [], vals = new Set(v.contacts.map((c) => c[1]));
+          for (const c of v.contacts) { const y = old.find((y) => y[1] === c[1]); if (!y || y[0] !== c[0]) n++; }
+          const next = [...v.contacts.map((c) => [...c]), ...old.filter((y) => !vals.has(y[1]))];
+          if (JSON.stringify(next) !== JSON.stringify(old)) ex.contacts = next;
+        }
         for (const c of v.claim || []) if (!(ex.claim ||= []).includes(c)) ex.claim.push(c);
       }
       for (const b of j.bills || []) if (!D.bills.some((x) => x.name === b.name)) D.bills.push({ id: uid(), ...b });
