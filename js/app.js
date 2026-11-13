@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox, SMS_PV } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.2';
+const APP_VERSION = '0.9.3';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked

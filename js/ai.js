@@ -73,8 +73,8 @@ export async function remove(id) {
 // One request at a time: two overlapping requests can trip over each other's JSON grammar
 let chain = Promise.resolve();
 const serial = (fn) => { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; };
-const broken = (e) => /deleted object|GrammarMatcher|BindingError|already deleted/i.test(String(e?.message || e));
-// If WebLLM's grammar state gets stuck ("Cannot pass deleted object ... GrammarMatcher"), restart the model and try again
+const broken = (e) => /deleted object|GrammarMatcher|BindingError|already (been )?(deleted|disposed)|disposed/i.test(String(e?.message || e));
+// If the model's state gets stuck (seen on iPhone as "deleted object" or "already been disposed"), restart it and try once more
 async function complete(req) {
   try { return await engine.chat.completions.create(req); }
   catch (e) {
@@ -83,23 +83,38 @@ async function complete(req) {
     return await engine.chat.completions.create(req);
   }
 }
-const firstJSON = (txt) => { const i = txt.indexOf('{'), j = txt.lastIndexOf('}'); return JSON.parse(i >= 0 && j > i ? txt.slice(i, j + 1) : txt); };
+const firstJSON = (txt) => {
+  const t = String(txt).replace(/```(?:json)?/gi, '');
+  const i = t.indexOf('{'), j = t.lastIndexOf('}');
+  return JSON.parse(i >= 0 && j > i ? t.slice(i, j + 1) : t);
+};
+// Make the reply match the schema: missing strings become "", values outside an enum become ""
+function conform(obj, schema) {
+  if (schema?.type !== 'object' || !obj || typeof obj !== 'object') return obj;
+  for (const [k, sub] of Object.entries(schema.properties || {})) {
+    let v = obj[k];
+    if (sub.type === 'string') { v = v == null ? '' : String(v); if (sub.enum && !sub.enum.includes(v)) v = sub.enum.includes('') ? '' : sub.enum.includes('unknown') ? 'unknown' : sub.enum[sub.enum.length - 1]; }
+    else if (sub.type === 'number' || sub.type === 'integer') v = Number(v) || 0;
+    else if (sub.type === 'boolean') v = v === true || v === 'true';
+    else if (sub.type === 'array') v = Array.isArray(v) ? v.map((x) => conform(x, sub.items)) : [];
+    obj[k] = v;
+  }
+  return obj;
+}
+const shape = (schema) => JSON.stringify(Object.fromEntries(Object.entries(schema.properties || {}).map(([k, sub]) => [k, sub.enum ? (sub.enum.length > 12 ? 'one of the ids listed' : sub.enum.join(' | ')) : sub.type === 'array' ? [Object.fromEntries(Object.keys(sub.items?.properties || {}).map((x) => [x, '...']))] : sub.type])));
 
-// One JSON answer, constrained by a JSON schema so a small model cannot ramble
+// One JSON answer. Plain generation plus strict instructions; WebLLM's grammar mode is avoided
+// because it breaks on iPhone. The reply is then checked against the schema in code.
 export function askJSON(system, user, schema, maxTokens = 400) {
   return serial(async () => {
     if (!engine) throw new Error('Model not loaded');
-    const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
-    try {
-      const r = await complete({ messages, temperature: 0, max_tokens: maxTokens, response_format: { type: 'json_object', schema: JSON.stringify(schema) } });
-      return JSON.parse(r.choices?.[0]?.message?.content || '{}');
-    } catch (e) {
-      if (!broken(e)) throw e;
-      // Last resort: no grammar, ask for plain JSON and pick it out of the reply
-      await engine.resetChat?.().catch?.(() => {});
-      const r = await engine.chat.completions.create({ messages: [{ role: 'system', content: system + '\nReply with one JSON object only, no other text. Keys: ' + Object.keys(schema.properties || {}).join(', ') }, messages[1]], temperature: 0, max_tokens: maxTokens });
-      return firstJSON(r.choices?.[0]?.message?.content || '{}');
+    const sys = `${system}\n\nReply with exactly one JSON object and nothing else, shaped like: ${shape(schema)}`;
+    let last;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await complete({ messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], temperature: 0, max_tokens: maxTokens });
+      try { return conform(firstJSON(r.choices?.[0]?.message?.content || ''), schema); } catch (e) { last = e; }
     }
+    throw new Error('The AI gave an answer Ledger could not read. Try asking a different way.' + (last ? '' : ''));
   });
 }
 // A short written answer (used for advice; the numbers come from the app, the model only explains them)
