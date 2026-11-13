@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.6.4';
+const APP_VERSION = '0.6.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -829,6 +829,7 @@ function renderMore(m) {
   <div class="day"><span>About</span></div>
   <div class="card small"><p style="margin-top:0"><b>Ledger ${APP_VERSION}</b>. Your data never leaves this phone. It is encrypted with a key unlocked by Face ID or your recovery passphrase. The only network requests are for loading the app itself and, if you turn on Ask Ledger, a one-time download of the AI model from Hugging Face.</p>
   <p class="muted" style="margin-bottom:0">Inspired by the open-source Sure app. Not affiliated with it or with any bank.</p></div>
+  <button class="btn wide ghost" data-act="forceUpdate">Get the latest version</button><div style="height:10px"></div>
   <button class="btn wide danger" data-act="eraseAll">Erase everything on this phone</button>`;
   $('#autoLock').addEventListener('change', (e) => { D.settings.autoLockMin = +e.target.value; save(); });
   storageInfo();
@@ -1398,6 +1399,13 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  forceUpdate: async () => {
+    // Clears only the app's code cache; your data (IndexedDB) is untouched
+    try { await vault.saveNow(); } catch (e) { if (!confirm('Your latest changes could not be saved (' + (e.message || e) + '). Reload anyway?')) return; }
+    try { for (const k of await caches.keys()) if (k.startsWith('ledger-app-')) await caches.delete(k); } catch {}
+    try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch {}
+    location.replace(location.pathname + '?v=' + Date.now());
+  },
   prepaySheet: (d) => {
     const a = accById(d.id);
     openSheet(`<h3>Prepay ${esc(a.name)}</h3><form data-form="prepay" data-id="${a.id}">

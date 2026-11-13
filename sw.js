@@ -1,6 +1,6 @@
 // Offline cache for the app shell. Your financial data is NOT here: it lives encrypted in IndexedDB.
 // Cache names are prefixed so this never touches caches of other apps on the same github.io site.
-const VERSION = 'ledger-app-v0.6.4';
+const VERSION = 'ledger-app-v0.6.5';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './js/app.js', './js/store.js', './js/parsers.js', './js/rules.js', './js/sms.js', './js/ai.js', './js/xlsx.js', './js/llm-worker.js',
@@ -8,7 +8,9 @@ const SHELL = [
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
 ];
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache (GitHub Pages caches files for 10 minutes),
+  // otherwise a new version could be installed with old files
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith('ledger-app-') && k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
