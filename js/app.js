@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.8.1';
+const APP_VERSION = '0.8.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -207,8 +207,9 @@ function txItem(x, showAcc = true) {
     <div class="a num ${x.amount > 0 ? 'in' : ''}">${x.amount > 0 ? '+' : ''}${inr(x.amount)}</div></button>`;
 }
 
+const refreshBtn = `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="refreshAll" aria-label="Refresh prices">🔄</button>`;
 function renderHome(m) {
-  setTop('Ledger');
+  setTop('Ledger', { action: D.holdings.some((h) => h.type === 'mf' && h.qty != null) ? refreshBtn : '' });
   if (!D.accounts.length) {
     m.innerHTML = `<div class="card"><h2>Welcome</h2><p>Everything you add stays on this phone, encrypted. Start with a statement.</p>
       <button class="btn wide" data-act="tab" data-tab="import">Import a statement</button>
@@ -298,7 +299,7 @@ function renderTxList() {
 }
 
 function renderAccounts(m) {
-  setTop('Accounts', { action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addAccount">+ Add</button>` });
+  setTop('Accounts', { action: (D.holdings.some((h) => h.type === 'mf' && h.qty != null) ? refreshBtn : '') + `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="addAccount">+ Add</button>` });
   if (!D.accounts.length) { m.innerHTML = `<div class="empty">No accounts yet.<br><br><button class="btn" data-act="addAccount">Add an account</button></div>`; return; }
   const nw = netWorth();
   const groups = {};
@@ -321,7 +322,7 @@ function renderAccount(m, id) {
   const a = accById(id);
   if (!a) { ui.view = null; return render(); }
   const t = typeOf(a.type);
-  setTop(a.name, { back: 'closeView', action: `<button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
+  setTop(a.name, { back: 'closeView', action: (D.holdings.some((h) => h.accountId === a.id && h.type === 'mf' && h.qty != null) ? refreshBtn : '') + `<button class="link" data-act="editAccount" data-id="${a.id}">Edit</button>` });
   const b = balance(a);
   const txs = D.transactions.filter((x) => x.accountId === a.id).sort((p, q) => q.date.localeCompare(p.date) || (q.time || '').localeCompare(p.time || ''));
   let h = `<div class="card"><h2>${esc(t.label)}${a.last4 ? ' ••' + a.last4 : ''}</h2><div class="big num">${inr(b)}</div>`;
@@ -1511,6 +1512,16 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  refreshAll: async (d, el) => {
+    if (el.disabled) return; el.disabled = true; el.style.opacity = '.5';
+    toast('Refreshing fund NAVs…');
+    const e = processEmis();
+    let n = 0; try { n = await refreshNavs({ force: true }); } catch (err) { console.warn(err); }
+    if (e) save();
+    render();
+    const funds = D.holdings.filter((h) => h.type === 'mf' && h.qty != null).length;
+    toast(n ? `Updated ${n} of ${funds} fund NAVs` : navigator.onLine ? 'No newer NAVs yet (they update once a day, in the evening), or the NAV service could not be reached' : 'You are offline', 4000);
+  },
   addHolder: (d) => {
     const name = d.name.charAt(0) + d.name.slice(1).toLowerCase();
     const me = D.members.find((x) => x.id === 'me');
