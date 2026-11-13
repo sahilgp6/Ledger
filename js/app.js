@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -55,8 +55,8 @@ function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
-  d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= [];
-  if (!d.settings.ranjeetDone) { for (const x of d.transactions) if (x.amount < 0 && !x.catManual && /ranjeet/i.test(`${x.payee} ${x.description} ${x.raw || ''}`)) x.categoryId = 'household'; d.settings.ranjeetDone = true; } d.settings.ai ||= { model: null }; d.holdings ||= [];
+  d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= []; d.vault ||= [];
+  d.settings.ai ||= { model: null }; d.holdings ||= [];
   if (!d.members?.length) {
     const holder = d.accounts.map((a) => a.statement?.holder).find(Boolean);
     d.members = [{ id: 'me', name: holder ? holder.split(/\s+/)[0].replace(/^./, (c) => c.toUpperCase()).replace(/(?<=^.).*/, (r) => r.toLowerCase()) : 'Me' }];
@@ -465,7 +465,7 @@ function renderQuick() {
   openSheet(`<h3>Quick add</h3>
   <div class="qa-amt num" aria-live="polite"><span class="cur">₹</span>${esc(q.amt ? Number(q.amt.replace(/\.$/, '')).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + (q.amt.endsWith('.') ? '.' : '') : '0')}</div>
   <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k}</button>`).join('')}</div>
-  <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Ranjeet, chai, petrol…" autocomplete="off"></label>
+  <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Groceries, chai, petrol…" autocomplete="off"></label>
   <div class="chips">${recentPayees().map((p) => `<button type="button" class="chip ${p === q.payee ? 'on' : ''}" data-act="qaPayee" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>
   <div class="seg" role="group" aria-label="Paid from">${[['upi', 'Savings' + (payAccount('upi', false)?.last4 ? ' ••' + payAccount('upi', false).last4 : '')], ['card', 'Card' + (payAccount('card', false)?.last4 ? ' ••' + payAccount('card', false).last4 : '')], ['cash', 'Cash']].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
   <p class="tiny muted" style="margin:6px 2px 10px">${acc ? 'From ' + esc(accShort(acc)) : q.via === 'cash' ? 'A Cash wallet account will be created' : 'No account set for this yet'} · <button class="link tiny" type="button" data-act="payWithSheet">Change</button></p>
@@ -566,7 +566,7 @@ function shortcutHelp() {
     <li>Add <b>Set Variable</b>. Name: <code>Amount</code>, value: <b>Provided Input</b>.</li>
     <li>Add <b>Ask for Input</b>. Type: <b>Text</b>. Prompt: <code>What for?</code></li>
     <li>Add <b>Set Variable</b>. Name: <code>What</code>, value: <b>Provided Input</b>.</li>
-    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>Savings 8381</code>, <code>Card 9550</code>, <code>Cash</code>. Under each item add a <b>Text</b> action with that same text. (Use it for UPI too: UPI from your card is Card 9550.)</li>
+    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>Savings ${esc(payAccount('upi', false)?.last4 || '1234')}</code>, <code>Card ${esc(payAccount('card', false)?.last4 || '5678')}</code>, <code>Cash</code>. Under each item add a <b>Text</b> action with that same text. The last 4 digits pick the account, so UPI paid from your card goes under Card.</li>
     <li>After <b>End Menu</b>, add <b>Set Variable</b>. Name: <code>How</code>, value: <b>Menu Result</b>.</li>
     <li>Add <b>Text</b>. Type <code>===LOG===</code> and a space, insert <b>Current Date</b> (tap it → Date Format: <b>ISO 8601</b>, include time). Press return, then insert <b>Amount</b>, type <code> | </code>, insert <b>What</b>, type <code> | </code>, insert <b>How</b>.</li>
     <li>Add <b>Append to Text File</b>: text = that <b>Text</b>, file <code>Ledger Inbox.txt</code> in the <b>Shortcuts</b> folder, <b>Make New Line</b> on. (The same file your SMS automations use.)</li>
@@ -575,6 +575,94 @@ function shortcutHelp() {
   <p class="small"><b>Action button:</b> Settings → Action Button → <b>Shortcut</b> → Log to Ledger.</p>
   <p class="small muted">The text it writes looks like: <code>250 | Chai | UPI</code>. UPI goes to ${esc(accShort(payAccount('upi', false)) || 'your UPI account')}, Card to ${esc(accShort(payAccount('card', false)) || 'your card')}. If the bank SMS for the same payment also arrives, Ledger keeps one entry and adds your words to it.</p>
   <button class="btn wide" data-act="closeSheet">Got it</button>`);
+}
+
+// ---------- family vault ----------
+const VTYPES = ['Health', 'Life', 'Accident', 'Licence', 'Travel', 'Endowment', 'Vehicle', 'Home', 'Other'];
+const VICON = { Health: 'Health', Life: 'Personal', Accident: 'Health', Licence: 'Transport', Travel: 'Transport', Endowment: 'Financial', Vehicle: 'Transport', Home: 'Bills', Other: 'none' };
+function vaultIcon(t) { const k = VICON[t] || 'none'; return `<div class="ico tone-${TONE[k] || 'grey'}" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg></div>`; }
+const vhead = (t) => `<h2 class="small" style="margin:14px 0 6px;color:var(--gold-ink);letter-spacing:.12em;text-transform:uppercase">${t}</h2>`;
+function renderVault(m) {
+  setTop('Family vault', { back: 'closeView', action: `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="vaultEdit">+ Add</button>` });
+  if (!(D.vault || []).length) { m.innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.3rem;margin-bottom:6px">Your family vault</div><p class="small muted">Insurance policies, claim steps, contacts and documents, encrypted on this phone.</p><button class="btn" data-act="vaultImport">Import a vault file</button><p class="small" style="margin:12px 0 0"><button class="link" data-act="vaultEdit">Or add a policy by hand</button></p></div>`; return; }
+  const items = D.vault || [];
+  const pol = items.filter((v) => v.kind === 'policy'), docs = items.filter((v) => v.kind === 'doc');
+  m.innerHTML = `${items.filter((v) => v.important).map((v) => `<div class="card" style="background:var(--brand-bg);color:var(--on-brand)"><h2 style="color:var(--on-brand);opacity:.85">If it happens</h2><div style="font-weight:600">${esc(v.important)}</div><button class="link" style="color:var(--on-brand);opacity:.9" data-act="vaultOpen" data-id="${v.id}">${esc(v.title)} ›</button></div>`).join('')}
+  <div class="day"><span>Insurance</span><span>${pol.length}</span></div>
+  <div class="list">${pol.map((v) => `<button class="item" data-act="vaultOpen" data-id="${v.id}">${vaultIcon(v.type)}<div class="grow"><div class="t">${esc(v.title)}</div><div class="s">${esc([v.provider, v.cover].filter(Boolean).join(' · '))}</div></div><div class="muted">${v.files?.length ? '📎 ' : ''}›</div></button>`).join('') || '<div class="item"><div class="grow s">No policies yet</div></div>'}</div>
+  ${docs.length ? `<div class="day"><span>Documents</span></div><div class="list">${docs.map((v) => `<button class="item" data-act="vaultOpen" data-id="${v.id}">${vaultIcon('Other')}<div class="grow"><div class="t">${esc(v.title)}</div><div class="s">${esc(v.notes || '')}</div></div><div class="muted">›</div></button>`).join('')}</div>` : ''}
+  <p class="small" style="margin:0 4px 8px"><button class="link" data-act="vaultImport">Import a vault file</button></p>
+  <p class="small muted" style="margin:6px 4px">Everything here is encrypted on this phone, like the rest of Ledger. Attach policy PDFs, e-cards and ID scans to each item. Renewal and premium reminders live in Bills &amp; subscriptions.</p>`;
+}
+function vaultOpen(id) {
+  const v = D.vault.find((x) => x.id === id); if (!v) return;
+  const row = (k, val) => val ? `<tr><td class="muted">${k}</td><td>${val}</td></tr>` : '';
+  const files = (v.files || []).map((fid) => D.receipts.find((r) => r.id === fid)).filter(Boolean);
+  const per = { month: 'a month', quarter: 'a quarter', year: 'a year' };
+  openSheet(`<h3>${esc(v.title)}</h3>
+    ${v.important ? `<div class="card" style="background:var(--brand-2);box-shadow:none"><b>${esc(v.important)}</b></div>` : ''}
+    <table class="t">${row('Insurer', esc(v.provider || ''))}${row('TPA', esc(v.tpa || ''))}${row('Policy no.', esc(v.policyNo || ''))}${row('Covers', esc(v.holder || ''))}${row('Cover', esc(v.cover || ''))}${row('Premium', v.premium ? inr(v.premium, 0) + (v.freq ? ' ' + (per[v.freq] || '') : '') : esc(v.premiumNote || ''))}${row('Next due', v.nextDue ? fmtDate(v.nextDue, true) : '')}${row('Nominee', esc(v.nominee || ''))}</table>
+    ${v.notes ? `<p class="small" style="margin-top:12px">${esc(v.notes)}</p>` : ''}
+    ${v.claim?.length ? vhead('How to claim') + `<ol class="small" style="padding-left:18px;line-height:1.5;margin:0">${v.claim.map((c) => `<li>${esc(c)}</li>`).join('')}</ol>` : ''}
+    ${v.contacts?.length ? vhead('Contacts') + `<table class="t">${v.contacts.map(([k, val]) => row(esc(k), esc(val))).join('')}</table>` : ''}
+    ${vhead('Documents')}
+    ${receiptThumbs(files) || '<p class="small muted" style="margin:0 0 8px">None yet: add the policy PDF, e-card or schedule.</p>'}
+    <div class="row"><button class="btn ghost" style="flex:1" data-act="vaultAttach" data-id="${v.id}">📎 Attach</button><button class="btn ghost" style="flex:1" data-act="vaultEdit" data-id="${v.id}">Edit</button></div>`);
+}
+function vaultEdit(id) {
+  const v = id ? D.vault.find((x) => x.id === id) : { kind: 'policy', type: 'Health' };
+  openSheet(`<h3>${id ? 'Edit' : 'Add to vault'}</h3><form data-form="vault" data-id="${id || ''}">
+    <div class="split"><label class="f"><span>Kind</span><select class="i" name="kind"><option value="policy" ${v.kind === 'policy' ? 'selected' : ''}>Insurance policy</option><option value="doc" ${v.kind === 'doc' ? 'selected' : ''}>Document</option></select></label>
+    <label class="f"><span>Type</span><select class="i" name="type">${VTYPES.map((t) => `<option ${t === v.type ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
+    <label class="f"><span>Title</span><input class="i" name="title" value="${esc(v.title || '')}" required></label>
+    <label class="f"><span>Insurer or issuer</span><input class="i" name="provider" value="${esc(v.provider || '')}"></label>
+    <div class="split"><label class="f"><span>Policy / document no.</span><input class="i" name="policyNo" value="${esc(v.policyNo || '')}"></label><label class="f"><span>Cover</span><input class="i" name="cover" value="${esc(v.cover || '')}"></label></div>
+    <div class="split"><label class="f"><span>Premium (₹)</span><input class="i num" name="premium" inputmode="decimal" value="${v.premium ? v.premium / 100 : ''}"></label><label class="f"><span>Every</span><select class="i" name="freq"><option value="">One-off / none</option>${[['month', 'Month'], ['quarter', 'Quarter'], ['year', 'Year']].map(([k, l]) => `<option value="${k}" ${v.freq === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+    <div class="split"><label class="f"><span>Next due / renewal</span><input class="i" type="date" name="nextDue" value="${v.nextDue || ''}"></label><label class="f"><span>Nominee</span><input class="i" name="nominee" value="${esc(v.nominee || '')}"></label></div>
+    <label class="f"><span>Notes</span><textarea class="i" name="notes">${esc(v.notes || '')}</textarea></label>
+    <label class="row small" style="margin:0 0 12px"><input type="checkbox" class="chk" name="remind" ${id ? '' : 'checked'}><span>Add a reminder in Bills &amp; subscriptions for the next due date</span></label>
+    <button class="btn wide">Save</button></form>
+    ${id ? `<div style="height:10px"></div><button class="btn wide danger" data-act="vaultDelete" data-id="${id}">Delete</button>` : ''}`);
+}
+
+// ---------- monthly recap ----------
+function recapData(ym) {
+  const st = monthStats(ym), prev = monthStats(addMonths(ym, -1));
+  const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
+  const n = D.transactions.filter((x) => x.date.startsWith(ym) && x.amount < 0 && vis.has(x.accountId) && !['transfer', 'income'].includes(catById(x.categoryId)?.kind)).length;
+  return { ym, spend: st.spend, prev: prev.spend, n, top: st.byCat.slice(0, 3).map(([k, v]) => ({ name: k === '_none' ? 'Uncategorised' : catName(k), v })) };
+}
+function recapCard(force) {
+  const today = todayIso(), dd = +today.slice(8);
+  const ym = addMonths(ymOf(today), -1);
+  if (!force && (dd > 7 || D.settings.recapSeen === ym)) return '';
+  const r = recapData(ym); if (!r.spend) return '';
+  const max = Math.max(1, ...r.top.map((t) => t.v));
+  const mn = MON[+ym.slice(5) - 1];
+  return `<div class="card recap"><div class="row"><h2 class="grow" style="margin:0;color:var(--on-brand);opacity:.8">Your ${mn}</h2><button class="link" style="color:var(--on-brand);opacity:.8" data-act="recapHide" aria-label="Hide recap">✕</button></div>
+    <div class="big money">${inr(r.spend, 0)}</div><div class="small" style="opacity:.85">spent across ${r.n} payments${r.prev ? ` · ${r.spend > r.prev ? '▲' : '▼'} ${inr(Math.abs(r.spend - r.prev), 0)} vs ${MON[+addMonths(ym, -1).slice(5) - 1]}` : ''}</div>
+    ${r.top.map((t) => `<div style="margin-top:10px"><div class="row small"><span class="grow">${esc(t.name)}</span><span class="num money">${inr(t.v, 0)}</span></div><div class="bar" style="background:rgba(255,255,255,.16)"><i style="width:${(t.v / max) * 100}%;background:#e9d7ae"></i></div></div>`).join('')}
+    <div class="row" style="margin-top:14px"><button class="btn" style="flex:1;background:var(--on-brand);color:var(--brand-bg)" data-act="recapShare" data-ym="${ym}">Share as image</button><button class="btn" style="flex:1;background:none;border:1px solid rgba(255,255,255,.35)" data-act="recapSee" data-ym="${ym}">See ${mn}</button></div></div>`;
+}
+async function recapImage(ym) {
+  const r = recapData(ym), W = 1080, H = 1350, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  await document.fonts.ready;
+  g.fillStyle = '#1f5c45'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#cfe0d6'; g.font = '600 34px Inter'; g.fillText(`MY ${new Date(ym + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }).toUpperCase()}`, 90, 170);
+  g.fillStyle = '#f6f3ec'; g.font = '500 130px Fraunces'; g.fillText(inr(r.spend, 0), 90, 330);
+  g.fillStyle = '#e9d7ae'; g.font = '400 38px Inter'; g.fillText(`spent across ${r.n} payments`, 90, 400);
+  const max = Math.max(1, ...r.top.map((t) => t.v));
+  r.top.forEach((t, i) => {
+    const y = 540 + i * 170;
+    g.fillStyle = '#f6f3ec'; g.font = '500 42px Inter'; g.fillText(t.name, 90, y);
+    g.textAlign = 'right'; g.fillText(inr(t.v, 0), W - 90, y); g.textAlign = 'left';
+    g.fillStyle = 'rgba(255,255,255,.16)'; g.fillRect(90, y + 30, W - 180, 18);
+    g.fillStyle = '#e9d7ae'; g.fillRect(90, y + 30, (W - 180) * t.v / max, 18);
+  });
+  g.fillStyle = '#cfe0d6'; g.font = '500 32px Fraunces'; g.fillText('Ledger', 90, H - 90);
+  const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
+  return new File([blob], `ledger-${ym}.png`, { type: 'image/png' });
 }
 
 function monthStats(ym) {
@@ -649,6 +737,7 @@ function render() {
   if (ui.view?.page === 'ask') return renderAsk(m);
   if (ui.view?.page === 'bills') return renderBills(m);
   if (ui.view?.page === 'receipts') return renderReceipts(m);
+  if (ui.view?.page === 'vault') return renderVault(m);
   ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, more: renderMore }[ui.tab])(m);
   requestAnimationFrame(() => document.querySelectorAll('.whoseg .pill[data-to]').forEach((p2) => { p2.style.transform = `translateX(${p2.dataset.to * 100}%)`; }));
   requestAnimationFrame(() => requestAnimationFrame(() => document.querySelectorAll('.ringarc').forEach((c) => { c.style.strokeDashoffset = c.style.getPropertyValue('--off'); })));
@@ -716,6 +805,7 @@ function renderHome(m) {
       <div><div class="small muted">${D.settings.loansSeparate ? 'Card dues & other' : 'Liabilities'}</div><div class="num">${compact(nw.liabilities)}</div></div>
     </div>
     ${D.settings.loansSeparate && loans ? `<button class="item" style="margin:10px -4px 0;padding:10px 4px;border-top:1px solid var(--line)" data-act="tab" data-tab="accounts"><div class="grow"><div class="small muted">Loans, kept out of net worth</div><div class="num">${inr(loans, 0)}</div></div><div class="muted">›</div></button>` : ''}</div>
+  ${recapCard()}
   ${dues.map((a) => { const d = daysUntil(a.statement.dueDate); return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAccount" data-id="${a.id}">
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
@@ -1369,6 +1459,7 @@ function renderMore(m) {
   <div class="list">
     <button class="item" data-act="payWithSheet"><div class="grow">Where quick entries go<div class="s">UPI: ${esc(accShort(payAccount('upi', false)) || 'not set')} · Card: ${esc(accShort(payAccount('card', false)) || 'not set')}</div></div><div class="muted">›</div></button>
     <button class="item" data-act="shortcutHelp"><div class="grow">Set up "Log to Ledger" for Siri</div><div class="muted">›</div></button>
+    <button class="item" data-act="openVault"><div class="grow">Family vault<div class="s">${(D.vault || []).length} policies and documents, encrypted</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openReceipts"><div class="grow">Receipts & bills<div class="s">${D.receipts.length} kept, encrypted</div></div><div class="muted">›</div></button>
     <button class="item" data-act="toggleBackupReceipts"><div class="grow">Include receipts in backups</div><div class="muted">${D.settings.backupReceipts === false ? 'No' : 'Yes'} ›</div></button>
   </div>
@@ -1520,9 +1611,9 @@ function payAccount(via, create = true) {
   let a = pw[via] && accById(pw[via]);
   if (a && !a.archived) return a;
   const live = D.accounts.filter((x) => !x.archived && typeOf(x.type).mode === 'ledger' && ownerOf(x) === 'me');
-  if (via === 'card') a = live.find((x) => x.type === 'credit_card' && x.last4 === '9550') || live.find((x) => x.type === 'credit_card');
+  if (via === 'card') a = live.find((x) => x.type === 'credit_card');
   else if (via === 'cash') a = live.find((x) => x.type === 'cash');
-  else a = live.find((x) => x.last4 === '8381') || live.find((x) => /hdfc/i.test(`${x.name} ${x.institution || ''}`) && x.type !== 'credit_card') || live.find((x) => x.type === 'savings');
+  else a = live.find((x) => /hdfc/i.test(`${x.name} ${x.institution || ''}`) && x.type !== 'credit_card') || live.find((x) => x.type === 'savings');
   if (!a && via === 'cash' && create) { a = { id: uid(), name: 'Cash wallet', type: 'cash', owner: 'me', opening: { amount: 0 } }; D.accounts.push(a); }
   if (a) pw[via] = a.id;
   return a || null;
@@ -1534,7 +1625,7 @@ function guessCategory(payee, amount) {
 }
 // One "Log to Ledger" entry. If the bank SMS for it is already in, keep that and add your words to it.
 function addLog(lg, receivedAt, hash) {
-  // "Card 9550" or "UPI 8381": the account with those last 4 digits wins
+  // "Card 5678" or "UPI 1234": the account with those last 4 digits wins
   const byDigits = lg.last4 && D.accounts.find((a) => !a.archived && (a.last4 === lg.last4 || (a.smsLast4 || []).includes(lg.last4)));
   const acc = byDigits || payAccount(lg.via); if (!acc) return 'skipped';
   const date = receivedAt ? isoOf(new Date(receivedAt)) : todayIso();
@@ -2147,6 +2238,26 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  openVault: () => { ui.view = { page: 'vault' }; render(); window.scrollTo(0, 0); },
+  vaultOpen: (d) => vaultOpen(d.id),
+  vaultEdit: (d) => vaultEdit(d.id),
+  vaultAttach: async (d) => { const v = D.vault.find((x) => x.id === d.id); const fs = await pickFiles('image/*,application/pdf'); if (!fs.length || !v) return; for (const f of fs) { const rid = await saveReceipt(f, { title: v.title + ' · ' + f.name.replace(/\.\w+$/, ''), categoryId: 'insurance', note: 'Family vault' }); (v.files ||= []).push(rid); } save(); vaultOpen(v.id); done('Attached'); },
+  vaultImport: async () => {
+    const fs = await pickFiles('.json,application/json', false); if (!fs.length) return;
+    try {
+      const j = JSON.parse(await fs[0].text()); if (j.format !== 'ledger-vault') throw new Error('Not a Ledger vault file');
+      let n = 0;
+      for (const v of j.vault || []) if (!D.vault.some((x) => x.title === v.title)) { D.vault.push({ id: uid(), files: [], ...v }); n++; }
+      for (const b of j.bills || []) if (!D.bills.some((x) => x.name === b.name)) D.bills.push({ id: uid(), ...b });
+      for (const r of j.rules || []) if (!D.rules.some((x) => x.pattern === r.pattern)) { const rule = { id: uid(), sign: null, payee: null, createdAt: new Date().toISOString(), ...r }; D.rules.unshift(rule); applyRule(rule); }
+      if (j.payWith) for (const [via, l4] of Object.entries(j.payWith)) { const a = D.accounts.find((x) => !x.archived && x.last4 === l4); if (a) (D.settings.payWith ||= {})[via] = a.id; }
+      save(); render(); done(`${n} added to the vault`);
+    } catch (e) { toast(e.message || 'Could not read that file', 4000); }
+  },
+  vaultDelete: (d) => { if (!confirm('Delete this from the vault? Attached files stay in Receipts.')) return; D.vault = D.vault.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
+  recapHide: () => { D.settings.recapSeen = addMonths(ymOf(todayIso()), -1); save(); render(); },
+  recapSee: (d) => { ui.tab = 'tx'; ui.view = null; ui.month = d.ym; render(); window.scrollTo(0, 0); },
+  recapShare: async (d) => { try { const f = await recapImage(d.ym); if (navigator.canShare?.({ files: [f] })) await navigator.share({ files: [f] }); else { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); } } catch (e) { if (e.name !== 'AbortError') toast('Could not make the image'); } },
   setBorrowed: (d) => { const a = accById(d.id); const v = prompt('How much did you borrow originally? (₹)', a.loan.borrowed ? a.loan.borrowed / 100 : ''); const p2 = v == null ? null : parseRupees(v); if (p2) { a.loan.borrowed = Math.abs(p2); save(); render(); } },
   swCat: (d) => { swClose(); const x = D.transactions.find((t) => t.id === d.id); if (!x) return; openSheet(`<h3>Category for ${esc(x.payee || 'this payment')}</h3><div class="list">${D.categories.filter((c) => (x.amount < 0) === (c.kind !== 'income') || c.kind === 'transfer').map((c) => `<button class="item" data-act="swSetCat" data-id="${x.id}" data-c="${c.id}">${catIcon(c.id)}<div class="grow">${esc(c.name)}<div class="s">${esc(c.group)}</div></div>${x.categoryId === c.id ? '<div class="in">✓</div>' : ''}</button>`).join('')}</div>`); },
   swSetCat: (d) => { const x = D.transactions.find((t) => t.id === d.id); if (!x) return; x.categoryId = d.c; x.catManual = true; delete x.suggest; save(); closeSheet(); render(); done(catName(d.c)); },
@@ -2288,7 +2399,7 @@ const acts = {
   memberSheet: (d) => {
     const mb = D.members.find((x) => x.id === d.id);
     openSheet(`<h3>${mb ? 'Edit person' : 'Add a person'}</h3><form data-form="member" data-id="${mb?.id || ''}">
-      <label class="f"><span>Name</span><input class="i" name="name" value="${esc(mb?.name || '')}" placeholder="e.g. Shibani" required></label>
+      <label class="f"><span>Name</span><input class="i" name="name" value="${esc(mb?.name || '')}" placeholder="e.g. your partner" required></label>
       <p class="small muted">Each account can belong to one person or be joint. Home, Accounts and Activity can then show each person or everyone combined. Joint accounts count half in each person's view.</p>
       <button class="btn wide">Save</button></form>
       ${mb && mb.id !== 'me' ? `<div style="height:10px"></div><button class="btn wide danger" data-act="memberDel" data-id="${mb.id}">Remove ${esc(mb.name)}</button>` : ''}`);
@@ -2333,7 +2444,7 @@ const acts = {
     ${(D.settings.pdfPasswords || []).length ? `<div class="list">${D.settings.pdfPasswords.map((p, i) => `<div class="item"><div class="grow num">${esc(p.pw.slice(0, 2))}${'•'.repeat(Math.max(3, p.pw.length - 2))}<div class="s">saved ${fmtDate(p.at.slice(0, 10), true)}</div></div><button class="link" data-act="pwDel" data-i="${i}">Delete</button></div>`).join('')}</div>` : '<p>None saved.</p>'}
     <button class="btn wide ghost" data-act="closeSheet">Close</button>`),
   pwDel: (d) => { D.settings.pdfPasswords.splice(+d.i, 1); save(); acts.pwSheet(); render(); },
-  pasteSms: () => openSheet(`<h3>Paste an SMS</h3><form data-form="pasteSms"><textarea class="i" name="t" rows="7" placeholder="Txn Rs.198.00 On HDFC Bank Card 9550 …" required></textarea><div style="height:10px"></div><button class="btn wide">Add</button></form>`),
+  pasteSms: () => openSheet(`<h3>Paste an SMS</h3><form data-form="pasteSms"><textarea class="i" name="t" rows="7" placeholder="Txn Rs.198.00 On HDFC Bank Card 1234 …" required></textarea><div style="height:10px"></div><button class="btn wide">Add</button></form>`),
   smsSetup: () => smsSetupSheet(),
   inboxDismiss: (d) => { D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); },
   inboxManual: (d) => { const it = D.inbox.find((x) => x.id === d.id); D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); txSheet(null); const n = document.querySelector('form[data-form=tx] textarea[name=notes]'); if (n) n.value = it.text; },
@@ -2454,6 +2565,13 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  vault: (f, form) => {
+    const id = form.dataset.id; const amt = parseRupees(f.get('premium') || '');
+    const vals = { kind: f.get('kind'), type: f.get('type'), title: f.get('title').trim(), provider: f.get('provider').trim(), policyNo: f.get('policyNo').trim(), cover: f.get('cover').trim(), premium: amt ? Math.abs(amt) : 0, freq: f.get('freq') || '', nextDue: f.get('nextDue') || '', nominee: f.get('nominee').trim(), notes: f.get('notes').trim() };
+    let v; if (id) { v = D.vault.find((x) => x.id === id); Object.assign(v, vals); } else { v = { id: uid(), files: [], ...vals }; D.vault.push(v); }
+    if (f.get('remind') && v.nextDue) D.bills.push({ id: uid(), kind: 'reminder', name: v.title + (v.premium ? ' premium' : ' renewal'), amount: v.premium || 0, every: v.freq || 'once', next: v.nextDue, day: +v.nextDue.slice(8), remind: 7, accountId: null, note: v.policyNo ? 'Policy ' + v.policyNo : '' });
+    save(); closeSheet(); render(); done('Saved');
+  },
   payWith: (f) => { D.settings.payWith = { upi: f.get('upi') || null, card: f.get('card') || null, cash: f.get('cash') || null }; save(); closeSheet(); render(); if (ui.qa) renderQuick(); else toast('Saved'); },
   receipt: async (f) => { const files = ui.rcPending || []; for (const file of files) await saveReceipt(file, { title: f.get('title').trim() + (files.length > 1 ? ' · ' + file.name : ''), date: f.get('date'), categoryId: f.get('categoryId') || null, note: f.get('note').trim() }); ui.rcPending = null; save(); closeSheet(); render(); done(files.length > 1 ? `${files.length} saved` : 'Receipt saved'); },
   bill: (f, form) => {
@@ -2676,4 +2794,4 @@ async function boot() {
 boot();
 
 // Exposed for automated tests only
-window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, spendFacts, ask, builtinTips, detectSubs, processBills, billIcs, handleInbox, matchTransfers, AI };
+window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recapCard, spendFacts, ask, builtinTips, detectSubs, processBills, billIcs, handleInbox, matchTransfers, AI };

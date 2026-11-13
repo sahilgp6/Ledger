@@ -60,7 +60,6 @@ export const DEFAULT_RULES = [
   R('BIGBASKET', 'groceries'), R('SUPERMARKET GROCERY', 'groceries'), R('DMART', 'groceries'), R('AVENUE SUPERMARTS', 'groceries'), R('NATURES BASKET', 'groceries'), R('NATURE S BASKET', 'groceries'),
   R('LICIOUS', 'groceries'), R('FRESHTOHOME', 'groceries'), R('FOODSTORIES', 'groceries'), R('STAR BAZAAR', 'groceries'), R('RELIANCE SMART', 'groceries'), R('RELIANCE FRESH', 'groceries'), R('COUNTRY DELIGHT', 'groceries'), R('MILKBASKET', 'groceries'),
   // Food
-  R('RANJEET', 'household', 'out'),
   R('SWIGGY', 'food_delivery'), R('ZOMATO', 'food_delivery'), R('EATCLUB', 'food_delivery'), R('BOX8', 'food_delivery'),
   R('STARBUCKS', 'coffee'), R('CHAAYOS', 'coffee'), R('THIRD WAVE', 'coffee'), R('BLUE TOKAI', 'coffee'), R('TIM HORTONS', 'coffee'), R('BARISTA', 'coffee'), R('CAFE COFFEE DAY', 'coffee'),
   R('MC DONALDS', 'dining'), R('MCDONALDS', 'dining'), R('DOMINOS', 'dining'), R('KFC', 'dining'), R('BURGER KING', 'dining'), R('PIZZA HUT', 'dining'), R('SUBWAY', 'dining'), R('HOSPITALITY', 'dining'), R('RESTAURANT', 'dining'), R('JOHNNYROCKETS', 'dining'), R('M S CANDIES', 'dining'),

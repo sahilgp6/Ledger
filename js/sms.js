@@ -64,13 +64,13 @@ export function parseSms(text, receivedAt) {
   else if (ci >= 0) dir = 'in';
   // "payment of Rs X received towards your credit card" is money into the card
   if (/payment .*\b(received|credited)\b.*card|card.*payment .*\b(received|credited)\b/i.test(t)) dir = 'in';
-  // "Money Transfer: Rs 300 from HDFC Bank A/c **8381 ... to RAHUL": money leaving your account
+  // "Money Transfer: Rs 300 from HDFC Bank A/c **1234 ... to RAHUL": money leaving your account
   if (!dir && /\bfrom\b[^.]*?\b(?:a\/c|acct|account|bank)\b[^.]*?\bto\b/i.test(t)) dir = 'out';
   if (!dir && /\bto\b[^.]*?\b(?:your|ur)\s+(?:a\/c|acct|account)\b/i.test(t)) dir = 'in';
   if (!dir) return { ok: false, skip: 'Could not tell debit from credit', text: t };
 
   const lm = t.match(/\b(?:card|a\/c|acct|account|ac)\b\s*(?:no\.?|number)?\s*(?:ending(?: with)?|ending in)?\s*[:#]?\s*[xX*.]*\s*(\d{4})\b/i);
-  // Fallback: "HDFC Bank XX8381", "A/c **8381", "Card x9550"
+  // Fallback: "HDFC Bank XX1234", "A/c **1234", "Card x5678"
   const lm2 = lm ? null : t.match(/(?:[xX*]{2,}|\b[xX*])\s?(\d{4})\b/);
   const last4 = lm ? lm[1] : lm2 ? lm2[1] : null;
   const isCard = lm ? /card/i.test(lm[0]) : /card/i.test(t);
@@ -117,7 +117,7 @@ export function splitInbox(text) {
     const nl = chunk.indexOf('\n');
     let head = (nl >= 0 ? chunk.slice(0, nl) : chunk).trim();
     let body = (nl >= 0 ? chunk.slice(nl + 1) : '').trim();
-    // A date with more on the same line ("2026-11-13T17:50:00+05:30 250 Chai Card 9550"): split it off
+    // A date with more on the same line ("2026-11-13T17:50:00+05:30 250 Chai Card 5678"): split it off
     const lead = head.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)\s+(.+)$/) || head.match(/^(\d{1,2} [A-Za-z]{3,9},? \d{4}(?:,? at \d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)?)\s+(.+)$/i);
     if (lead) { head = lead[1]; body = (lead[2] + (body ? '\n' + body : '')).trim(); }
     const h2 = head.replace(/,?\s+at\s+/i, ' ').replace(',', '');
@@ -131,7 +131,7 @@ export function splitInbox(text) {
 // A line the "Log to Ledger" Shortcut writes: "250 | Chai with crew | UPI"
 export function parseLog(text) {
   let parts = String(text).split(/\s*[|\n]\s*/).map((x) => x.trim()).filter(Boolean);
-  // No separators ("250 Chai with crew Credit 9550"): amount first, account words at the end
+  // No separators ("250 Chai with crew Credit 5678"): amount first, account words at the end
   if (parts.length === 1) {
     const m = parts[0].match(/^(?:rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)\s+(.*?)\s*((?:savings|saving|credit|card|cash|upi|hdfc|dns)(?:\s+card)?(?:\s+\d{4})?)?$/i);
     if (m) parts = [m[1], m[2] || 'Expense', m[3] || ''].filter((x, i) => i < 2 || x);
