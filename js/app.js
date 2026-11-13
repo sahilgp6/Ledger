@@ -5,7 +5,7 @@ import { parseSms, smsPayee, splitInbox } from './sms.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.6.3';
+const APP_VERSION = '0.6.4';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1326,7 +1326,7 @@ function lockApp() { if (!D) return; AI.unload(); vault.saveNow().finally(() => 
 
 document.addEventListener('visibilitychange', () => {
   if (!D) return;
-  if (document.hidden) { hiddenAt = Date.now(); vault.saveNow(); }
+  if (document.hidden) { hiddenAt = Date.now(); vault.saveNow().catch((e) => vault.onError(e)); }
   else if (hiddenAt && Date.now() - hiddenAt > (D.settings.autoLockMin || 5) * 60000) lockApp();
 });
 
@@ -1660,6 +1660,7 @@ $('#restoreFile').addEventListener('change', async (e) => {
 });
 
 // ---------- boot ----------
+vault.onError = (e) => { console.error(e); toast('Could not save your changes: ' + (e.message || e), 6000); };
 async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     const hadController = !!navigator.serviceWorker.controller;

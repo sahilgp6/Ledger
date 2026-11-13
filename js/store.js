@@ -9,7 +9,8 @@ const STORE = 'kv';
 const PBKDF2_ITER = 600000;
 const enc = new TextEncoder(), dec = new TextDecoder();
 
-const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+// Chunked: spreading a large array into String.fromCharCode overflows Safari's argument limit (~65k)
+const b64 = (buf) => { const u = new Uint8Array(buf); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
 
@@ -148,7 +149,7 @@ export class Vault {
 
   lock() { clearTimeout(this._t); this.key = null; this.raw = null; this.data = null; }
 
-  save() { clearTimeout(this._t); this._t = setTimeout(() => this.saveNow(), 300); }
+  save() { clearTimeout(this._t); this._t = setTimeout(() => this.saveNow().catch((e) => this.onError?.(e)), 300); }
   async saveNow() {
     clearTimeout(this._t);
     if (!this.key || !this.data) return;
