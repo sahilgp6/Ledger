@@ -89,7 +89,7 @@ export const DEFAULT_RULES = [
   // Money movement (bank statements)
   R('ZERODHA', 'investments', 'out'), R('BSE STAR MF', 'investments', 'out'), R('INDIAN CLEARING', 'investments', 'out'), R('NSE CLEARING', 'investments', 'out'), R('GROWW', 'investments', 'out'), R('KUVERA', 'investments', 'out'), R('COIN BY ZERODHA', 'investments', 'out'), R('NPS TRUST', 'investments', 'out'), R('PPF', 'investments', 'out'),
   R('LIC OF INDIA', 'insurance', 'out'), R('LIFE INSURANCE CORP', 'insurance', 'out'), R('HDFC LIFE', 'insurance', 'out'), R('ICICI PRU', 'insurance', 'out'), R('STAR HEALTH', 'insurance', 'out'), R('NIVA BUPA', 'insurance', 'out'), R('ACKO', 'insurance', 'out'), R('POLICYBAZAAR', 'insurance', 'out'),
-  R('CREDIT CARD', 'card_payment', 'out'), R('CRED CLUB', 'card_payment', 'out'), R('CC BILL', 'card_payment', 'out'), R('BILLDESK CC', 'card_payment', 'out'),
+  R('AUTOPAY SI', 'card_payment', 'out'), R('CREDIT CARD', 'card_payment', 'out'), R('CRED CLUB', 'card_payment', 'out'), R('CC BILL', 'card_payment', 'out'), R('BILLDESK CC', 'card_payment', 'out'),
   R('ATM WDL', 'cash_withdrawal', 'out'), R('ATW-', 'cash_withdrawal', 'out'), R('NWD-', 'cash_withdrawal', 'out'), R('CASH WITHDRAWAL', 'cash_withdrawal', 'out'),
   R('ADVANCE TAX', 'taxes', 'out'), R('INCOME TAX', 'taxes', 'out'), R('TDS', 'taxes', 'out'), R('GST PAYMENT', 'taxes', 'out'),
   R('AIR INDIA EXPRESS', 'salary', 'in'), R('SALARY', 'salary', 'in'), R('SAL CREDIT', 'salary', 'in'),
@@ -107,7 +107,7 @@ const title = (s) => s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase(
 // Well-known narrations that clean-up alone gets wrong
 const PAYEE_ALIASES = [
   ['OFFUSEMI,PRIN', 'EMI principal'], ['OFFUSEMI,INT', 'EMI interest'], ['PROCNGFEE', 'EMI processing fee'], ['AGGREGATOREMI', 'EMI conversion credit'],
-  ['IGST-', 'GST on charges'], ['CGST-', 'GST on charges'], ['SGST-', 'GST on charges'], ['CCPAYMENT', 'Card payment'], ['PETROSURCHARGE', 'Fuel surcharge waiver'],
+  ['IGST-', 'GST on charges'], ['CGST-', 'GST on charges'], ['SGST-', 'GST on charges'], ['CCPAYMENT', 'Card payment'], ['AUTOPAYSI', 'Card autopay'], ['CCBILLPAY', 'Card bill payment'], ['PETROSURCHARGE', 'Fuel surcharge waiver'],
   ['AMAZONGIFTCARD', 'Amazon gift card'], ['AMAZONSELLERSERVICES', 'Amazon'], ['AMAZONINDIA', 'Amazon'], ['AMAZONPAY', 'Amazon Pay'], ['HENNESNMAURITZ', 'H&M'],
   ['INSTAMART', 'Swiggy Instamart'], ['SWIGGY', 'Swiggy'], ['ZOMATO', 'Zomato'], ['BLINKIT', 'Blinkit'], ['BLINKCOMMERCE', 'Blinkit'], ['UBER', 'Uber'], ['ZARACOM', 'Zara'],
   ['MCDONALDS', "McDonald's"], ['TATASTARBUCKS', 'Starbucks'], ['STARBUCKS', 'Starbucks'], ['1MG', 'Tata 1mg'], ['JIOPOSTPAID', 'Jio Postpaid'], ['AJIO', 'AJIO'], ['IKEA', 'IKEA'],

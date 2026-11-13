@@ -1,12 +1,14 @@
 import { Vault, passkeySupport, requestPersistence } from './store.js';
 import * as P from './parsers.js';
 import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squash } from './rules.js';
+import { parseSms, smsPayee, splitInbox } from './sms.js';
+import * as AI from './ai.js';
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.2.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
-const ui = { tab: 'home', view: null, month: null, q: '', acc: '', cat: '', imp: null };
+const ui = { tab: 'home', view: null, month: null, q: '', acc: '', cat: '', imp: null, ask: [], aiStatus: '' };
 let hiddenAt = 0;
 
 // ---------- helpers ----------
@@ -31,6 +33,7 @@ const addMonths = (ym, n) => { let y = +ym.slice(0, 4), m = +ym.slice(5) - 1 + n
 const fmtDate = (iso, year) => { if (!iso) return ''; const [y, m, d] = iso.split('-'); return `${+d} ${MON[+m - 1]}${year ? ' ' + y : ''}`; };
 const daysUntil = (iso) => Math.round((new Date(iso + 'T00:00:00') - new Date(todayIso() + 'T00:00:00')) / 864e5);
 const parseRupees = (s) => { const n = String(s).replace(/[₹,\s]/g, ''); if (!/^-?\d*(\.\d{0,2})?$/.test(n) || n === '' || n === '-') return null; return Math.round(parseFloat(n) * 100); };
+const daysApart = (a, b) => Math.abs(new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 864e5;
 const initials = (s) => (String(s || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?').toUpperCase();
 
 function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); }
@@ -43,13 +46,14 @@ function newData() {
     v: DATA_VERSION, createdAt: new Date().toISOString(),
     settings: { autoLockMin: 5, lastBackupAt: null },
     accounts: [], categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })), rules: [],
-    transactions: [], valuations: [], imports: [],
+    transactions: [], valuations: [], imports: [], inbox: [], smsSeen: [],
   };
 }
 function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
+  d.inbox ||= []; d.smsSeen ||= []; d.settings.ai ||= { model: null };
   d.v = DATA_VERSION;
   return d;
 }
@@ -132,13 +136,15 @@ function render() {
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const m = $('#main');
   if (ui.view?.page === 'account') return renderAccount(m, ui.view.id);
+  if (ui.view?.page === 'ask') return renderAsk(m);
   ({ home: renderHome, tx: renderTx, accounts: renderAccounts, import: renderImport, more: renderMore }[ui.tab])(m);
 }
 
 function txItem(x, showAcc = true) {
   const c = catById(x.categoryId);
   const a = accById(x.accountId);
-  const sub = [c ? c.name : '<span class="warn">Uncategorised</span>', showAcc && a ? esc(accShort(a)) : ''].filter(Boolean).join(' · ');
+  const sug = !c && x.suggest && catById(x.suggest) ? ` <span class="badge" data-act="acceptSug" data-id="${x.id}">AI: ${esc(catName(x.suggest))} ✓</span>` : '';
+  const sub = [c ? c.name : '<span class="warn">Uncategorised</span>' + sug, showAcc && a ? esc(accShort(a)) : '', x.source === 'sms' ? 'from SMS' : '', x.transferId ? 'matched transfer' : ''].filter(Boolean).join(' · ');
   return `<button class="item" data-act="editTx" data-id="${x.id}">
     <div class="ico">${esc(initials(x.payee || x.description))}</div>
     <div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${sub}</div></div>
@@ -174,6 +180,8 @@ function renderHome(m) {
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
       <div class="a num ${d <= 3 ? 'bad' : ''}">${inr(a.statement.totalDue, 0)}</div></button>`; }).join('')}
+  ${D.settings.ai?.model ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAsk"><div class="ico">AI</div><div class="grow"><div class="t">Ask Ledger</div><div class="s">“How much on Swiggy since July?”</div></div><div class="muted">›</div></button>` : ''}
+  ${D.inbox.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="tab" data-tab="import"><div class="grow"><div class="t">${D.inbox.length} SMS need attention</div><div class="s">Assign an account or enter them by hand</div></div><div class="muted">›</div></button>` : ''}
   ${backupOld ? `<div class="card row"><div class="grow small">No backup in the last 30 days. If this app is deleted, its data goes with it.</div><button class="btn ghost" data-act="backup">Back up</button></div>` : ''}
   <div class="card"><h2>Spent in ${monthLabel(ym)}</h2>
     <div class="row"><div class="grow"><div class="mid num">${inr(s.spend, 0)}</div>
@@ -191,8 +199,9 @@ function renderHome(m) {
 function filteredTx() {
   const q = ui.q.trim().toLowerCase();
   return D.transactions.filter((x) => {
-    if (!q && !x.date.startsWith(ui.month)) return false;
+    if (!q && !ui.src && !x.date.startsWith(ui.month)) return false;
     if (ui.acc && x.accountId !== ui.acc) return false;
+    if (ui.src && x.source !== ui.src) return false;
     if (ui.cat === '_none' ? x.categoryId : ui.cat && x.categoryId !== ui.cat) return false;
     if (q && !`${x.payee} ${x.description} ${x.notes || ''} ${catName(x.categoryId)} ${(x.amount / 100).toFixed(2)}`.toLowerCase().includes(q)) return false;
     return true;
@@ -203,11 +212,13 @@ function renderTx(m) {
   ui.month ||= ymOf(todayIso());
   m.innerHTML = `
     <input class="search" id="q" type="search" placeholder="Search all transactions" value="${esc(ui.q)}" autocomplete="off">
-    <div class="month ${ui.q ? 'hidden' : ''}"><button data-act="month" data-d="-1">‹</button><b>${monthLabel(ui.month)}</b><button data-act="month" data-d="1">›</button></div>
+    ${ui.src ? `<p class="small">Showing unconfirmed SMS entries only. <button class="link" data-act="clearSrc">Show all</button></p>` : ''}
+    <div class="month ${ui.q || ui.src ? 'hidden' : ''}"><button data-act="month" data-d="-1">‹</button><b>${monthLabel(ui.month)}</b><button data-act="month" data-d="1">›</button></div>
     <div class="chips">
       <select class="chip ${ui.acc ? 'on' : ''}" id="fAcc"><option value="">All accounts</option>${accOptions(ui.acc)}</select>
       <select class="chip ${ui.cat ? 'on' : ''}" id="fCat"><option value="">All categories</option><option value="_none" ${ui.cat === '_none' ? 'selected' : ''}>Uncategorised</option>${catOptions(ui.cat, { allowNone: false })}</select>
     </div>
+    ${ui.cat === '_none' && D.settings.ai?.model ? `<div class="row" style="margin:0 0 10px"><button class="btn ghost" data-act="aiSuggest">Suggest categories with AI</button>${D.transactions.some((x) => !x.categoryId && x.suggest) ? '<button class="link" data-act="acceptAllSug">Accept all</button>' : ''}</div><div class="small muted" id="aiStatus"></div>` : ''}
     <div id="txList"></div>`;
   renderTxList();
   $('#q').addEventListener('input', (e) => { ui.q = e.target.value; $('.month').classList.toggle('hidden', !!ui.q); renderTxList(); });
@@ -273,6 +284,7 @@ function renderAccount(m, id) {
       ${st.totalDue > 0 ? ` · <button class="link" data-act="togglePaid" data-id="${a.id}">${st.paid ? 'Marked paid ✓' : 'Mark as paid'}</button>` : ''}</p>
       ${st.creditLimit ? `<p class="small muted" style="margin:6px 0 0">Limit ${inr(st.creditLimit, 0)} · available ${inr(st.availableLimit, 0)}</p>` : ''}
       ${lastStmt ? `<p class="small" style="margin:8px 0 0">${lastStmt.ok ? '<span class="badge">Balance matches statement</span>' : `<span class="badge warn">Balance differs from statement by ${inr(lastStmt.diff)}</span>`}</p>` : ''}
+      ${lastStmt?.strays ? `<p class="small warn" style="margin:6px 0 0">${lastStmt.strays} SMS entries in this period were not on the statement (declined or reversed?). <button class="link" data-act="showStrays" data-id="${a.id}">Review</button></p>` : ''}
     </div>`;
     if (st.emiLoans?.length) {
       h += `<div class="card"><h2>Card EMIs · ${inr(emi, 0)} principal not yet billed</h2><table class="t"><tr><th>Booked</th><th class="r">Amount</th><th class="r">Left</th><th class="r">Months</th></tr>
@@ -304,6 +316,12 @@ function renderImport(m) {
     <button class="btn wide ghost" data-act="pickFile" data-kind="csv">Bank statement (CSV)</button>
     <p class="small muted">Export from net banking as CSV (in HDFC choose "Delimited"). You'll match the columns once.</p>
   </div>
+  <div class="card"><h2>Bank SMS</h2>
+    <button class="btn wide" data-act="pickFile" data-kind="inbox">Read SMS inbox file</button>
+    <p class="small muted">Picks up new SMS saved by your Shortcut. Already-read messages are skipped.</p>
+    <div class="row"><button class="btn ghost" style="flex:1" data-act="pasteSms">Paste an SMS</button><button class="btn ghost" style="flex:1" data-act="smsSetup">Set up auto-capture</button></div>
+  </div>
+  ${D.inbox.length ? `<div class="day"><span>${D.inbox.length} SMS need attention</span></div><div class="list">${D.inbox.map(inboxItem).join('')}</div>` : ''}
   ${imps.length ? `<div class="day"><span>Past imports</span></div><div class="list">${imps.map((i) => `<div class="item"><div class="grow"><div class="t">${esc(accShort(accById(i.accountId)) || 'Deleted account')}</div>
     <div class="s">${esc(i.fileName)} · ${i.count} added${i.period ? ` · ${fmtDate(i.period.from)} to ${fmtDate(i.period.to, true)}` : ''}</div></div>
     <button class="link" data-act="undoImport" data-id="${i.id}">Undo</button></div>`).join('')}</div>` : ''}`;
@@ -370,6 +388,8 @@ function buildRows() {
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
   const acc = imp.accountId;
   const existing = new Set(D.transactions.filter((x) => x.accountId === acc).map((x) => x.hash));
+  const smsPool = D.transactions.filter((x) => x.accountId === acc && x.source === 'sms');
+  const claimed = new Set();
   const seen = new Map();
   imp.rows = src.map((t) => {
     const k = [t.date, t.amount, squash(t.raw || t.description), t.ref || ''].join('|');
@@ -378,7 +398,12 @@ function buildRows() {
     const payee = payeeFrom(t.description);
     const c = categorize({ ...t, payee, accountId: acc }, D.rules);
     const dup = existing.has(hash);
-    return { ...t, hash, payee: c.payee || payee, categoryId: c.categoryId, include: !dup, dup };
+    let smsMatch = null;
+    if (!dup) {
+      const hit = smsPool.find((x) => !claimed.has(x.id) && x.amount === t.amount && daysApart(x.date, t.date) <= 3);
+      if (hit) { claimed.add(hit.id); smsMatch = hit.id; }
+    }
+    return { ...t, hash, payee: c.payee || payee, categoryId: c.categoryId, include: !dup, dup, smsMatch };
   });
 }
 
@@ -409,9 +434,9 @@ function renderImportPreview(m) {
     ${imp.accountId === '_new' ? `<div style="height:10px"></div><input class="i" id="impNewName" placeholder="Account name, e.g. HDFC Savings" value="${esc(imp.newName)}">
       ${!isCard ? `<div style="height:10px"></div><select class="i" id="impNewType">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
   </div>
-  <div class="row" style="margin:0 4px 8px"><div class="grow small muted">${inc.length} of ${imp.rows.length} selected${dups ? ` · ${dups} already imported` : ''}</div><button class="link" data-act="impAll">${inc.length === imp.rows.length ? 'Select none' : 'Select all'}</button></div>
+  <div class="row" style="margin:0 4px 8px"><div class="grow small muted">${inc.length} of ${imp.rows.length} selected${dups ? ` · ${dups} already imported` : ''}${imp.rows.some((r) => r.smsMatch) ? ` · ${imp.rows.filter((r) => r.smsMatch).length} match SMS entries` : ''}</div><button class="link" data-act="impAll">${inc.length === imp.rows.length ? 'Select none' : 'Select all'}</button></div>
   <div class="list">${imp.rows.map((r, i) => `<label class="item ${r.include ? '' : 'dup'}"><input type="checkbox" class="chk" data-imp="${i}" ${r.include ? 'checked' : ''}>
-    <div class="grow"><div class="t">${esc(r.payee || r.description)}</div><div class="s">${fmtDate(r.date)} · ${r.categoryId ? esc(catName(r.categoryId)) : '<span class="warn">Uncategorised</span>'}${r.dup ? ' · already imported' : ''}</div></div>
+    <div class="grow"><div class="t">${esc(r.payee || r.description)}</div><div class="s">${fmtDate(r.date)} · ${r.categoryId ? esc(catName(r.categoryId)) : '<span class="warn">Uncategorised</span>'}${r.dup ? ' · already imported' : ''}${r.smsMatch ? ' · replaces SMS entry' : ''}</div></div>
     <div class="a num ${r.amount > 0 ? 'in' : ''}">${r.amount > 0 ? '+' : ''}${inr(r.amount)}</div></label>`).join('')}</div>
   ${imp.warnings?.length ? `<p class="small warn">${imp.warnings.slice(0, 5).map(esc).join('<br>')}</p>` : ''}
   <button class="btn wide" data-act="commitImport" ${inc.length || isCard ? '' : 'disabled'}>Import ${inc.length} transactions</button>
@@ -450,7 +475,16 @@ function commitImport() {
   }
   const importId = uid();
   const rows = imp.rows.filter((r) => r.include);
+  let upgraded = 0;
   for (const r of rows) {
+    const sx = r.smsMatch && D.transactions.find((x) => x.id === r.smsMatch);
+    if (sx) {
+      // The statement is the authoritative record: upgrade the SMS entry, keep what the user set
+      Object.assign(sx, { date: r.date, time: r.time || sx.time || null, description: r.description, raw: r.raw || r.description, ref: r.ref || sx.ref, importId, hash: r.hash, source: 'statement', smsRaw: sx.raw, points: r.points ?? null });
+      if (!sx.payeeManual) sx.payee = r.payee;
+      if (!sx.catManual && r.categoryId) sx.categoryId = r.categoryId;
+      upgraded++; continue;
+    }
     D.transactions.push({ id: uid(), accountId: acc.id, date: r.date, time: r.time || null, amount: r.amount, description: r.description, raw: r.raw || r.description, payee: r.payee, categoryId: r.categoryId, notes: '', ref: r.ref || null, importId, hash: r.hash, points: r.points ?? null });
   }
   const rec = { id: importId, accountId: acc.id, fileName: imp.fileName, kind: imp.kind, at: new Date().toISOString(), count: rows.length };
@@ -459,7 +493,7 @@ function commitImport() {
     rec.period = { from: st.periodFrom, to: st.periodTo };
     rec.statement = st;
     // Opening balance = what was owed before the earliest statement we have
-    const otherTx = D.transactions.some((x) => x.accountId === acc.id && x.importId !== importId);
+    const otherTx = D.transactions.some((x) => x.accountId === acc.id && x.importId !== importId && x.source !== 'sms');
     const manualPlaceholder = acc.opening?.source === 'manual' && !otherTx && !acc.opening.amount;
     if (!acc.opening || manualPlaceholder || (acc.opening.source !== 'manual' && (!otherTx || st.periodFrom < acc.opening.date))) {
       acc.opening = { amount: -(st.previousDues || 0), date: st.periodFrom, source: 'statement' };
@@ -469,13 +503,16 @@ function commitImport() {
       // Check: our running balance up to the statement date vs what the bank says is due
       const bal = (acc.opening?.amount || 0) + D.transactions.filter((x) => x.accountId === acc.id && x.date <= st.periodTo).reduce((s, x) => s + x.amount, 0);
       const diff = -bal - st.totalDue;
-      acc.statementBalanceCheck = { ok: Math.abs(diff) < 100, diff };
+      const strays = D.transactions.filter((x) => x.accountId === acc.id && x.source === 'sms' && x.date >= st.periodFrom && x.date <= st.periodTo).length;
+      acc.statementBalanceCheck = { ok: Math.abs(diff) < 100, diff, strays };
     }
   }
+  rec.count = rows.length - upgraded; rec.upgraded = upgraded;
   D.imports.push(rec);
+  const tm = matchTransfers();
   save();
   ui.imp = null;
-  toast(`Imported ${rows.length} transactions`);
+  toast(`Imported ${rows.length - upgraded} new${upgraded ? `, ${upgraded} SMS entries confirmed` : ''}${tm ? `, ${tm} transfers matched` : ''}`, 3500);
   ui.tab = 'accounts'; ui.view = { page: 'account', id: acc.id }; render();
 }
 
@@ -506,7 +543,9 @@ function txSheet(x, accId) {
       <label class="f"><span>Account</span><select class="i" name="accountId">${accOptions(x.accountId, ledger)}</select></label>
     </div>
     <label class="f"><span>Notes</span><textarea class="i" name="notes">${esc(x.notes)}</textarea></label>
-    ${x.raw ? `<p class="tiny muted">Bank text: ${esc(x.raw)}${x.points ? ` · ${x.points} reward points` : ''}</p>` : ''}
+    ${x.raw ? `<p class="tiny muted">${x.source === 'sms' ? 'SMS' : 'Bank text'}: ${esc(x.raw)}${x.points ? ` · ${x.points} reward points` : ''}</p>` : ''}
+    ${x.smsRaw ? `<p class="tiny muted">Confirmed by statement. Original SMS: ${esc(x.smsRaw)}</p>` : ''}
+    ${x.transferId ? (() => { const o = D.transactions.find((t) => t.transferId === x.transferId && t.id !== x.id); return o ? `<p class="tiny muted">Matched with ${inr(o.amount)} on ${esc(accShort(accById(o.accountId)))}, ${fmtDate(o.date, true)}. <button class="link" type="button" data-act="unlinkTransfer" data-id="${x.id}">Unlink</button></p>` : ''; })() : ''}
     <button class="btn wide">Save</button>
   </form>
   ${isNew ? '' : `<div style="height:10px"></div><button class="btn wide danger" data-act="deleteTx" data-id="${x.id}">Delete transaction</button>`}`);
@@ -579,13 +618,15 @@ function renderMore(m) {
     <button class="item" data-act="exportCsv"><div class="grow">Export transactions (CSV)</div><div class="muted">›</div></button>
     <div class="item"><div class="grow">Storage<div class="s" id="storageInfo">Checking…</div></div></div>
   </div>
+  <div class="day"><span>On-device AI</span></div>
+  <div class="list"><button class="item" data-act="aiSetup"><div class="grow">Ask Ledger<div class="s">${D.settings.ai?.model ? esc(AI.modelById(D.settings.ai.model)?.label || '') : 'Off'}</div></div><div class="muted">›</div></button></div>
   <div class="day"><span>Categorising</span></div>
   <div class="list">
     <button class="item" data-act="manageCats"><div class="grow">Categories</div><div class="muted">${D.categories.length} ›</div></button>
     <button class="item" data-act="manageRules"><div class="grow">My rules</div><div class="muted">${userRules.length} ›</div></button>
   </div>
   <div class="day"><span>About</span></div>
-  <div class="card small"><p style="margin-top:0"><b>Ledger ${APP_VERSION}</b>. Your data never leaves this phone. It is encrypted with a key unlocked by Face ID or your recovery passphrase. The only network requests are for loading the app itself.</p>
+  <div class="card small"><p style="margin-top:0"><b>Ledger ${APP_VERSION}</b>. Your data never leaves this phone. It is encrypted with a key unlocked by Face ID or your recovery passphrase. The only network requests are for loading the app itself and, if you turn on Ask Ledger, a one-time download of the AI model from Hugging Face.</p>
   <p class="muted" style="margin-bottom:0">Inspired by the open-source Sure app. Not affiliated with it or with any bank.</p></div>
   <button class="btn wide danger" data-act="eraseAll">Erase everything on this phone</button>`;
   $('#autoLock').addEventListener('change', (e) => { D.settings.autoLockMin = +e.target.value; save(); });
@@ -648,6 +689,218 @@ function exportCsv() {
   else { const u = URL.createObjectURL(file); const a = document.createElement('a'); a.href = u; a.download = file.name; a.click(); }
 }
 
+// ---------- SMS inbox ----------
+const smsHash = (text) => 'sms|' + squash(text).slice(0, 400);
+function smsAccount(last4, isCard) {
+  if (!last4) return null;
+  const c = D.accounts.filter((a) => !a.archived && (a.last4 === last4 || (a.smsLast4 || []).includes(last4)));
+  return c.find((a) => (a.type === 'credit_card') === !!isCard) || c[0] || null;
+}
+function smsToTx(acc, p, hash) {
+  const raw = smsPayee(p);
+  const payee = payeeFrom(raw.replace(/^(NEFT|IMPS|RTGS)\s*(Cr|Dr)?-?/i, '')) || raw;
+  const t = { accountId: acc.id, date: p.date, amount: p.amount, description: p.merchant || p.channel || 'SMS', payee };
+  const c = categorize(t, D.rules);
+  return { id: uid(), ...t, time: null, raw: p.text, payee: c.payee || payee, categoryId: c.categoryId, notes: '', ref: p.ref, importId: null, hash, source: 'sms' };
+}
+// Adds one parsed SMS. Returns 'added' | 'known' (already covered by a statement row)
+function addSms(acc, p, hash) {
+  // Read late, after the statement already has it? Then just remember we saw it.
+  const dupe = D.transactions.find((x) => x.accountId === acc.id && x.source !== 'sms' && x.amount === p.amount && daysApart(x.date, p.date) <= 3 && !x.smsRaw);
+  if (dupe) { dupe.smsRaw = p.text; return 'known'; }
+  D.transactions.push(smsToTx(acc, p, hash));
+  return 'added';
+}
+async function handleInbox(text, source) {
+  const items = splitInbox(text);
+  if (!items.length) return toast('No SMS found in that file.');
+  const seen = new Set(D.smsSeen.map((s) => s.h));
+  const res = { added: 0, known: 0, skipped: 0, attention: 0, old: 0, reasons: {} };
+  for (const it of items) {
+    const h = smsHash(it.text);
+    if (seen.has(h)) { res.old++; continue; }
+    seen.add(h); D.smsSeen.push({ h, at: Date.now() });
+    const p = parseSms(it.text, it.receivedAt);
+    if (!p.ok && /OTP|Declined|Upcoming|Statement|request|Empty|Zero/.test(p.skip)) { res.skipped++; res.reasons[p.skip] = (res.reasons[p.skip] || 0) + 1; continue; }
+    if (!p.ok) { D.inbox.push({ id: uid(), text: it.text, receivedAt: it.receivedAt, status: 'unparsed', why: p.skip, h }); res.attention++; continue; }
+    const acc = smsAccount(p.last4, p.isCard);
+    if (!acc) { D.inbox.push({ id: uid(), text: it.text, receivedAt: it.receivedAt, status: 'noaccount', parsed: p, h }); res.attention++; continue; }
+    res[addSms(acc, p, h)]++;
+  }
+  // Keep a year of fingerprints
+  const cutoff = Date.now() - 400 * 864e5; D.smsSeen = D.smsSeen.filter((s) => s.at > cutoff);
+  const tm = matchTransfers();
+  save(); render();
+  const why = Object.entries(res.reasons).map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ');
+  openSheet(`<h3>SMS read</h3>
+    <p><b>${res.added}</b> new transactions added${res.known ? `, ${res.known} already on a statement` : ''}${tm ? `, ${tm} transfers matched` : ''}.</p>
+    ${res.attention ? `<p class="warn">${res.attention} need your attention (on the Import tab).</p>` : ''}
+    ${res.skipped ? `<p class="small muted">Ignored ${res.skipped}: ${esc(why)}.</p>` : ''}
+    ${res.old ? `<p class="small muted">${res.old} were read before and skipped.</p>` : ''}
+    <button class="btn wide" data-act="closeSheet">Done</button>`);
+}
+function inboxItem(it) {
+  const p = it.parsed;
+  const head = p ? `${inrS(p.amount)} · ${fmtDate(p.date)} · ${p.isCard ? 'card' : 'account'} ••${esc(p.last4 || '????')}` : esc(it.why || 'Could not read');
+  return `<div class="item" style="display:block"><div class="t">${head}</div><div class="s" style="white-space:normal">${esc(it.text.slice(0, 160))}</div>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap">${it.status === 'noaccount' ? `<select class="chip" data-inbox-acc="${it.id}"><option value="">Assign to account…</option>${accOptions('', (a) => typeOf(a.type).mode === 'ledger')}</select>` : `<button class="chip" data-act="inboxManual" data-id="${it.id}">Enter by hand</button>${D.settings.ai?.model ? `<button class="chip" data-act="inboxAI" data-id="${it.id}">Read with AI</button>` : ''}`}
+    <button class="chip" data-act="inboxDismiss" data-id="${it.id}">Dismiss</button></div></div>`;
+}
+function assignInbox(id, accId) {
+  const it = D.inbox.find((x) => x.id === id); const acc = accById(accId); if (!it || !acc) return;
+  const l4 = it.parsed.last4;
+  if (l4 && acc.last4 !== l4) { acc.smsLast4 = [...new Set([...(acc.smsLast4 || []), l4])]; }
+  let n = 0;
+  for (const x of [...D.inbox]) {
+    if (x.status !== 'noaccount' || (x.id !== id && x.parsed.last4 !== l4)) continue;
+    addSms(acc, x.parsed, x.h); D.inbox = D.inbox.filter((y) => y.id !== x.id); n++;
+  }
+  matchTransfers(); save(); render(); toast(`${n} added to ${acc.name}. Future SMS for ••${l4} go there automatically.`, 3500);
+}
+
+function smsSetupSheet() {
+  openSheet(`<h3>Auto-capture bank SMS</h3>
+  <p class="small">A Shortcuts automation saves each HDFC SMS to a text file in iCloud Drive, silently. Ledger reads that file when you tap <b>Read SMS inbox file</b>. Nothing is uploaded anywhere.</p>
+  <ol class="small" style="padding-left:18px;line-height:1.5">
+    <li>Open <b>Shortcuts</b> → <b>Automation</b> tab → <b>+</b> → <b>Message</b>.</li>
+    <li>Set <b>Message Contains</b> to <code>HDFC Bank</code>. Choose <b>Run Immediately</b> and turn off <b>Notify When Run</b>. Tap <b>Next</b>, then <b>New Blank Automation</b>.</li>
+    <li>Add a <b>Text</b> action. Type <code>===SMS===</code> and a space, insert the <b>Current Date</b> variable (tap it, set Date Format to <b>ISO 8601</b> with time), press return, then insert <b>Shortcut Input</b> (if asked, pick <b>Content</b>).</li>
+    <li>Add <b>Append to Text File</b>. Set the text to the <b>Text</b> from step 3, the file to <code>Ledger Inbox.txt</code> in the <b>Shortcuts</b> folder, and turn on <b>Make New Line</b>.</li>
+    <li>Tap <b>Done</b>. Next HDFC SMS will create the file.</li>
+  </ol>
+  <p class="small">In Ledger: Import → <b>Read SMS inbox file</b> → iCloud Drive → Shortcuts → <b>Ledger Inbox.txt</b>. Read it as often as you like; messages already read are skipped, and OTPs, reminders and declined payments are ignored.</p>
+  <p class="small muted">Other banks: add one more automation with that bank's name in step 2. Unfamiliar formats land under "need attention" and Ask Ledger can read them.</p>
+  <button class="btn wide" data-act="closeSheet">Got it</button>`);
+}
+
+// ---------- transfer matching ----------
+// A card payment from a bank account and the matching credit on the card are one movement of money
+function matchTransfers() {
+  const isCard = (x) => accById(x.accountId)?.type === 'credit_card';
+  const cardIns = D.transactions.filter((x) => isCard(x) && x.amount > 0 && !x.transferId && (x.categoryId === 'card_payment' || /payment/i.test(x.payee + ' ' + x.description)));
+  const bankOuts = D.transactions.filter((x) => !isCard(x) && x.amount < 0 && !x.transferId && (!x.categoryId || ['card_payment', 'self_transfer'].includes(x.categoryId)) && typeOf(accById(x.accountId)?.type).mode === 'ledger');
+  let n = 0;
+  for (const i of cardIns) {
+    const o = bankOuts.find((b) => !b.transferId && b.amount === -i.amount && daysApart(b.date, i.date) <= 4);
+    if (!o) continue;
+    const t = uid(); i.transferId = o.transferId = t; i.categoryId = o.categoryId = 'card_payment'; n++;
+  }
+  return n;
+}
+
+// ---------- Ask Ledger ----------
+function renderAsk(m) {
+  setTop('Ask Ledger', { back: 'closeView' });
+  const model = D.settings.ai?.model;
+  if (!model) { m.innerHTML = `<div class="card"><p>Ask Ledger needs the on-device model. It downloads once and then works offline.</p><button class="btn wide" data-act="aiSetup">Set up</button></div>`; return; }
+  const ex = ['How much did I spend on Swiggy since July?', 'Top categories last month', 'Show my Amazon orders', 'Spending by month this FY', 'What is my net worth?'];
+  m.innerHTML = `<form data-form="ask" class="row" style="margin-bottom:10px"><input class="i" name="q" placeholder="Ask about your money" autocomplete="off" enterkeyhint="send" required><button class="btn">Ask</button></form>
+  <div class="chips">${ex.map((q) => `<button class="chip" data-act="askEx" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+  <div class="small muted" id="aiStatus" style="margin:0 4px 10px">${esc(ui.aiStatus)}</div>
+  ${ui.ask.map((a) => `<div class="card"><div class="small muted" style="margin-bottom:6px">${esc(a.q)}</div>${a.html}</div>`).join('') ||
+    '<p class="small muted" style="margin:0 4px">Answers are calculated from your data on this phone. The AI only works out what you are asking for, so the numbers are exact. The first question takes a few seconds while the model loads.</p>'}`;
+}
+function setAiStatus(t) { ui.aiStatus = t; const el = $('#aiStatus'); if (el) el.textContent = t; }
+async function ensureModel() {
+  const id = D.settings.ai?.model; if (!id) throw new Error('Set up Ask Ledger in More first.');
+  if (AI.isLoaded(id)) return;
+  const g = await AI.gpuStatus(); if (!g.ok) throw new Error(g.why);
+  await AI.load(id, (p) => setAiStatus(`${p.progress < 1 ? 'Loading model' : 'Starting'}… ${Math.round(p.progress * 100)}%`));
+  setAiStatus('');
+}
+const isoOk = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') ? s : '';
+function runQuery(plan) {
+  const from = isoOk(plan.from), to = isoOk(plan.to);
+  const words = (plan.payee || '').toLowerCase().split(/[^a-z0-9@&]+/).filter((w) => w.length > 1);
+  const cat = catById(plan.category) ? plan.category : '';
+  const accWords = (plan.account || '').toLowerCase().split(/\s+/).filter((w) => w.length > 1 && !['card', 'account', 'my', 'the', 'bank'].includes(w));
+  const accs = accWords.length ? D.accounts.filter((a) => accWords.some((w) => `${a.name} ${a.institution} ${a.last4}`.toLowerCase().includes(w))) : [];
+  const txs = D.transactions.filter((x) => {
+    if (from && x.date < from) return false;
+    if (to && x.date > to) return false;
+    if (cat && x.categoryId !== cat) return false;
+    if (accs.length && !accs.some((a) => a.id === x.accountId)) return false;
+    if (words.length) { const hay = `${x.payee} ${x.description} ${x.raw || ''}`.toLowerCase(); const sq = squash(hay); if (!words.every((w) => hay.includes(w) || sq.includes(squash(w)))) return false; }
+    return true;
+  });
+  const kind = (x) => catById(x.categoryId)?.kind;
+  const spendTx = txs.filter((x) => (cat ? true : kind(x) !== 'transfer') && kind(x) !== 'income' && !(x.amount > 0 && !x.categoryId));
+  const spent = -spendTx.reduce((s, x) => s + x.amount, 0);
+  const received = txs.filter((x) => x.amount > 0 && (cat ? true : kind(x) !== 'transfer')).reduce((s, x) => s + x.amount, 0);
+  const period = from || to ? `${from ? fmtDate(from, true) : 'the start'} to ${to ? fmtDate(to, true) : 'today'}` : 'all time';
+  const chips = [words.length ? `“${esc(plan.payee)}”` : '', cat ? esc(catName(cat)) : '', accs.length ? esc(accs.map((a) => a.name).join(', ')) : '', period].filter(Boolean).map((c) => `<span class="badge">${c}</span>`).join(' ');
+  const list = (xs) => `<div class="list" style="margin:10px 0 0">${xs.slice(0, 30).map((x) => txItem(x)).join('')}</div>${xs.length > 30 ? `<p class="small muted">and ${xs.length - 30} more</p>` : ''}`;
+  const rows = (pairs) => `<table class="t" style="margin-top:8px">${pairs.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r num">${inr(v, 0)}</td></tr>`).join('')}</table>`;
+  const group = (xs, keyFn) => { const mm = new Map(); for (const x of xs) { const k = keyFn(x); mm.set(k, (mm.get(k) || 0) - x.amount); } return [...mm.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]); };
+  let head = '', body = '';
+  switch (plan.intent) {
+    case 'unsupported': return `<p>I can only answer questions about your transactions, accounts and net worth.</p>`;
+    case 'net_worth': { const nw = netWorth(); return `<div class="mid num">${inr(nw.net, 0)}</div><p class="small muted">Assets ${inr(nw.assets, 0)} · liabilities ${inr(nw.liabilities, 0)}</p>`; }
+    case 'account_balance': { const as = (accs.length ? accs : D.accounts.filter((a) => !a.archived)); return rows(as.map((a) => [accShort(a), balance(a)])); }
+    case 'total_received': head = `<div class="mid num in">${inr(received, 0)}</div><p class="small">received, ${txs.filter((x) => x.amount > 0).length} transactions</p>`; body = list(txs.filter((x) => x.amount > 0)); break;
+    case 'top_payees': head = `<p>Top payees by spending</p>`; body = rows(group(spendTx, (x) => x.payee || x.description).slice(0, 10)); break;
+    case 'top_categories': head = `<p>Spending by category, ${inr(spent, 0)} in total</p>`; body = rows(group(spendTx, (x) => catName(x.categoryId)).slice(0, 10)); break;
+    case 'monthly_trend': head = `<p>Spending by month</p>`; body = rows([...group(spendTx, (x) => ymOf(x.date))].sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => [monthLabel(k), v])); break;
+    case 'list': case 'count': head = `<p><b>${txs.length}</b> transactions · net ${inr(txs.reduce((s, x) => s + x.amount, 0), 0)}</p>`; body = list([...txs].sort((a, b) => b.date.localeCompare(a.date))); break;
+    default: head = `<div class="mid num">${inr(spent, 0)}</div><p class="small">${spent < 0 ? 'net refunds' : 'spent'} across ${spendTx.length} transactions</p>`; body = list([...spendTx].sort((a, b) => b.date.localeCompare(a.date)));
+  }
+  if (!txs.length) return `<p>No matching transactions.</p><p class="small">${chips}</p><p class="tiny muted">If that looks wrong, try naming the merchant or category differently.</p>`;
+  return head + `<p class="small" style="margin:6px 0 0">${chips}</p>` + body;
+}
+async function ask(q) {
+  q = (q || '').trim(); if (!q) return;
+  try {
+    await ensureModel();
+    setAiStatus('Thinking…');
+    const cats = D.categories.map((c) => ({ id: c.id, name: c.name }));
+    const plan = await AI.askJSON(AI.queryPrompt({ today: todayIso(), categories: cats, accounts: D.accounts.map((a) => accShort(a)) }), q, AI.querySchema(cats.map((c) => c.id)), 160);
+    ui.ask.unshift({ q, html: runQuery(plan), plan });
+  } catch (e) { console.error(e); ui.ask.unshift({ q, html: `<p class="bad">${esc(e?.message || String(e) || 'Something went wrong')}</p>${/memory|device lost|out of/i.test(String(e?.message)) ? '<p class="small">The phone ran out of memory for this model. Try the smaller Llama model in More → Ask Ledger.</p>' : ''}` }); }
+  setAiStatus(''); render();
+}
+async function aiSuggest() {
+  const uncats = D.transactions.filter((x) => !x.categoryId && !x.suggest);
+  const byPayee = new Map(); for (const x of uncats) { const k = x.payee || x.description; if (!byPayee.has(k)) byPayee.set(k, x); }
+  const todo = [...byPayee.entries()].slice(0, 40);
+  if (!todo.length) return toast('Nothing left to suggest.');
+  try {
+    await ensureModel();
+    const cats = D.categories.map((c) => ({ id: c.id, name: c.name }));
+    const exMap = new Map(); for (const x of D.transactions) if (x.categoryId && x.catManual && exMap.size < 25) exMap.set(x.payee, x.categoryId);
+    const examples = [...exMap.entries()].map(([payee, category]) => ({ payee, category }));
+    let done = 0, got = 0;
+    for (let i = 0; i < todo.length; i += 8) {
+      const batch = todo.slice(i, i + 8);
+      setAiStatus(`Suggesting… ${done}/${todo.length}`);
+      const user = batch.map(([k, x], j) => `${j}. ${k} | bank text: ${(x.raw || x.description).slice(0, 80)} | ${x.amount < 0 ? 'paid' : 'received'} ₹${Math.abs(x.amount / 100).toFixed(0)}`).join('\n');
+      const r = await AI.askJSON(AI.categoryPrompt(cats, examples), user, AI.categorySchema(cats.map((c) => c.id), batch.length), 60 * batch.length);
+      for (const it of r.items || []) {
+        const b = batch[it.i]; if (!b || !catById(it.category)) continue;
+        for (const x of uncats) if ((x.payee || x.description) === b[0]) x.suggest = it.category;
+        got++;
+      }
+      done += batch.length;
+    }
+    save(); setAiStatus(`${got} suggestions. Tap one to accept, or edit the transaction.`); render();
+  } catch (e) { console.error(e); setAiStatus(''); toast(e.message || 'AI suggestion failed', 4000); }
+}
+async function aiSheet() {
+  openSheet(`<h3>Ask Ledger</h3><p class="small muted">Checking this phone…</p>`);
+  const gpu = await AI.gpuStatus();
+  const states = await Promise.all(AI.MODELS.map((m) => AI.isDownloaded(m.id)));
+  const cur = D.settings.ai?.model;
+  openSheet(`<h3>Ask Ledger</h3>
+  <p class="small">An AI model that runs on this phone. It answers questions about your money, suggests categories, and reads SMS the built-in reader can't. Your data is never sent anywhere.</p>
+  ${gpu.ok ? '' : `<p class="small bad">${esc(gpu.why)}</p>`}
+  <div class="list">${AI.MODELS.map((m, i) => `<div class="item" style="display:block">
+    <div class="row"><div class="grow"><div class="t">${m.label} ${cur === m.id ? '<span class="badge">In use</span>' : ''}</div><div class="s" style="white-space:normal">${m.size} download · ${esc(m.note)}</div></div></div>
+    <div class="row" style="margin-top:8px">${states[i]
+      ? `${cur === m.id ? '' : `<button class="chip" data-act="aiUse" data-id="${m.id}">Use this</button>`}<button class="chip" data-act="aiDelete" data-id="${m.id}">Delete download</button>`
+      : `<button class="chip on" data-act="aiDownload" data-id="${m.id}" ${gpu.ok ? '' : 'disabled'}>Download</button>`}</div></div>`).join('')}</div>
+  <div id="aiProg" class="hidden"><div class="bar"><i id="aiBar" style="width:0%"></i></div><p class="small muted" id="aiProgText"></p></div>
+  <p class="tiny muted">Downloads come straight from Hugging Face (official MLC builds). Use Wi-Fi and keep Ledger open until it finishes. If iPhone storage runs very low, iOS may clear the model; you can download it again. ${cur ? '<button class="link" data-act="aiOff">Turn Ask Ledger off</button>' : ''}</p>`);
+}
+
 // ---------- lock / setup ----------
 function showLock(html) { $('#lock').innerHTML = `<img class="logo" src="icons/icon-192.png" alt=""><div class="box">${html}</div>`; $('#lock').classList.add('on'); $('#app').classList.add('hidden'); closeSheet(); }
 function hideLock() { $('#lock').classList.remove('on'); $('#lock').innerHTML = ''; $('#app').classList.remove('hidden'); }
@@ -683,7 +936,7 @@ async function afterUnlock() {
   hideLock(); render();
   requestPersistence().then(() => storageInfo());
 }
-function lockApp() { if (!D) return; vault.saveNow().finally(() => { vault.lock(); D = null; ui.imp = null; $('#main').innerHTML = ''; renderUnlock(); }); }
+function lockApp() { if (!D) return; AI.unload(); vault.saveNow().finally(() => { vault.lock(); D = null; ui.imp = null; ui.ask = []; $('#main').innerHTML = ''; renderUnlock(); }); }
 
 document.addEventListener('visibilitychange', () => {
   if (!D) return;
@@ -693,7 +946,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
-  tab: (d) => { ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; } render(); window.scrollTo(0, 0); },
+  tab: (d) => { ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
   closeSheet, closeView: () => { ui.view = null; render(); },
   month: (d) => { ui.month = addMonths(ui.month, +d.d); render(); },
   showUncat: () => { ui.tab = 'tx'; ui.cat = '_none'; ui.month = ymOf(todayIso()); ui.view = null; render(); },
@@ -715,7 +968,7 @@ const acts = {
   editValuation: (d) => { const v = D.valuations.find((x) => x.id === d.id); valuationSheet(v.accountId, v); },
   deleteValuation: (d) => { D.valuations = D.valuations.filter((v) => v.id !== d.id); save(); closeSheet(); render(); },
   togglePaid: (d) => { const a = accById(d.id); a.statement.paid = !a.statement.paid; save(); render(); },
-  pickFile: (d) => { const f = $('#file'); f.accept = d.kind === 'pdf' ? 'application/pdf,.pdf' : 'text/csv,.csv,text/plain,.txt'; f.value = ''; f.click(); },
+  pickFile: (d) => { const f = $('#file'); f.dataset.kind = d.kind; f.accept = d.kind === 'pdf' ? 'application/pdf,.pdf' : d.kind === 'inbox' ? 'text/plain,.txt' : 'text/csv,.csv,text/plain,.txt'; f.value = ''; f.click(); },
   cancelImport: () => { ui.imp = null; render(); },
   commitImport,
   impAll: () => { const all = ui.imp.rows.every((r) => r.include); ui.imp.rows.forEach((r) => { r.include = !all; }); render(); },
@@ -747,6 +1000,42 @@ const acts = {
   },
   deleteRule: (d) => { D.rules = D.rules.filter((r) => r.id !== d.id); save(); rulesSheet(); },
   lockNow: lockApp,
+  pasteSms: () => openSheet(`<h3>Paste an SMS</h3><form data-form="pasteSms"><textarea class="i" name="t" rows="7" placeholder="Txn Rs.198.00 On HDFC Bank Card 9550 …" required></textarea><div style="height:10px"></div><button class="btn wide">Add</button></form>`),
+  smsSetup: () => smsSetupSheet(),
+  inboxDismiss: (d) => { D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); },
+  inboxManual: (d) => { const it = D.inbox.find((x) => x.id === d.id); D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); txSheet(null); const n = document.querySelector('form[data-form=tx] textarea[name=notes]'); if (n) n.value = it.text; },
+  inboxAI: async (d) => {
+    const it = D.inbox.find((x) => x.id === d.id); if (!it) return;
+    try {
+      toast('Reading with AI…'); await ensureModel();
+      const r = await AI.askJSON(AI.smsPrompt(todayIso()), it.text, AI.SMS_SCHEMA, 120);
+      if (!r.is_transaction || !r.amount) { toast('The AI says this is not a transaction.'); return; }
+      const p = { ok: true, amount: Math.round(r.amount * 100) * (r.direction === 'credit' ? 1 : -1), last4: (r.last4 || '').slice(-4) || null, isCard: /card/i.test(it.text), merchant: r.merchant || '', ref: null, date: isoOk(r.date) || todayIso(), channel: /upi/i.test(it.text) ? 'UPI' : '', text: it.text };
+      const acc = smsAccount(p.last4, p.isCard);
+      if (acc) { addSms(acc, p, it.h); D.inbox = D.inbox.filter((x) => x.id !== it.id); toast(`Added ${inr(p.amount)} to ${acc.name}`); }
+      else { it.status = 'noaccount'; it.parsed = p; toast('Read it. Now pick the account.'); }
+      matchTransfers(); save(); render();
+    } catch (e) { toast(e.message || 'AI could not read it', 4000); }
+  },
+  showStrays: (d) => { ui.tab = 'tx'; ui.view = null; ui.acc = d.id; ui.cat = ''; ui.q = ''; ui.src = 'sms'; render(); },
+  clearSrc: () => { ui.src = ''; render(); },
+  unlinkTransfer: (d) => { const x = D.transactions.find((t) => t.id === d.id); const tid = x.transferId; D.transactions.forEach((t) => { if (t.transferId === tid) delete t.transferId; }); save(); closeSheet(); render(); },
+  openAsk: () => { ui.view = { page: 'ask' }; render(); window.scrollTo(0, 0); },
+  askEx: (d) => ask(d.q),
+  aiSetup: () => aiSheet(),
+  aiSuggest: () => aiSuggest(),
+  acceptSug: (d) => { const x = D.transactions.find((t) => t.id === d.id); x.categoryId = x.suggest; delete x.suggest; x.catManual = true; save(); render(); },
+  acceptAllSug: () => { let n = 0; D.transactions.forEach((x) => { if (!x.categoryId && x.suggest) { x.categoryId = x.suggest; delete x.suggest; x.catManual = true; n++; } }); save(); render(); toast(`${n} categorised`); },
+  aiUse: (d) => { D.settings.ai.model = d.id; save(); AI.unload(); aiSheet(); render(); },
+  aiOff: () => { D.settings.ai.model = null; save(); AI.unload(); closeSheet(); render(); },
+  aiDelete: async (d) => { if (!confirm('Delete this model download?')) return; await AI.remove(d.id); if (D.settings.ai.model === d.id) D.settings.ai.model = null; save(); aiSheet(); render(); },
+  aiDownload: async (d, el) => {
+    el.disabled = true; $('#aiProg').classList.remove('hidden');
+    try {
+      await AI.load(d.id, (p) => { const b = $('#aiBar'), t = $('#aiProgText'); if (b) b.style.width = Math.round(p.progress * 100) + '%'; if (t) t.textContent = p.text.replace(/\[.*?\]\s*/g, '').slice(0, 140); });
+      D.settings.ai.model = d.id; save(); toast('Ask Ledger is ready'); aiSheet(); render();
+    } catch (e) { console.error(e); el.disabled = false; const t = $('#aiProgText'); if (t) t.textContent = 'Failed: ' + (e.message || e); }
+  },
   showPassForm: () => $('#passForm').classList.remove('hidden'),
   unlockFace: async () => {
     try { await vault.unlockWithPasskey(); await afterUnlock(); }
@@ -774,6 +1063,9 @@ const acts = {
     await Vault.erase(); vault.lock(); D = null; vault.meta = null; renderSetup();
   },
 };
+document.addEventListener('change', (e) => {
+  const id = e.target.dataset?.inboxAcc; if (id && e.target.value) assignInbox(id, e.target.value);
+});
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = acts[el.dataset.act]; if (!fn) return;
@@ -795,13 +1087,20 @@ const forms = {
     try { await vault.changePassphrase(f.get('old'), f.get('p1')); closeSheet(); toast('Passphrase changed. Make a fresh backup.'); } catch (e) { toast(e.message); }
   },
   pdfPass: (f) => { closeSheet(); handlePdf(pendingFile, f.get('pw')); },
+  pasteSms: async (f) => { closeSheet(); await handleInbox(f.get('t'), 'paste'); },
+  ask: async (f, form) => { const q = f.get('q'); form.reset(); await ask(q); },
   tx: (f, form) => {
     const amt = parseRupees(f.get('amount')); if (amt == null || amt === 0) return toast('Enter an amount.');
     const signed = f.get('dir') === 'in' ? Math.abs(amt) : -Math.abs(amt);
     const id = form.dataset.id;
     const vals = { payee: f.get('payee').trim(), amount: signed, categoryId: f.get('categoryId') || null, date: f.get('date'), accountId: f.get('accountId'), notes: f.get('notes').trim() };
     let x;
-    if (id) { x = D.transactions.find((t) => t.id === id); Object.assign(x, vals); }
+    if (id) {
+      x = D.transactions.find((t) => t.id === id);
+      if ((x.categoryId || null) !== vals.categoryId) { x.catManual = true; delete x.suggest; }
+      if (x.payee !== vals.payee) x.payeeManual = true;
+      Object.assign(x, vals);
+    }
     else { x = { id: uid(), description: vals.payee, raw: '', hash: 'manual|' + uid(), importId: null, ref: null, time: null, ...vals }; D.transactions.push(x); }
     let msg = 'Saved';
     if (f.get('makeRule') && vals.categoryId && !$('#ruleRow').classList.contains('hidden')) {
@@ -861,7 +1160,11 @@ document.addEventListener('submit', async (e) => {
 $('#file').addEventListener('change', async (e) => {
   const file = e.target.files[0]; e.target.value = ''; if (!file) return;
   toast('Reading ' + file.name + '…');
-  try { if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') await handlePdf(file); else await handleCsv(file); }
+  try {
+    if (e.target.dataset.kind === 'inbox') await handleInbox(await file.text(), file.name);
+    else if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') await handlePdf(file);
+    else await handleCsv(file);
+  }
   catch (err) { console.error(err); toast('Could not read that file.'); }
 });
 $('#restoreFile').addEventListener('change', async (e) => {
@@ -896,4 +1199,4 @@ async function boot() {
 boot();
 
 // Exposed for automated tests only
-window.__ledger = { get data() { return D; }, vault, ui, render };
+window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, handleInbox, matchTransfers, AI };
