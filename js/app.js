@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.7';
+const APP_VERSION = '1.4.8';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -682,6 +682,67 @@ function vaultEdit(id) {
 }
 
 // ---------- monthly recap ----------
+
+// ---------- Summary for AI: a plain-text brief to paste into any AI app ----------
+const SUM_PERIODS = [['this', 'This month'], ['last', 'Last month'], ['3m', 'Last 3 months'], ['6m', 'Last 6 months']];
+function aiSummary(period = 'last') {
+  const cur = ymOf(todayIso());
+  const n = { this: 1, last: 1, '3m': 3, '6m': 6 }[period] || 1;
+  const end = period === 'this' ? cur : addMonths(cur, -1);
+  const months = Array.from({ length: n }, (_, i) => addMonths(end, i - n + 1));
+  const prevMonths = months.map((m2) => addMonths(m2, -n));
+  const agg = (ms) => { const out = { spend: 0, income: 0, cats: new Map() }; for (const m2 of ms) { const st = monthStats(m2); out.spend += st.spend; out.income += st.income; for (const [k, v] of st.byCat) out.cats.set(k, (out.cats.get(k) || 0) + v); } return out; };
+  const a = agg(months), b = agg(prevMonths);
+  const r = (v) => inr(Math.round(v / 100) * 100, 0);
+  const pct = (x, y) => (y ? `${x >= y ? '+' : ''}${Math.round((x / y - 1) * 100)}%` : 'new');
+  const clean = (t) => String(t || '').replace(/\d{4,}/g, '').replace(/\s{2,}/g, ' ').trim() || 'Unknown';
+  const label = months.length > 1 ? `${monthLabel(months[0])} to ${monthLabel(months.at(-1))}` : monthLabel(months[0]) + (period === 'this' ? ` (1 to ${+todayIso().slice(8)}, month not over)` : '');
+  const plabel = prevMonths.length > 1 ? `${monthLabel(prevMonths[0])} to ${monthLabel(prevMonths.at(-1))}` : monthLabel(prevMonths[0]);
+  const vis = new Set(D.accounts.filter((x) => accVisible(x)).map((x) => x.id));
+  const tx = D.transactions.filter((x) => vis.has(x.accountId) && months.includes(ymOf(x.date)) && x.amount < 0 && !['transfer', 'income'].includes(catById(x.categoryId)?.kind));
+  const byPayee = new Map(); for (const x of tx) { const k = clean(x.payee || x.description); const e = byPayee.get(k) || { n: 0, v: 0 }; e.n++; e.v -= x.amount; byPayee.set(k, e); }
+  const whoName = D.settings.who === 'all' || !multi() ? (multi() ? 'Combined household (' + D.members.map((m2) => m2.name).join(' and ') + ')' : 'Me') : D.members.find((m2) => m2.id === D.settings.who)?.name;
+  const L = [];
+  L.push('Below is a summary of my personal finances in India, exported from my budgeting app. Amounts are in Indian rupees.',
+    'Please:', '1. Tell me where most of my money went, and anything unusual.', `2. Compare it with the previous period and explain the biggest changes.`,
+    '3. Give me 3 to 5 specific, practical ways to spend less or save more, with rough rupee amounts.', '4. Point out subscriptions or recurring payments worth reviewing.',
+    '5. Flag any risks: overspending, interest, fees, a low savings rate.', 'Keep it concise and practical.', '');
+  const hasPrev = b.spend > 0;
+  const withData = months.filter((m2) => D.transactions.some((x) => x.date.startsWith(m2) && vis.has(x.accountId)));
+  L.push(`PERIOD: ${label}`, hasPrev ? `COMPARED WITH: ${plabel}` : 'COMPARED WITH: no earlier data in the app', `WHOSE MONEY: ${whoName}`);
+  if (withData.length && withData.length < months.length) L.push(`NOTE: the app only has data for ${withData.map(monthLabel).join(', ')} in this period.`);
+  L.push('');
+  L.push('TOTALS', `- Spending: ${r(a.spend)}${hasPrev ? ` (previous ${r(b.spend)}, ${pct(a.spend, b.spend)})` : ''}`);
+  if (a.income) L.push(`- Income: ${r(a.income)}`, `- Saved: ${r(a.income - a.spend)} (${Math.round((1 - a.spend / a.income) * 100)}% of income)`);
+  if (withData.length > 1) L.push(`- Monthly average spending: ${r(a.spend / withData.length)}`);
+  L.push('', hasPrev ? 'SPENDING BY CATEGORY (previous period in brackets)' : 'SPENDING BY CATEGORY');
+  for (const [k, v] of [...a.cats.entries()].sort((x, y) => y[1] - x[1]).slice(0, 15)) { const pv = b.cats.get(k) || 0; L.push(`- ${k === '_none' ? 'Uncategorised' : catName(k)}: ${r(v)} (${hasPrev ? (pv ? r(pv) + ', ' + pct(v, pv) : 'none before') + ', ' : ''}${Math.round(v / Math.max(1, a.spend) * 100)}% of spending)`); }
+  L.push('', 'TOP PAYEES');
+  for (const [k, e] of [...byPayee.entries()].sort((x, y) => y[1].v - x[1].v).slice(0, 12)) L.push(`- ${k}: ${r(e.v)} in ${e.n} payment${e.n > 1 ? 's' : ''}`);
+  L.push('', 'LARGEST PAYMENTS');
+  for (const x of [...tx].sort((p, q) => p.amount - q.amount).slice(0, 10)) L.push(`- ${fmtDate(x.date, true)}: ${clean(x.payee || x.description)}, ${r(-x.amount)} (${catName(x.categoryId)})`);
+  const small = tx.filter((x) => -x.amount < 50000);
+  if (small.length) L.push('', `SMALL PAYMENTS: ${small.length} payments under ₹500, adding up to ${r(small.reduce((t, x) => t - x.amount, 0))}`);
+  const per = { month: 'a month', quarter: 'a quarter', year: 'a year', week: 'a week' };
+  const subs = (D.bills || []).filter((x) => x.kind === 'subscription');
+  if (subs.length) { L.push('', 'SUBSCRIPTIONS'); for (const x of subs) L.push(`- ${clean(x.name)}: ${x.amount ? r(x.amount) + ' ' + (per[x.every] || '') : 'amount varies'}`); }
+  const loans = D.accounts.filter((x) => x.loan && accVisible(x));
+  if (loans.length) {
+    L.push('', 'LOANS');
+    for (const x of loans) { const P = latestValuation(x.id)?.value || 0, lr = mrate(x.loan.rate); let left = P, k = 0, int = 0; while (left > 100 && k++ < 600) { const i = Math.round(left * lr); int += i; left -= Math.min(x.loan.emi, left + i) - i; } L.push(`- ${clean(x.name)}: ${r(P)} outstanding, EMI ${r(x.loan.emi)}, ${x.loan.rate}% interest, about ${k} EMIs left, ${r(int)} interest still to pay`); }
+  }
+  const nw = netWorth(); if (nw.assets || nw.liabilities) L.push('', 'NET WORTH', `- ${r(nw.net)} (assets ${r(nw.assets)}, debts ${r(-nw.liabilities)}${loans.length && D.settings.loansSeparate ? ', loans listed above not included' : ''})`);
+  const uncat = a.cats.get('_none'); if (uncat) L.push('', `NOTE: ${r(uncat)} of spending is not categorised yet.`);
+  return L.join('\n');
+}
+function summarySheet(period) {
+  period ||= ui.sumPeriod || (+todayIso().slice(8) <= 7 ? 'last' : 'this'); ui.sumPeriod = period;
+  const text = aiSummary(period); ui.sumText = text;
+  openSheet(`<h3>Summary for AI</h3><p class="small muted" style="margin-top:-6px">Copy this and paste it into Claude, ChatGPT or any AI app for a report and savings ideas. No account numbers or balances by account are included.</p>
+    <div class="seg" role="group" aria-label="Period" style="margin-bottom:10px;grid-template-columns:repeat(4,minmax(0,1fr));font-size:.8rem">${SUM_PERIODS.map(([k, t]) => `<button class="${k === period ? 'on' : ''}" data-act="sumPeriod" data-p="${k}" aria-pressed="${k === period}">${t}</button>`).join('')}</div>
+    <textarea class="i" readonly style="min-height:300px;font-size:.8rem;line-height:1.45;font-family:ui-monospace,Menlo,monospace">${esc(text)}</textarea>
+    <div class="row" style="margin-top:10px"><button class="btn" style="flex:1" data-act="sumCopy">Copy</button>${navigator.share ? '<button class="btn ghost" style="flex:1" data-act="sumShare">Share…</button>' : ''}</div>`);
+}
 function recapData(ym) {
   const st = monthStats(ym), prev = monthStats(addMonths(ym, -1));
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
@@ -921,7 +982,7 @@ function renderHome(m) {
   const todayOut = D.transactions.filter((x) => x.date === todayIso() && x.amount < 0 && visIds.has(x.accountId) && !['transfer', 'income'].includes(catById(x.categoryId)?.kind)).reduce((t, x) => t - x.amount, 0);
   const nextDue = [...dues.map((a) => ({ t: 'card due', d: a.statement.dueDate })), ...(D.bills || []).filter((b) => b.next && daysUntil(b.next) >= 0).map((b) => ({ t: b.name.toLowerCase().includes('emi') ? b.name : b.name + ' due', d: b.next }))].sort((p, q) => p.d.localeCompare(q.d))[0];
   const summary = [todayOut ? `<span class="money">${inr(todayOut, 0)}</span> spent today` : 'Nothing spent today', nextDue ? `${esc(nextDue.t)} ${dueWord(nextDue.d)}` : ''].filter(Boolean).join(' · ');
-  m.innerHTML = `<div class="hello"><div class="d">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase()}</div><div class="g">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}${me && me !== 'Me' ? ', ' + esc(me) : ''}</div><div class="s">${summary}</div><button class="link small" data-act="pickFile" data-kind="inbox" style="margin-top:4px">📥 Read SMS &amp; logs</button></div>
+  m.innerHTML = `<div class="hello"><div class="d">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase()}</div><div class="g">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}${me && me !== 'Me' ? ', ' + esc(me) : ''}</div><div class="s">${summary}</div><div class="row" style="gap:16px;margin-top:4px"><button class="link small" data-act="pickFile" data-kind="inbox">📥 Read SMS &amp; logs</button><button class="link small" data-act="summarySheet">✨ Summary for AI</button></div></div>
   ${whoSwitch()}
   <div class="card"><h2><button class="eye" data-act="toggleMask" aria-pressed="${!!D.settings.masked}" aria-label="${D.settings.masked ? 'Show amounts' : 'Hide amounts'}">Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">${D.settings.masked ? '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.4 4.5-1.1"/>' : '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'}</svg></button></h2>
     <div class="big num ${ui.swap ? 'swapin' : ''}" data-nwval>${inr(nw.net, 0)}</div>
@@ -1590,6 +1651,7 @@ function renderMore(m) {
   <div class="list">
     <button class="item" data-act="payWithSheet"><div class="grow">Where quick entries go<div class="s">UPI: ${esc(accShort(payAccount('upi', false)) || 'not set')} · Card: ${esc(accShort(payAccount('card', false)) || 'not set')}</div></div><div class="muted">›</div></button>
     <button class="item" data-act="shortcutHelp"><div class="grow">Set up "Log to Ledger" for Siri</div><div class="muted">›</div></button>
+    <button class="item" data-act="summarySheet"><div class="grow">Summary for AI<div class="s">Copy your month into Claude or ChatGPT for a report</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openVault"><div class="grow">Family vault<div class="s">${(D.vault || []).length} policies and documents, encrypted</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openReceipts"><div class="grow">Receipts & bills<div class="s">${D.receipts.length} kept, encrypted</div></div><div class="muted">›</div></button>
     <button class="item" data-act="toggleBackupReceipts"><div class="grow">Include receipts in backups</div><div class="muted">${D.settings.backupReceipts === false ? 'No' : 'Yes'} ›</div></button>
@@ -2369,6 +2431,10 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  summarySheet: () => summarySheet(),
+  sumPeriod: (d) => { const top = $('#sheet').scrollTop; summarySheet(d.p); $('#sheet').scrollTop = top; },
+  sumCopy: async () => { try { await navigator.clipboard.writeText(ui.sumText); done('Copied'); } catch { const t = $('#sheet textarea'); t.removeAttribute('readonly'); t.select(); document.execCommand('copy'); t.setAttribute('readonly', ''); done('Copied'); } },
+  sumShare: async () => { try { await navigator.share({ text: ui.sumText }); } catch { /* cancelled */ } },
   openVault: () => { ui.tab = 'vault'; ui.view = null; render(); window.scrollTo(0, 0); },
   vaultOpen: (d) => vaultOpen(d.id),
   vaultEdit: (d) => vaultEdit(d.id),
