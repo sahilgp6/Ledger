@@ -316,3 +316,46 @@ export function parseBankPdf(pages) {
   if (!statement.periodTo && transactions.length) { statement.periodFrom = transactions[0].date; statement.periodTo = transactions[transactions.length - 1].date; }
   return { kind: 'bank', institution: bank.name, bank, statement, transactions, recon, warnings };
 }
+
+// ---------- Zerodha Console holdings (.xlsx) ----------
+export function detectZerodhaHoldings(sheets) {
+  return sheets.some((s) => s.rows.slice(0, 20).some((r) => r.some((c) => typeof c === 'string' && /Holdings Statement as on/i.test(c))))
+    && sheets.some((s) => s.rows.some((r) => r.includes('ISIN') && r.includes('Average Price')));
+}
+export function parseZerodhaHoldings(sheets) {
+  const out = { kind: 'holdings', institution: 'Zerodha', statement: {}, holdings: [], warnings: [] };
+  const flat = (s) => s.rows.flatMap((r) => r.filter((c) => c != null));
+  for (const s of sheets) {
+    if (/combined/i.test(s.name)) continue; // same rows as Equity + Mutual Funds
+    const all = flat(s);
+    const ci = all.indexOf('Client ID'); if (ci >= 0 && all[ci + 1]) out.statement.clientId = String(all[ci + 1]);
+    const asOn = all.find((c) => typeof c === 'string' && /as on (\d{4}-\d{2}-\d{2})/.test(c));
+    if (asOn) out.statement.asOn = asOn.match(/(\d{4}-\d{2}-\d{2})/)[1];
+    const hi = s.rows.findIndex((r) => r.includes('ISIN') && r.includes('Average Price'));
+    if (hi < 0) continue;
+    const h = s.rows[hi], col = (name) => h.findIndex((c) => typeof c === 'string' && c.toLowerCase() === name.toLowerCase());
+    const c = { sym: col('Symbol'), isin: col('ISIN'), sector: col('Sector'), itype: col('Instrument Type'), qty: col('Quantity Available'), disc: col('Quantity Discrepant'), lt: col('Quantity Long Term'), pm: col('Quantity Pledged (Margin)'), pl: col('Quantity Pledged (Loan)'), avg: col('Average Price'), px: col('Previous Closing Price') };
+    const isMf = /mutual/i.test(s.name);
+    for (let i = hi + 1; i < s.rows.length; i++) {
+      const r = s.rows[i]; if (!r || !r[c.sym]) continue;
+      const qty = [c.qty, c.disc, c.pm, c.pl].reduce((t, k) => t + (k >= 0 ? Number(r[k]) || 0 : 0), 0);
+      if (!qty) continue;
+      const isin = String(r[c.isin] || '');
+      const sector = c.sector >= 0 ? String(r[c.sector] || '') : '';
+      out.holdings.push({
+        symbol: String(r[c.sym]), isin, sector,
+        type: isMf ? 'mf' : /ETF/i.test(sector) || /^INF/.test(isin) ? 'etf' : 'stock',
+        qty, ltQty: c.lt >= 0 ? Number(r[c.lt]) || 0 : 0,
+        avg: Number(r[c.avg]) || 0, price: Number(r[c.px]) || 0,
+      });
+    }
+  }
+  const inv = out.holdings.reduce((t, x) => t + x.qty * x.avg, 0), val = out.holdings.reduce((t, x) => t + x.qty * x.price, 0);
+  out.statement.invested = Math.round(inv * 100); out.statement.value = Math.round(val * 100);
+  // Check against Zerodha's own summary
+  const eq = sheets.find((s) => /equity/i.test(s.name)), mf = sheets.find((s) => /mutual/i.test(s.name));
+  const pv = (s) => { if (!s) return 0; const a = flat(s); const i = a.indexOf('Present Value'); return i >= 0 ? Number(a[i + 1]) || 0 : 0; };
+  const reported = Math.round((pv(eq) + pv(mf)) * 100);
+  out.recon = { ok: Math.abs(reported - out.statement.value) <= 100, reported };
+  return out;
+}

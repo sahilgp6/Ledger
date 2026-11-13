@@ -2,9 +2,10 @@ import { Vault, passkeySupport, requestPersistence } from './store.js';
 import * as P from './parsers.js';
 import { ACCOUNT_TYPES, typeOf, DEFAULT_CATEGORIES, categorize, payeeFrom, squash } from './rules.js';
 import { parseSms, smsPayee, splitInbox } from './sms.js';
+import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -53,7 +54,7 @@ function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
-  d.inbox ||= []; d.smsSeen ||= []; d.settings.ai ||= { model: null };
+  d.inbox ||= []; d.smsSeen ||= []; d.settings.ai ||= { model: null }; d.holdings ||= [];
   d.v = DATA_VERSION;
   return d;
 }
@@ -77,8 +78,23 @@ function balance(a) {
     for (const x of D.transactions) if (x.accountId === a.id) b += x.amount;
     return b;
   }
+  const hs = D.holdings?.filter((h) => h.accountId === a.id);
+  if (hs?.length) return hs.reduce((s2, h) => s2 + Math.round(h.qty * h.price), 0);
   const v = latestValuation(a.id)?.value || 0;
   return t.side === 'liability' ? -v : v;
+}
+function holdingsCard(a) {
+  const hs = D.holdings.filter((h) => h.accountId === a.id).map((h) => ({ ...h, value: Math.round(h.qty * h.price), cost: Math.round(h.qty * h.avg) })).sort((x, y) => y.value - x.value);
+  if (!hs.length) return '';
+  const val = hs.reduce((t, h) => t + h.value, 0), cost = hs.reduce((t, h) => t + h.cost, 0), pl = val - cost;
+  const pct = (p, c) => c ? `${p >= 0 ? '+' : ''}${(p / c * 100).toFixed(1)}%` : '';
+  return `<div class="card"><h2>Holdings · ${hs.length}</h2>
+    <div class="split"><div><div class="small muted">Invested</div><div class="mid num">${inr(cost, 0)}</div></div>
+    <div><div class="small muted">Profit / loss</div><div class="mid num ${pl >= 0 ? 'in' : 'bad'}">${inrS(pl, 0)} <span class="small">${pct(pl, cost)}</span></div></div></div>
+    <p class="small muted" style="margin:8px 0 0">Prices as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer holdings file to refresh.</p></div>
+    <div class="list">${hs.map((h) => `<div class="item"><div class="ico">${esc(h.symbol.slice(0, 2))}</div>
+      <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}</div></div>
+      <div style="text-align:right"><div class="a num">${inr(h.value, 0)}</div><div class="tiny num ${h.value >= h.cost ? 'in' : 'bad'}">${inrS(h.value - h.cost, 0)} · ${pct(h.value - h.cost, h.cost)}</div></div></div>`).join('')}</div>`;
 }
 // Card EMIs still to be billed (not yet in the statement balance) are real debt
 const unbilledEmi = (a) => (a.type === 'credit_card' ? (a.statement?.emiLoans || []).reduce((s, l) => s + (l.principalLeft || 0), 0) : 0);
@@ -270,13 +286,16 @@ function renderAccount(m, id) {
   const b = balance(a);
   const txs = D.transactions.filter((x) => x.accountId === a.id).sort((p, q) => q.date.localeCompare(p.date) || (q.time || '').localeCompare(p.time || ''));
   let h = `<div class="card"><h2>${esc(t.label)}${a.last4 ? ' ••' + a.last4 : ''}</h2><div class="big num">${inr(b)}</div>`;
-  if (t.mode === 'value') {
+  const hasHold = D.holdings.some((x) => x.accountId === a.id);
+  if (t.mode === 'value' && hasHold) h += `<div class="small muted">Market value from your last holdings file</div>`;
+  else if (t.mode === 'value') {
     const v = latestValuation(a.id);
     h += `<div class="small muted">${v ? `Value as on ${fmtDate(v.date, true)}` : 'No value entered yet'}</div><div style="margin-top:12px"><button class="btn" data-act="addValuation" data-id="${a.id}">Update value</button></div>`;
   }
   if (t.mode === 'ledger') h += `<div class="small muted">${a.balanceSetAt ? `You confirmed this balance on ${fmtDate(a.balanceSetAt, true)}` : a.statement?.periodTo ? `From statements up to ${fmtDate(a.statement.periodTo, true)}, plus later entries` : ''}</div>
     <div class="row" style="margin-top:12px"><button class="btn" style="flex:1" data-act="setBalance" data-id="${a.id}">Update balance</button><button class="btn ghost" style="flex:1" data-act="transferSheet" data-from="${a.id}">Transfer</button></div>`;
   h += `</div>`;
+  if (hasHold) h += holdingsCard(a);
   if (isLoanType(a.type)) h += a.loan ? loanCard(a) : `<div class="card row"><div class="grow small">Track this loan's EMIs automatically?</div><button class="btn ghost" data-act="editAccount" data-id="${a.id}">Set up EMI</button></div>`;
   const st = a.statement;
   if (a.type === 'credit_card' && st) {
@@ -319,7 +338,7 @@ function renderImport(m) {
   m.innerHTML = `
   <div class="card"><h2>Add statements</h2>
     <button class="btn wide" data-act="pickFile" data-kind="any">Upload statements</button>
-    <p class="small muted">Pick one or several PDFs or CSVs at once. Ledger recognises each one and sets up the accounts for you. Works now: HDFC credit cards, DNS Bank savings, any bank CSV. More banks and investment statements are coming. Password-protected files are fine.</p>
+    <p class="small muted">Pick one or several PDFs or CSVs at once. Ledger recognises each one and sets up the accounts for you. Works now: HDFC credit cards, DNS Bank savings, Zerodha holdings (Excel), any bank CSV or Excel export. CAS for mutual funds is coming. Password-protected files are fine.</p>
   </div>
   <div class="card"><h2>Bank SMS</h2>
     <button class="btn wide" data-act="pickFile" data-kind="inbox">Read SMS inbox file</button>
@@ -409,6 +428,25 @@ function queueDraft(imp) {
 }
 let pendingFile = null;
 
+async function handleXlsx(file) {
+  const sheets = await readXlsx(await file.arrayBuffer());
+  if (P.detectZerodhaHoldings(sheets)) {
+    const parsed = P.parseZerodhaHoldings(sheets);
+    const st = parsed.statement;
+    const match = D.accounts.find((a) => !a.archived && ((st.clientId && a.brokerId === st.clientId) || (!a.brokerId && a.institution === 'Zerodha' && a.type === 'stocks')));
+    queueDraft({ kind: 'holdings', fileName: file.name, parsed, accountId: match?.id || '_new', newName: 'Zerodha', newType: 'stocks', rows: [] });
+    return;
+  }
+  // Any other spreadsheet: treat the first sheet with data like a CSV (bank statement exports)
+  const sh = sheets.find((x) => x.rows.length > 2) || sheets[0];
+  if (!sh) return toast('That spreadsheet is empty.');
+  const rows = sh.rows.map((r) => Array.from(r, (c) => c == null ? '' : typeof c === 'number' && c > 20000 && c < 80000 && Number.isInteger(c) ? excelDate(c) : String(c).trim())).filter((r) => r.some((c) => c !== ''));
+  const map = P.guessCsvMapping(rows);
+  queueDraft({ kind: 'csv', fileName: file.name, csvRows: rows, map, accountId: D.accounts.find((a) => ['savings', 'current'].includes(a.type))?.id || '_new', newName: '', newType: 'savings', rows: [] });
+}
+// Excel stores dates as days since 1899-12-30
+function excelDate(n) { const d = new Date(Date.UTC(1899, 11, 30) + n * 864e5); return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`; }
+
 async function handleCsv(file) {
   const text = await file.text();
   const rows = P.parseCSV(text);
@@ -421,6 +459,7 @@ function txHash(accountId, t, n) { return [accountId, t.date, t.amount, squash(t
 
 function buildRows() {
   const imp = ui.imp;
+  if (imp.kind === 'holdings') { imp.rows = []; return; }
   let src;
   if (imp.kind === 'card' || imp.kind === 'bankpdf') src = imp.parsed.transactions;
   else { const r = P.csvToTransactions(imp.csvRows, imp.map); src = r.transactions; imp.warnings = r.warnings; }
@@ -502,9 +541,10 @@ function csvOpening(imp) {
 }
 
 function buildRowsFor(imp) { const prev = ui.imp; ui.imp = imp; buildRows(); ui.imp = prev; }
-function draftKey(imp) { return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
+function draftKey(imp) { if (imp.kind === 'holdings') return 'hold:' + (imp.parsed.statement.clientId || ''); return imp.kind === 'card' ? 'card:' + imp.parsed.statement.cardLast4 : imp.kind === 'bankpdf' ? 'bank:' + imp.parsed.statement.bank + ':' + imp.parsed.statement.last4 : 'csv:' + imp.fileName; }
 // Imports one draft. Returns { acc, added, upgraded } (throws on a problem the user must fix).
 function commitDraft(imp, createdInBatch = {}) {
+  if (imp.kind === 'holdings') return commitHoldings(imp, createdInBatch);
   let acc = accById(imp.accountId);
   if (!acc && createdInBatch[draftKey(imp)]) acc = createdInBatch[draftKey(imp)];
   if (!acc) {
@@ -579,6 +619,23 @@ function commitDraft(imp, createdInBatch = {}) {
   D.imports.push(rec);
   return { acc, added: rows.length - upgraded, upgraded };
 }
+function commitHoldings(imp, created) {
+  const st = imp.parsed.statement;
+  let acc = accById(imp.accountId) || created[draftKey(imp)];
+  if (!acc) {
+    acc = { id: uid(), name: (imp.newName || 'Zerodha').trim(), type: 'stocks', institution: 'Zerodha', last4: '', brokerId: st.clientId || '', currency: 'INR', createdAt: new Date().toISOString() };
+    D.accounts.push(acc); created[draftKey(imp)] = acc;
+  }
+  if (st.clientId && !acc.brokerId) acc.brokerId = st.clientId;
+  const importId = uid();
+  if (!acc.holdingsAsOn || (st.asOn || '') >= acc.holdingsAsOn) {
+    D.holdings = D.holdings.filter((h) => h.accountId !== acc.id).concat(imp.parsed.holdings.map((h) => ({ id: uid(), accountId: acc.id, importId, ...h, avg: h.avg * 100, price: h.price * 100, priceDate: st.asOn })));
+    acc.holdingsAsOn = st.asOn || todayIso();
+  }
+  D.valuations.push({ id: uid(), accountId: acc.id, date: st.asOn || todayIso(), value: st.value, note: 'Holdings file', at: Date.now() });
+  D.imports.push({ id: importId, accountId: acc.id, fileName: imp.fileName, kind: 'holdings', at: new Date().toISOString(), count: imp.parsed.holdings.length, period: st.asOn ? { from: st.asOn, to: st.asOn } : null });
+  return { acc, added: 0, upgraded: 0 };
+}
 function commitBatch() {
   const created = {}; let added = 0, upgraded = 0; const accs = new Set();
   // oldest statements first, so opening balances come from the earliest one
@@ -608,16 +665,17 @@ function renderBatch(m) {
     const key = draftKey(imp); const willReuse = !acc && created.has(key); if (!acc) created.add(key);
     const inc = imp.rows.filter((r) => r.include).length, dups = imp.rows.filter((r) => r.dup).length, sms = imp.rows.filter((r) => r.smsMatch).length;
     const st = imp.parsed?.statement;
-    const title = imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
-    const what = imp.kind === 'card' ? `${inr(st.totalDue, 0)} due ${fmtDate(st.dueDate)}` : imp.kind === 'bankpdf' ? `Balance ${inr(st.closingBalance, 0)}` : `${imp.rows.length} rows`;
+    const title = imp.kind === 'holdings' ? `Zerodha holdings${st.clientId ? ' · ' + st.clientId : ''}` : imp.kind === 'card' ? `Credit card ••${st.cardLast4}` : imp.kind === 'bankpdf' ? `${st.bank} ${st.accountType} ••${st.last4}` : imp.fileName;
+    const what = imp.kind === 'holdings' ? inr(st.value, 0) : imp.kind === 'card' ? `${inr(st.totalDue, 0)} due ${fmtDate(st.dueDate)}` : imp.kind === 'bankpdf' ? `Balance ${inr(st.closingBalance, 0)}` : `${imp.rows.length} rows`;
     const ok = imp.parsed?.recon?.ok;
     h += `<div class="card"><div class="row"><div class="grow"><div class="t" style="font-weight:600">${esc(title)}</div><div class="small muted">${esc(imp.fileName)}${st?.periodFrom ? ` · ${fmtDate(st.periodFrom)} to ${fmtDate(st.periodTo, true)}` : ''}</div></div><div class="num" style="font-weight:600">${what}</div></div>
       <p class="small" style="margin:10px 0 6px">${acc ? `Adds to <b>${esc(accShort(acc))}</b>` : willReuse ? `Adds to the new account above` : `<b>Creates a new account</b>${st?.last4 || st?.cardLast4 ? ' ••' + esc(st.last4 || st.cardLast4) : ''}:`}</p>
       ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
+      ${imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
       <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm earlier entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
       ${(imp.loans || []).map((l, j) => `<label class="row small" style="margin:6px 0"><input type="checkbox" class="chk" data-loan="${i}:${j}" ${l.create ? 'checked' : ''}><span>Payments go to loan account ••${esc(l.no.slice(-4))}. Add it as a home loan?</span></label>
         ${l.create ? `<input class="i num" data-loan-amt="${i}:${j}" inputmode="decimal" placeholder="Outstanding today (₹), optional" value="${esc(l.outstanding)}" style="margin-bottom:6px">` : ''}`).join('')}
-      <div class="row"><button class="chip" data-act="batchOpen" data-i="${i}">Review rows / change account</button><button class="chip" data-act="batchDrop" data-i="${i}">Remove</button></div></div>`;
+      `}<div class="row">${imp.kind === 'holdings' ? '' : `<button class="chip" data-act="batchOpen" data-i="${i}">Review rows / change account</button>`}<button class="chip" data-act="batchDrop" data-i="${i}">Remove</button></div></div>`;
   });
   h += `<button class="btn wide" data-act="commitBatch">Confirm and import</button><div style="height:10px"></div><button class="btn wide ghost" data-act="pickFile" data-kind="any">Add more files</button><div style="height:10px"></div><button class="btn wide ghost" data-act="cancelImport">Cancel</button>`;
   m.innerHTML = h;
@@ -1274,7 +1332,7 @@ const acts = {
   editValuation: (d) => { const v = D.valuations.find((x) => x.id === d.id); valuationSheet(v.accountId, v); },
   deleteValuation: (d) => { D.valuations = D.valuations.filter((v) => v.id !== d.id); save(); closeSheet(); render(); },
   togglePaid: (d) => { const a = accById(d.id); a.statement.paid = !a.statement.paid; save(); render(); },
-  pickFile: (d) => { const f = $('#file'); f.dataset.kind = d.kind; f.multiple = d.kind === 'any'; f.accept = d.kind === 'pdf' ? 'application/pdf,.pdf' : d.kind === 'inbox' ? 'text/plain,.txt' : d.kind === 'any' ? 'application/pdf,.pdf,text/csv,.csv' : 'text/csv,.csv,text/plain,.txt'; f.value = ''; f.click(); },
+  pickFile: (d) => { const f = $('#file'); f.dataset.kind = d.kind; f.multiple = d.kind === 'any'; f.accept = d.kind === 'pdf' ? 'application/pdf,.pdf' : d.kind === 'inbox' ? 'text/plain,.txt' : d.kind === 'any' ? 'application/pdf,.pdf,text/csv,.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv,.csv,text/plain,.txt'; f.value = ''; f.click(); },
   cancelImport: () => { ui.imp = null; ui.batch = null; render(); },
   commitBatch,
   commitImport: commitBatch,
@@ -1286,6 +1344,7 @@ const acts = {
     const i = D.imports.find((x) => x.id === d.id); const n = D.transactions.filter((x) => x.importId === i.id).length;
     if (!confirm(`Remove the ${n} transactions added by this import?`)) return;
     D.transactions = D.transactions.filter((x) => x.importId !== i.id); D.imports = D.imports.filter((x) => x.id !== i.id);
+    if (i.kind === 'holdings') D.holdings = D.holdings.filter((h) => h.importId !== i.id);
     const a = accById(i.accountId);
     if (a?.statement && i.statement && a.statement.statementDate === i.statement.statementDate) {
       const prev = D.imports.filter((x) => x.accountId === a.id && x.statement).sort((p, q) => q.statement.statementDate.localeCompare(p.statement.statementDate))[0];
@@ -1544,6 +1603,7 @@ async function processQueue() {
     toast('Reading ' + file.name + '…');
     try {
       if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') await handlePdf(file);
+      else if (/\.xlsx$/i.test(file.name)) await handleXlsx(file);
       else await handleCsv(file);
     } catch (err) { console.error(err); toast('Could not read ' + file.name); }
     if ($('#sheet').classList.contains('on')) return; // a password prompt is open; resumes after it
