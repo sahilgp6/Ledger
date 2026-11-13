@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.4.4';
+const APP_VERSION = '1.4.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -606,6 +606,22 @@ function contactLink(val) {
   if (/^\+?[\d][\d\s-]{6,}$/.test(v)) return `<a href="tel:${esc(v.replace(/[\s-]/g, ''))}">${esc(v)}</a>`;
   return esc(v);
 }
+// Escalation tiles: people grouped by level, one tile per team, with Mail / Call / WhatsApp buttons
+const ESC_NOTE = { 1: 'Start here', 2: 'If level 1 does not resolve it', 3: 'Last step' };
+const ESC_TONE = { 1: 'sage', 2: 'sand', 3: 'clay' };
+const IC_MAIL = '<path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/>';
+const IC_CALL = '<path d="M6.6 3.5 9 3l1.6 4-2 1.3a11 11 0 0 0 5.1 5.1l1.3-2 4 1.6-.5 2.4a2 2 0 0 1-2 1.6A15.5 15.5 0 0 1 5 5.5a2 2 0 0 1 1.6-2Z"/>';
+const IC_WA = '<path d="M4 20l1.3-3.9A8 8 0 1 1 8 18.8Z"/><path d="M9.2 9.4c.3 1.9 1.6 3.4 3.6 4.2l1-.9 1.6.8"/>';
+const icb = (href, ic, label, ext) => `<a class="icb" href="${esc(href)}" aria-label="${label}"${ext ? ' target="_blank" rel="noopener"' : ''}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ic}</svg></a>`;
+function escTiles(people) {
+  const levels = [...new Set(people.map((p) => p.level || 1))].sort((a, b) => a - b);
+  return vhead('Escalation') + levels.map((l) => `<div class="esc-lvl"><span class="esc-badge tone-${ESC_TONE[l] || 'grey'}">Level ${l}</span><span class="small muted">${ESC_NOTE[l] || ''}</span></div>
+    <div class="esc-row">${people.filter((p) => (p.level || 1) === l).map((p) => {
+      const tel = p.phone ? p.phone.replace(/[^\d+]/g, '') : '';
+      return `<div class="esc-tile"><div class="esc-team">${esc(p.team || '')}</div><div class="esc-name">${esc(p.name || '')}</div>${p.phone ? `<div class="small muted">${esc(p.phone)}</div>` : ''}
+        <div class="esc-acts">${p.email ? icb('mailto:' + p.email, IC_MAIL, 'Email ' + p.name) : ''}${tel ? icb('tel:' + tel, IC_CALL, 'Call ' + p.name) : ''}${p.whatsapp ? icb('https://wa.me/' + p.whatsapp.replace(/[^\d]/g, ''), IC_WA, 'WhatsApp ' + p.name, true) : ''}</div></div>`;
+    }).join('')}</div>`).join('');
+}
 function vaultOpen(id) {
   const v = D.vault.find((x) => x.id === id); if (!v) return;
   const row = (k, val) => val ? `<tr><td class="muted">${k}</td><td>${val}</td></tr>` : '';
@@ -616,7 +632,8 @@ function vaultOpen(id) {
     <table class="t">${row('Insurer', esc(v.provider || ''))}${row('TPA', esc(v.tpa || ''))}${row('Policy no.', esc(v.policyNo || ''))}${row('Covers', esc(v.holder || ''))}${row('Cover', esc(v.cover || ''))}${row('Premium', v.premium ? inr(v.premium, 0) + (v.freq ? ' ' + (per[v.freq] || '') : '') : esc(v.premiumNote || ''))}${row('Next due', v.nextDue ? fmtDate(v.nextDue, true) : '')}${row('Nominee', esc(v.nominee || ''))}</table>
     ${v.notes ? `<p class="small" style="margin-top:12px">${esc(v.notes)}</p>` : ''}
     ${v.claim?.length ? vhead('How to claim') + `<ol class="small" style="padding-left:18px;line-height:1.5;margin:0">${v.claim.map((c) => `<li>${esc(c)}</li>`).join('')}</ol>` : ''}
-    ${v.contacts?.length ? vhead('Contacts') + `<table class="t">${v.contacts.map(([k, val]) => row(esc(k), contactLink(val))).join('')}</table>` : ''}
+    ${v.people?.length ? escTiles(v.people) : ''}
+    ${v.contacts?.length ? vhead(v.people?.length ? 'Other contacts' : 'Contacts') + `<table class="t">${v.contacts.map(([k, val]) => row(esc(k), contactLink(val))).join('')}</table>` : ''}
     ${vhead('Documents')}
     ${receiptThumbs(files) || '<p class="small muted" style="margin:0 0 8px">None yet: add the policy PDF, e-card or schedule.</p>'}
     <div class="row"><button class="btn ghost" style="flex:1" data-act="vaultAttach" data-id="${v.id}">📎 Attach</button><button class="btn ghost" style="flex:1" data-act="vaultEdit" data-id="${v.id}">Edit</button></div>`);
@@ -2335,6 +2352,11 @@ const acts = {
         const ex = D.vault.find((x) => x.title === v.title);
         if (!ex) { D.vault.push({ id: uid(), files: [], ...v }); n++; continue; }
         // Already there: add any new contacts and claim steps, keep everything else as you edited it
+        if (v.people) {
+          if (JSON.stringify(ex.people || []) !== JSON.stringify(v.people)) { ex.people = v.people.map((p) => ({ ...p })); n++; }
+          const inTiles = new Set(v.people.flatMap((p) => [p.email, p.phone, p.whatsapp && 'WhatsApp ' + p.whatsapp].filter(Boolean)));
+          ex.contacts = (ex.contacts || []).filter((c) => !inTiles.has(c[1]) || (v.contacts || []).some((y) => y[1] === c[1]));
+        }
         if (v.contacts?.length) { // file order and labels win; contacts you added by hand stay at the end
           const old = ex.contacts || [], vals = new Set(v.contacts.map((c) => c[1]));
           for (const c of v.contacts) { const y = old.find((y) => y[1] === c[1]); if (!y || y[0] !== c[0]) n++; }

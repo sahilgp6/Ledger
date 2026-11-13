@@ -104,6 +104,16 @@ table.t{width:100%;border-collapse:collapse;font-size:0.875rem}
 table.t td,table.t th{padding:6px 4px;text-align:left;border-bottom:1px solid var(--line)}
 table.t th{font-size:0.75rem;color:var(--muted);font-weight:600}
 table.t td.r,table.t th.r{text-align:right}
+.esc-lvl{display:flex;align-items:center;gap:10px;margin:14px 0 8px}
+.esc-badge{font-size:.75rem;font-weight:600;padding:3px 10px;border-radius:99px;letter-spacing:.02em}
+.esc-row{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -18px;padding:2px 18px 6px;scroll-padding:0 18px;scrollbar-width:none}
+.esc-row::-webkit-scrollbar{display:none}
+.esc-tile{flex:0 0 46%;min-width:150px;scroll-snap-align:start;background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:2px}
+.esc-team{font-size:.7rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--gold-ink)}
+.esc-name{font-family:Fraunces,serif;font-size:1.05rem;line-height:1.25;margin-bottom:2px}
+.esc-acts{display:flex;gap:8px;margin-top:auto;padding-top:10px}
+.icb{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--brand-2);color:var(--brand);transition:transform .15s var(--ease)}
+.icb:active{transform:scale(.92)}
 table.t a{color:var(--brand);text-decoration:none;font-weight:500;overflow-wrap:anywhere}
 .chk{width:22px;height:22px;accent-color:var(--brand);flex:none}
 .dup{opacity:.45}
