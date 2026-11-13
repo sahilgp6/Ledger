@@ -1,0 +1,35 @@
+name: Stock prices
+# Publishes NSE prices to the "prices" branch so Ledger can read them.
+# Prices every listed NSE stock and ETF: no holdings are stored in this repo.
+on:
+  schedule:
+    - cron: '*/15 3-10 * * 1-5'   # every 15 min, 08:30-16:15 IST, Mon-Fri
+    - cron: '30 11 * * 1-5'       # once after close
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['tools/fetch_prices.py', '.github/workflows/prices.yml']
+permissions:
+  contents: write
+concurrency:
+  group: prices
+  cancel-in-progress: true
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get previous prices
+        run: |
+          git fetch origin prices --depth=1 && git show origin/prices:prices.json > /tmp/prev.json || echo '{}' > /tmp/prev.json
+      - name: Fetch prices
+        run: python3 tools/fetch_prices.py /tmp/prices.json /tmp/prev.json
+      - name: Publish
+        run: |
+          cd /tmp && rm -rf pub && mkdir pub && cd pub
+          git init -q -b prices
+          cp /tmp/prices.json .
+          git -c user.name="ledger-prices" -c user.email="actions@users.noreply.github.com" add prices.json
+          git -c user.name="ledger-prices" -c user.email="actions@users.noreply.github.com" commit -qm "Prices $(date -u +%FT%TZ)"
+          git push -fq "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" prices
