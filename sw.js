@@ -1,10 +1,11 @@
 // Offline cache for the app shell. Your financial data is NOT here: it lives encrypted in IndexedDB.
 // Cache names are prefixed so this never touches caches of other apps on the same github.io site.
-const VERSION = 'ledger-app-v0.9.9';
+const VERSION = 'ledger-app-v1.0.0';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './js/app.js', './js/store.js', './js/parsers.js', './js/rules.js', './js/sms.js', './js/planner.js', './js/ai.js', './js/xlsx.js', './js/llm-worker.js',
   './vendor/pdf.min.mjs', './vendor/pdf.worker.min.mjs',
+  './fonts/inter-latin-wght-normal.woff2', './fonts/inter-latin-ext-wght-normal.woff2', './fonts/fraunces-latin-opsz-normal.woff2', './fonts/fraunces-latin-ext-opsz-normal.woff2',
   './cloudflare-worker.js', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
 ];
 self.addEventListener('install', (e) => {

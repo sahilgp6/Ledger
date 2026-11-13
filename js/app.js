@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '0.9.9';
+const APP_VERSION = '1.0.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -268,13 +268,13 @@ function chartCard(key, opts = {}) {
   return `<div class="chart" data-chart="${key}">
     <div class="chg num ${up ? 'in' : 'bad'}" data-chg>${chgTxt(chg, first)} <span class="muted small">${RANGE_WORD[range]}</span></div>
     <div class="cwrap"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Chart, ${RANGE_WORD[range]}">
-      <defs><linearGradient id="g-${key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".22"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      <defs><linearGradient id="g-${key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".14"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
       <line x1="0" x2="${W}" y1="${yOf(first).toFixed(1)}" y2="${yOf(first).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
       <path d="${line}L${W},${H}L0,${H}Z" fill="url(#g-${key})"/>
-      <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      <path d="${line}" ${ui.draw ? 'class="draw" pathLength="1"' : ''} fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
     </svg><i class="cur" hidden></i></div>
     <div class="row tiny muted" style="justify-content:space-between;margin-top:2px"><span>${esc(pts[0].label)}</span><span data-at></span><span>${range === '1D' ? 'Now' : 'Today'}</span></div>
-    <div class="chips rng">${RANGES.map(([r]) => `<button class="chip ${r === range ? 'on' : ''}" data-act="chartRange" data-key="${key}" data-r="${r}">${r}</button>`).join('')}</div></div>`;
+    <div class="chips rng rngu">${RANGES.map(([r]) => `<button class="chip ${r === range ? 'on' : ''}" data-act="chartRange" data-key="${key}" data-r="${r}" aria-pressed="${r === range}">${r}</button>`).join('')}<span class="u" style="width:${100 / RANGES.length}%;transform:translateX(${RANGES.findIndex((x) => x[0] === range) * 100}%)"></span></div></div>`;
 }
 // Touch or drag across a chart to read the value and change at that point
 function chartTouch(e) {
@@ -485,8 +485,29 @@ function typeOptions(selected) {
 function setTop(title, { back, action } = {}) {
   $('#top').innerHTML = (back ? `<button class="back" data-act="${back}">‹ Back</button>` : '') + `<h1>${esc(title)}</h1>` + (action || '');
 }
+// Haptic tick: iOS 18+ plays one when a switch control toggles; elsewhere this does nothing
+let hapEl = null;
+function haptic() {
+  try {
+    if (navigator.vibrate) { navigator.vibrate(8); return; }
+    if (!hapEl) { hapEl = document.createElement('label'); hapEl.setAttribute('aria-hidden', 'true'); hapEl.style.cssText = 'position:fixed;left:-99px;width:1px;height:1px;overflow:hidden'; hapEl.innerHTML = '<input type="checkbox" switch>'; document.body.appendChild(hapEl); }
+    hapEl.click();
+  } catch { /* no haptics here */ }
+}
+// A short check mark for things that are done
+function done(msg) {
+  haptic();
+  document.getElementById('done')?.remove();
+  const el = document.createElement('div'); el.id = 'done'; el.className = 'pop'; el.setAttribute('role', 'status');
+  el.innerHTML = `<svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="21" fill="var(--brand-bg)"/><path class="tick" d="M13 22.5l6 6 12-13" fill="none" stroke="var(--on-brand)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${esc(msg)}</span>`;
+  document.body.appendChild(el); setTimeout(() => el.remove(), 1400);
+}
 function render() {
   if (!D) return;
+  const page = ui.view?.page ? ui.view.page + (ui.view.id || '') : ui.tab;
+  const main = $('#main');
+  if (page !== ui.lastPage) { ui.lastPage = page; ui.draw = true; main.classList.remove('anim'); void main.offsetWidth; main.classList.add('anim'); clearTimeout(ui.animT); ui.animT = setTimeout(() => { main.classList.remove('anim'); ui.draw = false; }, 900); }
+  $('#app').classList.toggle('masked', !!D.settings.masked);
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const m = $('#main');
   if (ui.view?.page === 'account') return renderAccount(m, ui.view.id);
@@ -509,7 +530,7 @@ function txItem(x, showAcc = true) {
 const hasPriced = () => D.holdings.some((h) => h.qty != null);
 const refreshBtn = `<button class="btn ghost" style="min-height:36px;padding:6px 12px" data-act="refreshAll" aria-label="Refresh prices">🔄</button>`;
 function renderHome(m) {
-  setTop('Ledger', { action: hasPriced() ? refreshBtn : '' });
+  setTop('', { action: hasPriced() ? refreshBtn : '' });
   if (!D.accounts.length) {
     m.innerHTML = `<div class="card"><h2>Welcome</h2><p>Everything you add stays on this phone, encrypted. Start with a statement.</p>
       <button class="btn wide" data-act="tab" data-tab="import">Import a statement</button>
@@ -531,8 +552,13 @@ function renderHome(m) {
   const recent = [...D.transactions].filter((x) => visIds.has(x.accountId)).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || '')).slice(0, 5);
   const backupOld = D.transactions.length && (!D.settings.lastBackupAt || (Date.now() - new Date(D.settings.lastBackupAt)) > 30 * 864e5);
 
-  m.innerHTML = `${whoSwitch()}
-  <div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2>
+  const hr = new Date().getHours(), me = D.members.find((x) => x.id === 'me')?.name || '';
+  const todayOut = D.transactions.filter((x) => x.date === todayIso() && x.amount < 0 && visIds.has(x.accountId) && !['transfer', 'income'].includes(catById(x.categoryId)?.kind)).reduce((t, x) => t - x.amount, 0);
+  const nextDue = [...dues.map((a) => ({ t: 'card due', d: a.statement.dueDate })), ...(D.bills || []).filter((b) => b.next && daysUntil(b.next) >= 0).map((b) => ({ t: b.name.toLowerCase().includes('emi') ? b.name : b.name + ' due', d: b.next }))].sort((p, q) => p.d.localeCompare(q.d))[0];
+  const summary = [todayOut ? `<span class="money">${inr(todayOut, 0)}</span> spent today` : 'Nothing spent today', nextDue ? `${esc(nextDue.t)} ${dueWord(nextDue.d)}` : ''].filter(Boolean).join(' · ');
+  m.innerHTML = `<div class="hello"><div class="d">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase()}</div><div class="g">Good ${hr < 12 ? 'morning' : hr < 17 ? 'afternoon' : 'evening'}${me && me !== 'Me' ? ', ' + esc(me) : ''}</div><div class="s">${summary}</div></div>
+  ${whoSwitch()}
+  <div class="card"><h2><button class="eye" data-act="toggleMask" aria-pressed="${!!D.settings.masked}" aria-label="${D.settings.masked ? 'Show amounts' : 'Hide amounts'}">Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">${D.settings.masked ? '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.4 4.5-1.1"/>' : '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'}</svg></button></h2>
     <div class="big num" data-nwval>${inr(nw.net, 0)}</div>
     ${chartCard('nw')}
     ${mt ? `<p class="small" style="margin:6px 0 0">Stocks today: <b class="num ${mt.chg >= 0 ? 'in' : 'bad'}">${chgTxt(mt.chg, mt.base)}</b></p>` : ''}
@@ -1910,7 +1936,7 @@ const acts = {
   billSheet: (d) => { ui.pendingLast = null; billSheet(d.id ? D.bills.find((b) => b.id === d.id) : null, d.kind || 'reminder'); },
   subAdd: (d) => { const f = ui.found?.[+d.i]; if (!f) return; billSheet(null, 'subscription', { name: f.name, amount: f.amount, every: f.every, next: f.next, accountId: f.accountId, match: f.name.toLowerCase().split(/\s+/).slice(0, 2).join(' '), remind: 1 }); },
   subNo: (d) => { D.settings.subDismissed = [...new Set([...(D.settings.subDismissed || []), d.key])]; save(); render(); },
-  billDone: (d) => { const b = D.bills.find((x) => x.id === d.id); if (!b) return; b.lastPaid = todayIso(); if (b.every === 'once') D.bills = D.bills.filter((x) => x.id !== b.id); else { const day = b.day || +b.next.slice(8); do { b.next = advance(b.next, b.every, day); } while (b.next <= todayIso()); } save(); closeSheet(); render(); toast(b.every === 'once' ? 'Done and removed' : `Next: ${fmtDate(b.next, true)}`); },
+  billDone: (d) => { const b = D.bills.find((x) => x.id === d.id); if (!b) return; b.lastPaid = todayIso(); if (b.every === 'once') D.bills = D.bills.filter((x) => x.id !== b.id); else { const day = b.day || +b.next.slice(8); do { b.next = advance(b.next, b.every, day); } while (b.next <= todayIso()); } save(); closeSheet(); render(); done(b.every === 'once' ? 'Done' : `Next: ${fmtDate(b.next)}`); },
   billDelete: (d) => { D.bills = D.bills.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
   billCal: async (d) => {
     const b = D.bills.find((x) => x.id === d.id); if (!b) return;
@@ -1919,7 +1945,7 @@ const acts = {
     if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
     const a = document.createElement('a'); a.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics); a.download = `${name}.ics`; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
   },
-  tab: (d) => { ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
+  tab: (d) => { if (ui.tab !== d.tab) haptic(); ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
   closeSheet, closeView: () => { ui.view = null; render(); },
   month: (d) => { ui.month = addMonths(ui.month, +d.d); render(); },
   showUncat: () => { ui.tab = 'tx'; ui.cat = '_none'; ui.month = ymOf(todayIso()); ui.view = null; render(); },
@@ -1990,7 +2016,8 @@ const acts = {
     if (!workerCode) return toast('Still loading, tap again in a second');
     navigator.clipboard.writeText(workerCode).then(() => toast('Relay code copied. Paste it in Cloudflare.')).catch(() => toast('Could not copy. Open sahilgp6.github.io/Ledger/cloudflare-worker.js and copy it from there.', 5000));
   },
-  chartRange: (d) => { (D.settings.chartRange ||= {})[d.key] = d.r; save(); render(); },
+  chartRange: (d) => { (D.settings.chartRange ||= {})[d.key] = d.r; haptic(); ui.draw = true; save(); render(); ui.draw = false; },
+  toggleMask: () => { D.settings.masked = !D.settings.masked; haptic(); save(); render(); },
   relayOff: () => { D.settings.priceRelay = ''; save(); closeSheet(); render(); },
   refreshAll: async (d, el) => {
     if (el.disabled) return; el.disabled = true; el.style.opacity = '.5';
