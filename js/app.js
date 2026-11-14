@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.8';
+const APP_VERSION = '1.7.9';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -869,9 +869,10 @@ function safeToSpend() {
   const cardDue = cards.reduce((t, x) => t + Math.max(0, -balance(x)), 0);
   const loans = D.accounts.filter((x) => x.loan?.emi && !x.archived && ownerOf(x) !== 'other');
   const emiList = loans.filter((x) => { const nd = x.loan.nextDue || ''; return !nd || (nd >= today && nd <= end); }).map((x) => ({ name: x.name, amount: Math.round(x.loan.emi * (shareOf(x) || 1)), next: x.loan.nextDue }));
-  const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= end && !/emi/i.test(x.name));
+  // Bills due up to and including payday are set aside: a bill due the day salary lands is still paid from this cycle
+  const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= next && !/emi/i.test(x.name));
   const bills = billList.reduce((t, x) => t + x.amount, 0), emi = emiList.reduce((t, x) => t + x.amount, 0);
-  const laterBill = (D.bills || []).filter((x) => x.amount && x.next && x.next > end && !/emi/i.test(x.name)).sort((p, q) => p.next.localeCompare(q.next))[0];
+  const laterBill = (D.bills || []).filter((x) => x.amount && x.next && x.next > next && !/emi/i.test(x.name)).sort((p, q) => p.next.localeCompare(q.next))[0];
   const goal = D.settings.saveTarget || 0;
   const left = bal + extra - (o.card ? cardDue : 0) - (o.bills ? bills : 0) - (o.emi ? emi : 0) - (o.goal ? goal : 0);
   const daysLeft = Math.max(1, daysUntil(next));
@@ -886,7 +887,7 @@ function safeToSpend() {
   const spentFrom = (f, t) => spendIn(ids, f, t);
   const spentToday = spentFrom(today, today);
   const cycKey = `${cyc && !cyc.stale ? cyc.from : ymOf(today)}|${next}`;
-  const setKey = JSON.stringify([acct.id, extra, goal, o, o.bills ? (D.bills || []).filter((x) => x.amount && ((x.next && x.next <= end) || (x.lastPaid && cyc && !cyc.stale && x.lastPaid >= cyc.from))).map((x) => x.id).sort() : 0, o.emi ? emi : 0]);
+  const setKey = JSON.stringify([acct.id, extra, goal, o, o.bills ? (D.bills || []).filter((x) => x.amount && ((x.next && x.next <= next) || (x.lastPaid && cyc && !cyc.stale && x.lastPaid >= cyc.from))).map((x) => x.id).sort() : 0, o.emi ? emi : 0]);
   let m2 = D.settings.safeMeter;
   // Money moved in (salary, a transfer from another account) since the meter started resets it, so the new money counts
   const ins = (from) => D.transactions.filter((x) => x.accountId === acct.id && x.amount > 0 && x.date >= from && ['transfer', 'income'].includes(catById(x.categoryId)?.kind)).map((x) => x.id);
