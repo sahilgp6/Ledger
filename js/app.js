@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -995,19 +995,25 @@ function cardPlanCard() {
       <div class="${c.tone !== 'ok' ? 'warn' : ''}"><span>At this pace</span><b class="num">${c.pace == null ? '…' : inr(c.pace, 0)}</b><span>${c.pace == null ? 'after a few days' : c.pace > c.target ? inr(c.pace - c.target, 0) + ' over' : inr(c.target - c.pace, 0) + ' under'}</span></div></div>
   </button>`;
 }
-function cardPlanSheet() {
+function cardPlanSheet() { openSheet(cardPlanHtml()); }
+// Typing a salary or UPI amount updates the sums in place, so a tap on a button right after still lands
+function cardPlanRefresh() {
+  const tmp = document.createElement('div'); tmp.innerHTML = cardPlanHtml();
+  for (const sel of ['.cp-note', '.cp-goalupi', '.cp-result', '.cp-oncard']) { const a = $('#sheet ' + sel), b = tmp.querySelector(sel); if (a && b) a.replaceWith(b); }
+}
+function cardPlanHtml() {
   const c = cardPlan();
   const row = (x) => `<label class="item" style="padding:10px 14px"><div class="grow">${esc(x.name)}<div class="s">${esc(x.note)}${x.by === 'card' ? ' · on the card, stays inside the target' : ''}</div></div><span class="num" style="margin-right:10px;${x.on ? '' : 'opacity:.4;text-decoration:line-through'}${x.by === 'card' ? ';color:var(--muted)' : ''}">${x.by === 'card' ? '' : '− '}${inr(x.amount, 0)}</span>${x.own ? `<button type="button" class="link small" style="margin-right:8px" data-act="cpFixedSheet" data-id="${x.id}">Edit</button>` : ''}<input type="checkbox" switch data-cpoff="${esc(x.key)}" ${x.on ? 'checked' : ''}></label>`;
-  openSheet(`<h3>Plan the card bill</h3><p class="small muted" style="margin-top:-6px">For card spending from ${fmtDate(c.start, true).replace(/ \d{4}$/, '')}, billed on ${fmtDate(c.next, true)}.</p>
+  return (`<h3>Plan the card bill</h3><p class="small muted" style="margin-top:-6px">For card spending from ${fmtDate(c.start, true).replace(/ \d{4}$/, '')}, billed on ${fmtDate(c.next, true)}.</p>
     <div class="split"><label class="f"><span>Expected salary (₹)</span><input class="i num" id="cpSalary" inputmode="decimal" placeholder="e.g. 180000" value="${c.salaryGuessed ? '' : c.salary / 100}"></label>
       <label class="f"><span>Money for UPI (₹)</span><input class="i num" id="cpUpi" inputmode="decimal" placeholder="${c.upiGuessed && c.upi ? c.upi / 100 : '0'}" value="${c.upiGuessed ? '' : c.upi / 100}"></label></div>
-    <p class="small muted" style="margin:-6px 0 12px">${c.salaryGuessed && c.salary ? `Using your last salary, ${inr(c.salary, 0)}, until you type one. ` : ''}${c.upiGuessed && c.upi ? `UPI uses your usual ${inr(c.upi, 0)} a month from ${esc(safeAccount()?.name || 'your bank')} until you type an amount.` : 'UPI: Ranjeet and anything else you pay from the bank, not the card.'}</p>
+    <p class="small muted cp-note" style="margin:-6px 0 12px">${c.salaryGuessed && c.salary ? `Using your last salary, ${inr(c.salary, 0)}, until you type one. ` : ''}${c.upiGuessed && c.upi ? `UPI uses your usual ${inr(c.upi, 0)} a month from ${esc(safeAccount()?.name || 'your bank')} until you type an amount.` : 'UPI: Ranjeet and anything else you pay from the bank, not the card.'}</p>
     <div class="day"><span>Fixed costs</span></div>
     <div class="list" style="margin-bottom:12px">${c.fixed.map(row).join('')}<button class="item" data-act="cpFixedSheet"><div class="grow" style="color:var(--brand)">+ Add a fixed cost</div></button></div>
-    <div class="list" style="margin-bottom:12px"><div class="item" style="padding:10px 14px"><div class="grow">Savings goal</div><span class="num">${c.goal ? '− ' + inr(c.goal, 0) : 'not set'}</span></div>
+    <div class="list cp-goalupi" style="margin-bottom:12px"><div class="item" style="padding:10px 14px"><div class="grow">Savings goal</div><span class="num">${c.goal ? '− ' + inr(c.goal, 0) : 'not set'}</span></div>
       <div class="item" style="padding:10px 14px"><div class="grow">Money for UPI</div><span class="num">− ${inr(c.upi, 0)}</span></div></div>
     <div class="cp-result"><div><span>CARD BILL TARGET</span><small>${inr(c.salary, 0)} − ${inr(c.bank, 0)} fixed − ${inr(c.goal, 0)} goal − ${inr(c.upi, 0)} UPI</small></div><b class="num">${inr(c.target, 0)}</b></div>
-    ${c.onCard ? `<p class="small muted">Includes ${inr(c.onCard, 0)} of subscriptions already on the card.</p>` : ''}
+    <p class="small muted cp-oncard">${c.onCard ? `Includes ${inr(c.onCard, 0)} of subscriptions already on the card.` : ''}</p>
     <label class="f" style="margin-top:12px"><span>Card statement made on</span><select class="i" id="cpStmt">${[1, 2, 3, 4, 5, 10, 15, 20, 25].map((d) => `<option value="${d}" ${d === (cplan().stmtDay || 2) ? 'selected' : ''}>the ${ordinal(d)} of the month</option>`).join('')}</select></label>`);
 }
 function cpFixedSheet(id) {
@@ -3825,14 +3831,16 @@ window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recap
 
 // Savings goal and AI style on the Summary sheet: saved as you leave each box
 document.addEventListener('change', (e) => {
-  if (['cpSalary', 'cpUpi'].includes(e.target.id)) { const v = parseRupees(e.target.value), k = e.target.id === 'cpSalary' ? 'salary' : 'upi'; if (e.target.value.trim() === '') delete cplan()[k]; else if (v != null && v >= 0) cplan()[k] = v; save(); render(); const t = $('#sheet').scrollTop; cardPlanSheet(); $('#sheet').scrollTop = t; return; }
+  if (['cpSalary', 'cpUpi'].includes(e.target.id)) { const v = parseRupees(e.target.value), k = e.target.id === 'cpSalary' ? 'salary' : 'upi'; if (e.target.value.trim() === '') delete cplan()[k]; else if (v != null && v >= 0) cplan()[k] = v; save(); render(); cardPlanRefresh(); return; }
   if (e.target.id === 'cpStmt') { cplan().stmtDay = +e.target.value; save(); render(); cardPlanSheet(); return; }
   if (e.target.dataset?.cpoff) { const k = e.target.dataset.cpoff; if (e.target.checked) delete cplan().off[k]; else cplan().off[k] = true; save(); render(); const t = $('#sheet').scrollTop; cardPlanSheet(); $('#sheet').scrollTop = t; return; }
-  if (e.target.id === 'safeExtra') { const v = parseRupees(e.target.value); D.settings.safeExtra = v && v > 0 ? v : 0; save(); render(); safeSheet(); return; }
-  if (e.target.id === 'safeAcct') { D.settings.safeAcct = e.target.value; save(); render(); safeSheet(); return; }
+  // Redraw after any tap that caused this change has landed, and only if the same sheet is still open
+  const later = (sel, fn) => setTimeout(() => { if ($('#sheet ' + sel)) { const t = $('#sheet').scrollTop; fn(); $('#sheet').scrollTop = t; } }, 0);
+  if (e.target.id === 'safeExtra') { const v = parseRupees(e.target.value); D.settings.safeExtra = v && v > 0 ? v : 0; save(); render(); later('#safeExtra', safeSheet); return; }
+  if (e.target.id === 'safeAcct') { D.settings.safeAcct = e.target.value; save(); render(); later('#safeAcct', safeSheet); return; }
   if (e.target.dataset?.safe) { safeOpts()[e.target.dataset.safe] = e.target.checked; save(); render(); const t = $('#sheet').scrollTop; safeSheet(); $('#sheet').scrollTop = t; return; }
-  if (e.target.id === 'safeGoal') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); render(); safeSheet(); return; }
-  if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); acts.sumRefresh(); }
+  if (e.target.id === 'safeGoal') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); render(); later('#safeGoal', safeSheet); return; }
+  if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); ui.sumText = aiSummary(ui.sumPeriod); setTimeout(() => { if ($('#sheet #sumTarget')) acts.sumRefresh(); }, 0); }
   else if (e.target.id === 'sumAll') { D.settings.sumAll = e.target.checked; save(); acts.sumRefresh(); }
-  else if (e.target.id === 'sumStyle') { D.settings.aiStyle = e.target.value.trim().slice(0, 300); save(); acts.sumRefresh(); }
+  else if (e.target.id === 'sumStyle') { D.settings.aiStyle = e.target.value.trim().slice(0, 300); save(); ui.sumText = aiSummary(ui.sumPeriod); setTimeout(() => { if ($('#sheet #sumStyle')) acts.sumRefresh(); }, 0); }
 });
