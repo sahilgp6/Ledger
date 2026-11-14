@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.9.1';
+const APP_VERSION = '1.9.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1012,6 +1012,41 @@ function cardPlan() {
   const tone = billed > target ? 'bad' : pace != null && pace > target * 1.05 ? 'warn' : 'ok';
   return { owed, emiNext, billed, salary, salaryGuessed: p.salary == null, upi, upiGuessed: p.upi == null, goal, fixed, bank, onCard, target, cards, start, next, spent, days, gone, daysLeft, perDay, pace, tone };
 }
+// Statements waiting to be imported. Not tied to a fixed date: once the next statement should exist, the reminder
+// shows and stays until a statement covering that period is imported (or you dismiss it for that period).
+function statementsDue() {
+  const today = todayIso(), out = [];
+  const off = D.settings.stmtNudgeOff || {};
+  for (const a of D.accounts) {
+    if (a.archived || typeOf(a.type).mode !== 'ledger' || a.type === 'cash' || ownerOf(a) === 'other') continue;
+    const rows = D.transactions.filter((x) => x.accountId === a.id && x.importId);
+    if (!rows.length && !a.statement) continue; // never imported: nothing to remind about
+    let due = null, label = '';
+    if (a.type === 'credit_card') {
+      const last = a.statement?.statementDate || a.statement?.periodTo || rows.reduce((m2, x) => (x.date > m2 ? x.date : m2), '');
+      if (!last) continue;
+      const sd = cplan().stmtDay || +last.slice(8, 10), nm = addMonths(ymOf(last), 1);
+      due = `${nm}-${String(Math.min(sd, dim(nm))).padStart(2, '0')}`;
+      label = `statement from ${fmtDate(due, true).replace(/ \d{4}$/, '')}`;
+    } else {
+      const last = [a.statement?.periodTo || '', ...rows.map((x) => x.date)].sort().pop();
+      if (!last) continue;
+      const nm = addMonths(ymOf(last), 1);
+      due = `${nm}-01`;
+      label = `from ${fmtDate(isoAdd(last, 1), true).replace(/ \d{4}$/, '')}`;
+    }
+    const o = off[a.id]; // Not now hides it until the 1st of next month
+    if (today < due || (o && o.due === due && today < o.until)) continue;
+    out.push({ a, due, label });
+  }
+  return out;
+}
+function statementsDueCard() {
+  const list = statementsDue(); if (!list.length) return '';
+  return `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Statements to import</h2><button class="link small" data-act="stmtNudgeOff">Not now</button></div>
+    <div class="small" style="margin:6px 0 10px">${list.map((x) => `${esc(accShort(x.a))} <span class="muted">· ${esc(x.label)}</span>`).join('<br>')}</div>
+    <button class="btn wide ghost" data-act="tab" data-tab="import">Import when it arrives</button></div>`;
+}
 function cardPlanCard() {
   const c = cardPlan();
   if (!c.cards.length) return '';
@@ -1836,6 +1871,7 @@ function renderHome(m) {
   ${D.transactions.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAsk"><div class="ico">AI</div><div class="grow"><div class="t">Ask Ledger</div><div class="s">“How can I spend less?”</div></div><div class="muted">›</div></button>` : ''}
   ${upcomingCard()}
   ${D.inbox.length ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="tab" data-tab="import"><div class="grow"><div class="t">${D.inbox.length} SMS need attention</div><div class="s">Assign an account or enter them by hand</div></div><div class="muted">›</div></button>` : ''}
+  ${statementsDueCard()}
   ${backupOld ? `<div class="card row"><div class="grow small"><b>Weekly backup.</b> ${D.settings.lastBackupAt ? 'Last one ' + fmtDate(D.settings.lastBackupAt.slice(0, 10)) + '.' : 'Not backed up yet.'} Save it to iCloud Drive in one tap.</div><button class="btn" data-act="backup">Back up</button></div>` : ''}
   <div class="card"><h2>Spent in ${monthLabel(ym)}</h2>
     <div class="row"><div class="grow"><div class="mid num">${inr(s.spend, 0)}</div>
@@ -3298,6 +3334,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  stmtNudgeOff: () => { const o = (D.settings.stmtNudgeOff ||= {}); const until = addMonths(ymOf(todayIso()), 1) + '-01'; for (const x of statementsDue()) o[x.a.id] = { due: x.due, until }; save(); render(); },
   cpTip: (d) => cpTip(d.k),
   summarySheet: () => summarySheet(),
   donutSel: (d) => { haptic(); donutSelect(d.id); },
