@@ -852,7 +852,7 @@ function safeSheet() {
       ${s.emi ? row2('Loan EMIs', '− ' + inr(s.emi, 0)) : ''}
       ${s.billList.map((b) => row2(`${esc(b.name)}, ${fmtDate(b.next, true)}`, '− ' + inr(b.amount, 0))).join('')}
       ${row2(`Spent since ${fmtDate(s.from, true).replace(/ \d{4}$/, '')}`, '− ' + inr(s.spent, 0))}
-      ${row2('<b>Left this month</b>', `<b>${inr(s.left, 0)}</b>`, s.left < 0 ? 'bad' : 'in')}
+      ${row2('<b>Left until next salary</b>', `<b>${inr(s.left, 0)}</b>`, s.left < 0 ? 'bad' : 'in')}
       ${row2(`Per day, for ${s.daysLeft} days`, inr(Math.max(0, s.perDay), 0))}</table>
     <p class="small muted">Only salary counts as money in. Your balances, refunds, transfers from others and other credits don't change this number.</p>
     <label class="f" style="margin-top:14px"><span>Save each month (₹)</span><input class="i" id="safeGoal" inputmode="decimal" placeholder="e.g. 30000" value="${s.goal ? s.goal / 100 : ''}"></label>
