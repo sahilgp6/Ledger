@@ -39,11 +39,24 @@ const daysApart = (a, b) => Math.abs(new Date(a + 'T00:00:00') - new Date(b + 'T
 const initials = (s) => (String(s || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?').toUpperCase();
 
 function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); }
+// While a sheet is open the page behind it stays still (iOS ignores overflow:hidden, so pin the body in place)
+let pageLock = null;
+function lockPage() {
+  if (pageLock) return;
+  pageLock = scrollY;
+  Object.assign(document.body.style, { position: 'fixed', top: `-${pageLock}px`, left: '0', right: '0', width: '100%' });
+}
+function unlockPage() {
+  if (pageLock == null) return;
+  const y = pageLock; pageLock = null;
+  Object.assign(document.body.style, { position: '', top: '', left: '', right: '', width: '' });
+  scrollTo(0, y);
+}
 function openSheet(html) {
   const sh = $('#sheet'); sh.innerHTML = '<div class="grab"></div>' + html;
   // No contact or password autofill bars over Ledger's own fields
   sh.querySelectorAll('input:not([type=checkbox]):not([type=hidden]):not([type=file]),textarea').forEach((i) => { if (!i.hasAttribute('autocomplete')) i.setAttribute('autocomplete', 'off'); });
-  sh.classList.add('on'); $('#scrim').classList.add('on'); sh.scrollTop = 0;
+  sh.classList.add('on'); $('#scrim').classList.add('on'); sh.scrollTop = 0; lockPage();
 }
 // Keep sheets above the keyboard: iOS shrinks only the visible area, so lift the sheet by the keyboard's height
 if (window.visualViewport) {
@@ -55,7 +68,7 @@ document.addEventListener('focusin', (e) => {
   if (!e.target.matches?.('#sheet input, #sheet textarea, #sheet select')) return;
   setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 320);
 });
-function closeSheet() { const s = $('#sheet'); s.classList.remove('on'); s.style.transform = ''; s.style.transition = ''; $('#scrim').classList.remove('on'); $('#scrim').style.opacity = ''; }
+function closeSheet() { unlockPage(); const s = $('#sheet'); s.classList.remove('on'); s.style.transform = ''; s.style.transition = ''; $('#scrim').classList.remove('on'); $('#scrim').style.opacity = ''; }
 // Pull a sheet down to close it: from the handle anywhere, or from the content once it is scrolled to the top
 let shS = null;
 document.addEventListener('touchstart', (e) => {

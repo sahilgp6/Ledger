@@ -141,7 +141,7 @@ table.t a{color:var(--brand);text-decoration:none;font-weight:500;overflow-wrap:
 #sheet.on{transform:none}
 #sheet .grab{width:40px;height:5px;border-radius:3px;background:var(--muted);opacity:.45;margin:0 auto 12px;position:relative}
 #sheet .grab::before{content:'';position:absolute;inset:-14px -60px}
-#sheet{overscroll-behavior:contain}
+#sheet{overscroll-behavior:contain}#scrim{touch-action:none}
 #sheet{bottom:var(--kb,0px);max-height:min(92dvh,calc(var(--vvh,100dvh) - 24px));transition:transform .48s var(--ease-ios),bottom .25s var(--ease-ios)}
 #sheet h3{margin:0 0 14px;font-family:var(--serif);font-weight:500;font-size:1.45rem}
 /* Lock */
