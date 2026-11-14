@@ -32,7 +32,7 @@ export const typeOf = (id) => ACCOUNT_TYPES.find((t) => t.id === id) || ACCOUNT_
 const C = (id, name, group, kind = 'expense') => ({ id, name, group, kind });
 export const DEFAULT_CATEGORIES = [
   C('salary', 'Salary', 'Income', 'income'), C('interest_in', 'Interest earned', 'Income', 'income'), C('dividends', 'Dividends', 'Income', 'income'),
-  C('cashback', 'Cashback & rewards', 'Income', 'income'), C('other_income', 'Other income', 'Income', 'income'),
+  C('cashback', 'Cashback & rewards', 'Income', 'income'), C('other_income', 'Other income', 'Income', 'income'), C('reimbursement', 'Reimbursements', 'Income', 'income'),
   C('groceries', 'Groceries', 'Food'), C('food_delivery', 'Food delivery', 'Food'), C('dining', 'Dining out', 'Food'), C('coffee', 'Coffee & snacks', 'Food'),
   C('clothing', 'Clothing & shoes', 'Shopping'), C('online', 'Online shopping', 'Shopping'), C('home', 'Home & garden', 'Shopping'), C('electronics', 'Electronics', 'Shopping'), C('giftcards', 'Gift cards & wallet loads', 'Shopping'),
   C('fuel', 'Fuel', 'Transport'), C('cabs', 'Cabs & autos', 'Transport'), C('car', 'Car service & parts', 'Transport'), C('parking', 'Parking & tolls', 'Transport'), C('travel', 'Travel & holidays', 'Transport'),
@@ -93,6 +93,7 @@ export const DEFAULT_RULES = [
   R('AUTOPAY SI', 'card_payment', 'out'), R('CREDIT CARD', 'card_payment', 'out'), R('CRED CLUB', 'card_payment', 'out'), R('CC BILL', 'card_payment', 'out'), R('BILLDESK CC', 'card_payment', 'out'),
   R('ATM WDL', 'cash_withdrawal', 'out'), R('ATW-', 'cash_withdrawal', 'out'), R('NWD-', 'cash_withdrawal', 'out'), R('CASH WITHDRAWAL', 'cash_withdrawal', 'out'),
   R('ADVANCE TAX', 'taxes', 'out'), R('INCOME TAX', 'taxes', 'out'), R('TDS', 'taxes', 'out'), R('GST PAYMENT', 'taxes', 'out'),
+  R('REIMB', 'reimbursement', 'in'), R('TELEPHONE', 'reimbursement', 'in'), R('CONVEYANCE', 'reimbursement', 'in'), R('PHONE BILL', 'reimbursement', 'in'),
   R('AIR INDIA EXPRESS', 'salary', 'in'), R('SALARY', 'salary', 'in'), R('SAL CREDIT', 'salary', 'in'),
   R('INT.PD', 'interest_in', 'in'), R('INT PD', 'interest_in', 'in'), R('INTEREST PAID', 'interest_in', 'in'), R('CREDIT INTEREST', 'interest_in', 'in'), R('SB INT', 'interest_in', 'in'),
   R('DIVIDEND', 'dividends', 'in'), R('ACH C-', 'dividends', 'in'), R('CASHBACK', 'cashback', 'in'), R('REWARD', 'cashback', 'in'),

@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.7';
+const APP_VERSION = '1.7.8';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -811,6 +811,18 @@ function lastWeekday(ym) {
 // Salary lands on the last weekday of each month (the 30th, or the Friday before when the month ends on a weekend).
 // The cycle runs from the last payday to the next one, by that rule, so it never depends on how a credit was
 // categorised. A salary that arrives a few days early (a holiday) starts the new cycle on the day it lands.
+// Employer credits much smaller than salary (a phone bill reimbursement, an allowance) are reimbursements, not pay.
+// Anything you've set by hand is left alone.
+function sortSalary() {
+  let n = 0;
+  const sal = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0);
+  for (const x of sal) {
+    if (x.catManual) continue;
+    const near = sal.filter((y) => Math.abs(daysUntil(y.date) - daysUntil(x.date)) <= 75).reduce((m2, y) => Math.max(m2, y.amount), 0);
+    if (near && x.amount < near * 0.25) { x.categoryId = 'reimbursement'; n++; }
+  }
+  return n;
+}
 function payCycle(today = todayIso()) {
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
   const sal = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0 && x.date <= today && (!multi() || D.settings.who === 'all' || vis.has(x.accountId)));
@@ -1606,7 +1618,7 @@ function renderHome(m) {
     return;
   }
   recordPrices();
-  if (processBills() | matchRefunds()) save();
+  if (processBills() | matchRefunds() | sortSalary()) save();
   budgetNudge(); checkCelebrate();
   const nw = netWorth();
   const loans = loansTotal();
