@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.6.3';
+const APP_VERSION = '1.6.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -408,7 +408,6 @@ function processBills() {
   }
   return changed;
 }
-const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
 const dueWord = (iso) => { const d = daysUntil(iso); return d === 0 ? 'today' : d === 1 ? 'tomorrow' : d < 0 ? `${-d} day${d < -1 ? 's' : ''} ago` : `in ${d} days`; };
 function billItem(b) {
   const d = daysUntil(b.next);
@@ -733,7 +732,6 @@ function aiSummary(period = 'last') {
   if (small.length) L.push('', `SMALL PAYMENTS: ${small.length} payments under ₹500, adding up to ${r(small.reduce((t, x) => t - x.amount, 0))}`);
   const per = { month: 'a month', quarter: 'a quarter', year: 'a year', week: 'a week' };
   const subs = (D.bills || []).filter((x) => x.kind === 'subscription');
-  if (sips().length) { L.push('', 'SIPS (investments, not spending)'); for (const sp of sips()) L.push(`- ${clean(sp.name)}: ${r(sp.amount)} a month on the ${ordinal(sp.day)}`); }
   if (subs.length) { L.push('', 'SUBSCRIPTIONS'); for (const x of subs) L.push(`- ${clean(x.name)}: ${x.amount ? r(x.amount) + ' ' + (per[x.every] || '') : 'amount varies'}`); }
   const loans = D.accounts.filter((x) => x.loan && accVisible(x));
   if (loans.length) {
@@ -828,7 +826,6 @@ function safeToSpend() {
   const loans = D.accounts.filter((x) => x.loan?.emi && !x.archived && ownerOf(x) !== 'other');
   const emiList = loans.filter((x) => { const nd = x.loan.nextDue || ''; return !nd || (nd >= today && nd <= end); }).map((x) => ({ name: x.name, amount: Math.round(x.loan.emi * (shareOf(x) || 1)), next: x.loan.nextDue }));
   const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= end && !/emi/i.test(x.name));
-  for (const sp of sips()) { const st = sipStatus(sp, today); if (!st.paid && st.next >= today && st.next <= end && (!sp.accountId || sp.accountId === acct.id)) billList.push({ name: `${sp.name} SIP`, amount: sp.amount, next: st.next }); }
   const bills = billList.reduce((t, x) => t + x.amount, 0), emi = emiList.reduce((t, x) => t + x.amount, 0);
   const goal = D.settings.saveTarget || 0;
   const left = bal + extra - (o.card ? cardDue : 0) - (o.bills ? bills : 0) - (o.emi ? emi : 0) - (o.goal ? goal : 0);
@@ -1076,43 +1073,6 @@ function findSips() {
   }
   return out.sort((a, b) => b.amount - a.amount);
 }
-// ---- SIPs you add yourself: amount, day, and the debit they come out as ----
-const sips = () => (D.sips ||= []);
-// The debit for a SIP: same account if set, amount within 2%, near the SIP day, and the matching payee words if given
-function sipPayment(sp, ym) {
-  const want = Math.round(sp.amount), dd = `${ym}-${String(Math.min(sp.day, dim(ym))).padStart(2, '0')}`;
-  return D.transactions.find((x) => x.amount < 0 && Math.abs(-x.amount - want) <= want * 0.02 && (!sp.accountId || x.accountId === sp.accountId)
-    && Math.abs(daysUntil(x.date) - daysUntil(dd)) <= 6 && (sp.match ? `${x.payee} ${x.description}`.toUpperCase().includes(sp.match.toUpperCase()) : SIPY.test(`${x.payee} ${x.description}`) || x.categoryId === 'investments'));
-}
-function sipStatus(sp, today = todayIso()) {
-  const ym = ymOf(today), due = `${ym}-${String(Math.min(sp.day, dim(ym))).padStart(2, '0')}`;
-  const paid = sipPayment(sp, ym);
-  if (paid) return { st: 'ok', paid, next: advance(due, 'month', sp.day) };
-  if (today < due) return { st: daysUntil(due) <= 5 ? 'due' : 'ok', next: due, lastPaid: sipPayment(sp, addMonths(ym, -1)) };
-  return { st: daysUntil(due) < -6 ? 'missed' : 'due', next: due };
-}
-// SIP debits are investments, not spending: file them that way once matched
-function processSips() {
-  let n = 0;
-  for (const sp of sips()) for (let i = 0; i < 6; i++) { const x = sipPayment(sp, addMonths(ymOf(todayIso()), -i)); if (x && x.categoryId !== 'investments') { x.categoryId = 'investments'; n++; } }
-  return n;
-}
-function sipSheet(id) {
-  const sp = id ? sips().find((x) => x.id === id) : null;
-  const from = sp?.accountId || safeAccount()?.id;
-  const live = D.accounts.filter((x) => !x.archived && ['savings', 'current'].includes(x.type));
-  // Recent debits near the amount, to point Ledger at the right payment
-  const amt = sp?.amount || 1000000;
-  const cands = D.transactions.filter((x) => x.amount < 0 && daysUntil(x.date) >= -70 && Math.abs(-x.amount - amt) <= amt * 0.05).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
-  openSheet(`<h3>${sp ? esc(sp.name) : 'Add a SIP'}</h3><form data-form="sip">${sp ? `<input type="hidden" name="id" value="${sp.id}">` : ''}
-    <label class="f"><span>Fund or plan</span><input class="i" name="name" required placeholder="e.g. Parag Parikh Flexi Cap" value="${esc(sp?.name || '')}"></label>
-    <div class="split"><label class="f"><span>Amount (₹)</span><input class="i num" name="amount" inputmode="decimal" required value="${sp ? sp.amount / 100 : '10000'}" id="sipAmt"></label>
-    <label class="f"><span>Day of month</span><input class="i num" name="day" inputmode="numeric" required value="${sp?.day || ''}" placeholder="e.g. 5"></label></div>
-    <label class="f"><span>Paid from</span><select class="i" name="accountId">${live.map((x) => `<option value="${x.id}" ${x.id === from ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
-    <label class="f"><span>Payment shows as (optional)</span><input class="i" name="match" id="sipMatch" placeholder="Words in the bank entry, e.g. BSE STAR MF" value="${esc(sp?.match || '')}"></label>
-    ${cands.length ? `<p class="small muted" style="margin:-4px 0 6px">Or tap the payment it came out as:</p><div class="list" style="margin-bottom:12px">${cands.map((x) => `<button type="button" class="item" data-act="sipPick" data-m="${esc((x.payee || x.description || '').toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 4).join(' '))}" data-d="${+x.date.slice(8)}" data-a="${x.accountId}"><div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)} · ${esc(accShort(accById(x.accountId)))}</div></div><div class="a num">${inr(x.amount)}</div></button>`).join('')}</div>` : ''}
-    <button class="btn wide">Save</button></form>${sp ? `<div style="height:10px"></div><button class="btn wide ghost" data-act="sipDelete" data-id="${sp.id}">Remove this SIP</button>` : ''}`);
-}
 function returnsData() {
   const accs = D.accounts.filter((a) => !a.archived && D.holdings.some((h) => h.accountId === a.id) && shareOf(a));
   let value = 0, cost = 0;
@@ -1134,7 +1094,7 @@ function returnsData() {
 const ALLOC_COL = { Equity: 'var(--brand)', 'Debt & deposits': 'var(--gold)', Retirement: '#7c8f86', Gold: '#c9a54a', Cash: '#9fb7c9', Crypto: '#b07a5a', Other: 'var(--line)' };
 function renderInvest(m) {
   setTop('Investments', { back: 'closeView' });
-  const mine = sips(), r = returnsData(), al = allocation(), auto = findSips().filter((d) => !mine.some((sp) => Math.abs(sp.amount - d.amount) <= sp.amount * 0.02));
+  const r = returnsData(), al = allocation(), sips = findSips();
   const pct = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
   m.innerHTML = `${r.accs.length ? `<div class="card"><h2>Returns</h2><div class="big num">${inr(r.value, 0)}</div>
       ${r.cost ? `<div class="small"><span class="${r.gain >= 0 ? 'in' : 'bad'} num">${r.gain >= 0 ? '+' : ''}${inr(r.gain, 0)} (${pct(r.gain / r.cost)})</span> <span class="muted">on ${inr(r.cost, 0)} invested</span></div>` : ''}
@@ -1145,10 +1105,8 @@ function renderInvest(m) {
     ${al.total ? `<div class="card"><h2>Where your money sits</h2><div class="allocbar" aria-hidden="true">${al.parts.map((p, i) => `<i style="--w:${(p.p * 100).toFixed(2)}%;background:${ALLOC_COL[p.k]};--d:${i * 70}ms"></i>`).join('')}</div>
       ${al.parts.map((p) => `<div class="row small" style="margin-top:8px"><span class="dot" style="background:${ALLOC_COL[p.k]}"></span><span class="grow">${p.k}</span><span class="num">${inr(p.v, 0)}</span><span class="muted num" style="width:3.2em;text-align:right">${Math.round(p.p * 100)}%</span></div>`).join('')}
       <p class="tiny muted" style="margin:8px 0 0">Leaves out property, vehicles and loans. Mutual funds are split by their names (debt, liquid and gilt funds count as debt).</p></div>` : ''}
-    <div class="card"><div class="row"><h2 class="grow" style="margin:0">SIPs</h2><button class="link" data-act="sipSheet">+ Add</button></div>
-      ${(() => { return mine.length ? mine.map((sp) => { const st = sipStatus(sp); return `<button class="item" style="padding:9px 0" data-act="sipSheet" data-id="${sp.id}"><div class="grow"><div class="t">${esc(sp.name)}</div><div class="s">${inr(sp.amount, 0)} on the ${ordinal(sp.day)} · ${st.paid ? 'paid ' + fmtDate(st.paid.date, true) : st.lastPaid ? 'last paid ' + fmtDate(st.lastPaid.date, true) : 'next ' + fmtDate(st.next, true)}</div></div><span class="pillnote ${st.st === 'missed' ? 'bad' : st.st === 'due' ? 'warn' : 'in'}">${st.paid ? 'Paid' : st.st === 'missed' ? 'Not seen yet' : st.st === 'due' ? 'Due ' + dueWord(st.next) : 'On track'}</span></button>`; }).join('') : ''; })()}
-      ${auto.length ? auto.map((s) => `<div class="item" style="padding:8px 0"><div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${inr(s.amount, 0)} a month · last ${fmtDate(s.last, true)} · ${s.months} months seen</div></div><span class="pillnote ${s.status === 'missed' ? 'bad' : s.status === 'due' ? 'warn' : 'in'}">${s.status === 'missed' ? `Not seen for ${MON[+s.next.slice(5, 7) - 1]}` : s.status === 'due' ? 'Due ' + dueWord(s.next) : 'On track'}</span></div>`).join('')
-      : mine.length ? '' : '<p class="small muted" style="margin:6px 0 0">Add your SIP so Ledger tracks each month\'s payment and keeps it out of your spending. Ledger also spots SIPs on its own once the same debit shows up in two months.</p>'}</div>`;
+    <div class="card"><h2>SIPs</h2>${sips.length ? sips.map((s) => `<div class="item" style="padding:8px 0"><div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${inr(s.amount, 0)} a month · last ${fmtDate(s.last, true)} · ${s.months} months seen</div></div><span class="pillnote ${s.status === 'missed' ? 'bad' : s.status === 'due' ? 'warn' : 'in'}">${s.status === 'missed' ? `Not seen for ${MON[+s.next.slice(5, 7) - 1]}` : s.status === 'due' ? 'Due ' + dueWord(s.next) : 'On track'}</span></div>`).join('')
+      : '<p class="small muted" style="margin:0">No SIPs found yet. Ledger spots them once the same investment debit shows up in two different months.</p>'}</div>`;
 }
 
 function recapData(ym) {
@@ -1378,7 +1336,7 @@ function renderHome(m) {
     return;
   }
   recordPrices();
-  if (processBills() | matchRefunds() | processSips()) save();
+  if (processBills() | matchRefunds()) save();
   budgetNudge();
   const nw = netWorth();
   const loans = loansTotal();
@@ -2868,9 +2826,6 @@ const acts = {
   tagTrip: () => tagTripSheet(),
   tagRename: (d) => { const n = parseTags(prompt('New name', d.tag))[0]; if (!n || n === d.tag) return; for (const x of D.transactions) if (tagsOf(x).includes(d.tag)) x.tags = [...new Set(tagsOf(x).map((t) => (t === d.tag ? n : t)))]; save(); ui.view = { page: 'tags', tag: n }; render(); },
   tagRemove: (d) => { if (!confirm(`Remove #${d.tag} from all its transactions?`)) return; for (const x of D.transactions) if (tagsOf(x).includes(d.tag)) { x.tags = tagsOf(x).filter((t) => t !== d.tag); if (!x.tags.length) delete x.tags; } save(); ui.view = { page: 'tags' }; render(); },
-  sipSheet: (d) => sipSheet(d.id),
-  sipPick: (d) => { $('#sipMatch').value = d.m; const dayIn = $('#sheet [name=day]'); if (!dayIn.value) dayIn.value = d.d; const sel = $('#sheet [name=accountId]'); if ([...sel.options].some((o) => o.value === d.a)) sel.value = d.a; haptic(); toast('Linked to that payment'); },
-  sipDelete: (d) => { D.sips = sips().filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
   openInvest: () => { ui.view = { page: 'invest' }; render(); window.scrollTo(0, 0); },
   sumRefresh: () => { const top = $('#sheet').scrollTop; summarySheet(ui.sumPeriod); $('#sheet').scrollTop = top; },
   sumPeriod: (d) => { const top = $('#sheet').scrollTop; summarySheet(d.p); $('#sheet').scrollTop = top; },
@@ -3221,14 +3176,6 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
-  sip: (f) => {
-    const amount = parseRupees(f.get('amount')), day = Math.min(31, Math.max(1, parseInt(f.get('day'), 10) || 0));
-    if (!amount || !day) return toast('Enter the amount and the day of the month.');
-    const v = { name: f.get('name').trim(), amount, day, accountId: f.get('accountId'), match: f.get('match').trim() };
-    const ex = f.get('id') && sips().find((x) => x.id === f.get('id'));
-    if (ex) Object.assign(ex, v); else sips().push({ id: uid(), ...v });
-    processSips(); save(); closeSheet(); render(); done('SIP saved');
-  },
   budget: (f) => { const lim = parseRupees(f.get('lim')); const c = f.get('cat'); if (!c) return toast('Pick a category.'); if (!lim || lim <= 0) return toast('Enter a monthly limit.'); budgets()[c] = lim; (D.settings.budgetSince ||= {})[c] ||= ymOf(todayIso()); save(); closeSheet(); render(); done('Budget set'); },
   tagTrip: (f) => {
     const tag = parseTags(f.get('tag'))[0]; if (!tag) return toast('Give it a name.');
