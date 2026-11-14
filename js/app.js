@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.8.5';
+const APP_VERSION = '1.8.6';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -992,7 +992,8 @@ function cardPlan() {
   const days = daysUntil(next) - daysUntil(start), gone = daysUntil(today) - daysUntil(start) + 1, daysLeft = Math.max(1, days - gone + 1);
   const perDay = (target - spent) / daysLeft, pace = gone >= 3 ? (spent / gone) * days : null;
   const tone = spent > target ? 'bad' : pace != null && pace > target * 1.05 ? 'warn' : 'ok';
-  return { salary, salaryGuessed: p.salary == null, upi, upiGuessed: p.upi == null, goal, fixed, bank, onCard, target, cards, start, next, spent, days, gone, daysLeft, perDay, pace, tone };
+  const owed = cards.reduce((t, a) => t + Math.max(0, -balance(a)), 0);
+  return { owed, salary, salaryGuessed: p.salary == null, upi, upiGuessed: p.upi == null, goal, fixed, bank, onCard, target, cards, start, next, spent, days, gone, daysLeft, perDay, pace, tone };
 }
 function cardPlanCard() {
   const c = cardPlan();
@@ -1000,13 +1001,14 @@ function cardPlanCard() {
   const nd = fmtDate(c.next, true).replace(/ \d{4}$/, ''), sd = fmtDate(c.start, true).replace(/ \d{4}$/, '');
   if (!c.salary) return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet"><h2 style="margin:0">Card bill target</h2><p class="small muted" style="margin:6px 0 0">Enter your expected salary and Ledger works out how big your next card bill can be.</p><span class="link small">Plan it ›</span></button>`;
   const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[c.tone];
-  const used = c.target > 0 ? Math.min(100, (c.spent / c.target) * 100) : 100, mark = Math.min(100, ((c.gone - 0.5) / c.days) * 100);
+  // The bar shows what you owe on the card right now against the target
+  const used = c.target > 0 ? Math.min(100, (c.owed / c.target) * 100) : 100, mark = Math.min(100, ((c.gone - 0.5) / c.days) * 100);
   return `<button class="card item cplan tone-${c.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet">
     <div class="row"><h2 class="grow" style="margin:0">Card bill target</h2><span class="pillnote" style="color:var(--gold-ink)">Bill on ${nd}</span></div>
     <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money ${c.target < 0 ? 'bad' : ''}" data-count="${Math.round(c.target)}" data-ck="cardt">${inr(c.target, 0)}</div><div class="muted small">for the card</div></div>
     <div class="small muted">From ${c.salaryGuessed ? 'a' : 'your'} ${inr(c.salary, 0)} salary${c.salaryGuessed ? ' (your last one, tap to change)' : ''}</div>
-    <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${used.toFixed(1)}%;background:${col}"></i><b style="left:${mark.toFixed(1)}%"></b></div>
-    <div class="row tiny muted" style="margin-top:4px"><span class="grow">${inr(c.spent, 0)} on the card since ${sd}</span><span>today ▴</span></div>
+    <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${used.toFixed(1)}%;background:${c.owed > c.target ? 'var(--bad)' : col}"></i><b style="left:${mark.toFixed(1)}%"></b></div>
+    <div class="row tiny muted" style="margin-top:4px"><span class="grow">${inr(c.owed, 0)} outstanding${Math.abs(c.owed - c.spent) >= 100 ? ` · ${inr(c.spent, 0)} spent since ${sd}` : ''}</span><span>today ▴</span></div>
     <div class="cp-tiles"><div><span>On the card each day</span><b class="num">${inr(Math.max(0, c.perDay), 0)}</b><span>for ${c.daysLeft} day${c.daysLeft > 1 ? 's' : ''}</span></div>
       <div class="${c.tone !== 'ok' ? 'warn' : ''}"><span>At this pace</span><b class="num">${c.pace == null ? '…' : inr(c.pace, 0)}</b><span>${c.pace == null ? 'after a few days' : c.pace > c.target ? inr(c.pace - c.target, 0) + ' over' : inr(c.target - c.pace, 0) + ' under'}</span></div></div>
   </button>`;
