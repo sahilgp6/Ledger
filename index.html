@@ -2,7 +2,7 @@
 <html lang="en-IN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f6f3ec" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1512" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -82,8 +82,10 @@ select.chip{appearance:none;-webkit-appearance:none;padding-right:24px;backgroun
 .month b{font-size:1.0625rem}
 label.f{display:block;margin:0 0 12px}
 label.f span{display:block;font-size:0.8125rem;color:var(--muted);margin:0 0 5px}
-input.i,select.i,textarea.i{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:12px;font-size:1rem;min-height:46px}
+input.i,select.i,textarea.i{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:12px;font-size:max(16px,1rem);min-height:46px}
 textarea.i{min-height:70px}
+/* Safari zooms into any text box under 16px; keep every box at 16px or more */
+input,select,textarea{font-size:max(16px,1rem)}
 .split>*,.f{min-width:0}
 input.i[type=date],input.i[type=month],input.i[type=time]{-webkit-appearance:none;appearance:none;display:block;min-width:0;max-width:100%;text-align:left;line-height:1.25}
 input.i::-webkit-date-and-time-value{text-align:left;margin:0}
