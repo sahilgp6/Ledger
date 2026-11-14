@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.6.4';
+const APP_VERSION = '1.6.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1103,7 +1103,17 @@ function sipStatus(sp, today = todayIso()) {
 // SIP debits are investments, not spending: file them that way once matched
 function processSips() {
   let n = 0;
-  for (const sp of sips()) for (let i = 0; i < 6; i++) for (const x of sipPayments(sp, addMonths(ymOf(todayIso()), -i))) if (x && x.categoryId !== 'investments') { x.categoryId = 'investments'; n++; }
+  for (const sp of sips()) for (let i = 0; i < 6; i++) for (const x of sipPayments(sp, addMonths(ymOf(todayIso()), -i))) {
+    if (!x) continue;
+    if (x.categoryId !== 'investments') { x.categoryId = 'investments'; n++; }
+    // Add the debit to the linked investment's value, once, for payments from the day it was linked
+    const to = sp.toAccount && accById(sp.toAccount);
+    if (to && !x.sipTo && x.date >= (sp.linkedOn || todayIso()) && typeOf(to.type).mode === 'value' && !D.holdings.some((h) => h.accountId === to.id)) {
+      const lv = latestValuation(to.id);
+      D.valuations.push({ id: uid(), accountId: to.id, date: x.date > (lv?.date || '') ? x.date : lv.date, value: (lv?.value || 0) + -x.amount, note: `SIP ${inr(-x.amount, 0)} added`, at: Date.now() });
+      x.sipTo = to.id; n++;
+    }
+  }
   return n;
 }
 function sipSheet(id) {
@@ -1112,15 +1122,31 @@ function sipSheet(id) {
   const live = D.accounts.filter((x) => !x.archived && ['savings', 'current'].includes(x.type));
   // Recent debits near the amount, to point Ledger at the right payment
   const parts = sp ? sipParts(sp) : [1000000, 500000, 300000, 200000];
-  const cands = D.transactions.filter((x) => x.amount < 0 && daysUntil(x.date) >= -70 && parts.some((amt) => Math.abs(-x.amount - amt) <= amt * 0.05)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
+  const cands = D.transactions.filter((x) => x.amount < 0 && accById(x.accountId)?.type !== 'credit_card' && daysUntil(x.date) >= -70 && parts.some((amt) => Math.abs(-x.amount - amt) <= amt * 0.05)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
   openSheet(`<h3>${sp ? esc(sp.name) : 'Add a SIP'}</h3><form data-form="sip">${sp ? `<input type="hidden" name="id" value="${sp.id}">` : ''}
     <label class="f"><span>Fund or plan</span><input class="i" name="name" required placeholder="e.g. Parag Parikh Flexi Cap" value="${esc(sp?.name || '')}"></label>
     <div class="split"><label class="f"><span>Amount (₹)</span><input class="i num" name="amount" inputmode="text" required value="${sp ? sipParts(sp).map((v) => v / 100).join(', ') : ''}" placeholder="e.g. 5000, 3000, 2000" id="sipAmt"></label>
     <label class="f"><span>Day of month</span><input class="i num" name="day" inputmode="numeric" required value="${sp?.day || ''}" placeholder="e.g. 5"></label></div>
     <label class="f"><span>Paid from</span><select class="i" name="accountId">${live.map((x) => `<option value="${x.id}" ${x.id === from ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <div class="split"><label class="f"><span>Goes into</span><select class="i" name="toAccount"><option value="">Not linked</option>${D.accounts.filter((x) => !x.archived && typeOf(x.type).side === 'asset' && typeOf(x.type).group === 'Investments').map((x) => `<option value="${x.id}" ${sp?.toAccount === x.id ? 'selected' : ''}>${esc(x.name)} · ${inr(balance(x), 0)}</option>`).join('')}</select></label>
+    <label class="f"><span>Put in so far (₹)</span><input class="i num" name="invested" inputmode="decimal" placeholder="Optional" value="${sp?.invested ? sp.invested / 100 : ''}"></label></div>
+    <p class="small muted" style="margin:-4px 0 10px">Link the investment this SIP builds. Each debit then adds to its value, and with what you've put in so far Ledger works out your return.</p>
     <label class="f"><span>Payment shows as (optional)</span><input class="i" name="match" id="sipMatch" placeholder="Words in the bank entry, e.g. BSE STAR MF" value="${esc(sp?.match || '')}"></label>
     ${cands.length ? `<p class="small muted" style="margin:-4px 0 6px">If it's debited in parts, enter each amount with commas. Or tap a payment it came out as:</p><div class="list" style="margin-bottom:12px">${cands.map((x) => `<button type="button" class="item" data-act="sipPick" data-m="${esc((x.payee || x.description || '').toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 4).join(' '))}" data-d="${+x.date.slice(8)}" data-a="${x.accountId}"><div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)} · ${esc(accShort(accById(x.accountId)))}</div></div><div class="a num">${inr(x.amount)}</div></button>`).join('')}</div>` : ''}
     <button class="btn wide">Save</button></form>${sp ? `<div style="height:10px"></div><button class="btn wide ghost" data-act="sipDelete" data-id="${sp.id}">Remove this SIP</button>` : ''}`);
+}
+// For an investment built by a SIP: what's been put in (your figure plus debits since), and an XIRR estimate
+// that assumes the money went in as equal monthly instalments up to today
+function sipReturn(a) {
+  const sp = sips().find((x) => x.toAccount === a.id); if (!sp) return null;
+  const value = balance(a);
+  if (!sp.invested) return { sp, value };
+  const since = D.transactions.filter((x) => x.sipTo === a.id && x.date >= (sp.investedOn || '')).reduce((t, x) => t - x.amount, 0);
+  const invested = sp.invested + since;
+  const n = Math.max(1, Math.round(invested / sp.amount)), today = todayIso(), flows = [];
+  for (let i = n - 1; i >= 0; i--) flows.push({ d: isoAdd(today, -Math.round(i * 30.44)), v: -invested / n });
+  flows.push({ d: today, v: value });
+  return { sp, value, invested, gain: value - invested, irr: n >= 3 ? xirr(flows) : null, months: n };
 }
 function returnsData() {
   const accs = D.accounts.filter((a) => !a.archived && D.holdings.some((h) => h.accountId === a.id) && shareOf(a));
@@ -1138,24 +1164,30 @@ function returnsData() {
     flows.sort((p, q) => p.d.localeCompare(q.d)); flows.push({ d: todayIso(), v: value });
     irr = xirr(flows);
   }
-  return { accs, value, cost, gain: value - cost, irr, since };
+  // SIP-built investments without holdings: count their value and what's been put in
+  const sipAccs = D.accounts.filter((a) => !a.archived && !ids.has(a.id) && shareOf(a) && sips().some((x) => x.toAccount === a.id));
+  for (const a of sipAccs) { const sr = sipReturn(a); value += sr.value * shareOf(a); if (sr.invested) cost += sr.invested * shareOf(a); }
+  if (irr == null && sipAccs.length === 1 && !accs.length) irr = sipReturn(sipAccs[0]).irr, since = null;
+  return { accs, sipAccs, value, cost, gain: value - cost, irr, since };
 }
 const ALLOC_COL = { Equity: 'var(--brand)', 'Debt & deposits': 'var(--gold)', Retirement: '#7c8f86', Gold: '#c9a54a', Cash: '#9fb7c9', Crypto: '#b07a5a', Other: 'var(--line)' };
 function renderInvest(m) {
   setTop('Investments', { back: 'closeView' });
   const mine = sips(), r = returnsData(), al = allocation(), auto = findSips().filter((d) => !mine.some((sp) => sipParts(sp).some((v) => Math.abs(v - d.amount) <= v * 0.02)));
   const pct = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
-  m.innerHTML = `${r.accs.length ? `<div class="card"><h2>Returns</h2><div class="big num">${inr(r.value, 0)}</div>
+  const sipRows = r.sipAccs.map((a) => { const sr = sipReturn(a); return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${sr.invested ? `<span class="${sr.gain >= 0 ? 'in' : 'bad'}">${pct(sr.gain / sr.invested)}</span> on ${inr(sr.invested, 0)}${sr.irr != null ? ` · XIRR about ${pct(sr.irr)}` : ''}` : 'Built by your SIP. Add what you\'ve put in for returns'}</div></div><div class="a num">${inr(sr.value, 0)}</div></button>`; }).join('');
+  m.innerHTML = `${r.accs.length || r.sipAccs.length ? `<div class="card"><h2>Returns</h2><div class="big num">${inr(r.value, 0)}</div>
       ${r.cost ? `<div class="small"><span class="${r.gain >= 0 ? 'in' : 'bad'} num">${r.gain >= 0 ? '+' : ''}${inr(r.gain, 0)} (${pct(r.gain / r.cost)})</span> <span class="muted">on ${inr(r.cost, 0)} invested</span></div>` : ''}
       <div class="split" style="margin-top:12px"><div><div class="small muted">XIRR (yearly)</div><div class="mid num ${r.irr == null ? 'muted' : r.irr >= 0 ? 'in' : 'bad'}">${r.irr == null ? '…' : pct(r.irr)}</div></div>
-      <div><div class="small muted">Tracked since</div><div class="num">${r.since ? fmtDate(r.since, true) : 'today'}</div></div></div>
-      <p class="tiny muted" style="margin:8px 0 0">${r.irr == null ? `XIRR needs about 3 months of history in Ledger${r.since ? `. It appears around ${fmtDate(isoAdd(r.since, 90), true)}` : ''}. Until then, the gain above is against what you paid.` : 'XIRR counts the value when Ledger started tracking, money you moved into investments since then, and today\'s value.'}</p>
-      <div class="list" style="margin:10px -4px 0">${r.accs.map((a) => { let v = 0, c = 0; for (const h of D.holdings.filter((h2) => h2.accountId === a.id)) { v += holdValue(h); c += holdCost(h); } return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${c ? `<span class="${v >= c ? 'in' : 'bad'}">${pct((v - c) / c)}</span> on ${inr(c, 0)}` : ''}</div></div><div class="a num">${inr(v, 0)}</div></button>`; }).join('')}</div></div>` : ''}
+      ${r.accs.length ? `<div><div class="small muted">Tracked since</div><div class="num">${r.since ? fmtDate(r.since, true) : 'today'}</div></div>` : `<div><div class="small muted">Put in</div><div class="num">${inr(r.cost, 0)}</div></div>`}</div>
+      ${r.accs.length ? '' : `<p class="tiny muted" style="margin:8px 0 0">XIRR here is an estimate: it assumes what you've put in went in as equal monthly SIP instalments.</p>`}
+      ${!r.accs.length ? '' : `<p class="tiny muted" style="margin:8px 0 0">${r.irr == null ? `XIRR needs about 3 months of history in Ledger${r.since ? `. It appears around ${fmtDate(isoAdd(r.since, 90), true)}` : ''}. Until then, the gain above is against what you paid.` : 'XIRR counts the value when Ledger started tracking, money you moved into investments since then, and today\'s value.'}</p>`}
+      <div class="list" style="margin:10px -4px 0">${r.accs.map((a) => { let v = 0, c = 0; for (const h of D.holdings.filter((h2) => h2.accountId === a.id)) { v += holdValue(h); c += holdCost(h); } return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${c ? `<span class="${v >= c ? 'in' : 'bad'}">${pct((v - c) / c)}</span> on ${inr(c, 0)}` : ''}</div></div><div class="a num">${inr(v, 0)}</div></button>`; }).join('')}${sipRows}</div></div>` : ''}
     ${al.total ? `<div class="card"><h2>Where your money sits</h2><div class="allocbar" aria-hidden="true">${al.parts.map((p, i) => `<i style="--w:${(p.p * 100).toFixed(2)}%;background:${ALLOC_COL[p.k]};--d:${i * 70}ms"></i>`).join('')}</div>
       ${al.parts.map((p) => `<div class="row small" style="margin-top:8px"><span class="dot" style="background:${ALLOC_COL[p.k]}"></span><span class="grow">${p.k}</span><span class="num">${inr(p.v, 0)}</span><span class="muted num" style="width:3.2em;text-align:right">${Math.round(p.p * 100)}%</span></div>`).join('')}
       <p class="tiny muted" style="margin:8px 0 0">Leaves out property, vehicles and loans. Mutual funds are split by their names (debt, liquid and gilt funds count as debt).</p></div>` : ''}
     <div class="card"><div class="row"><h2 class="grow" style="margin:0">SIPs</h2><button class="link" data-act="sipSheet">+ Add</button></div>
-      ${(() => { return mine.length ? mine.map((sp) => { const st = sipStatus(sp); return `<button class="item" style="padding:9px 0" data-act="sipSheet" data-id="${sp.id}"><div class="grow"><div class="t">${esc(sp.name)}</div><div class="s">${inr(sp.amount, 0)}${sp.parts?.length > 1 ? ` (${sp.parts.map((v) => inr(v, 0).replace('₹', '')).join(' + ')})` : ''} on the ${ordinal(sp.day)} · ${st.paid ? 'paid ' + fmtDate(st.paid.date, true) : st.n ? `${st.n} of ${st.of} paid this month` : st.lastPaid ? 'last paid ' + fmtDate(st.lastPaid.date, true) : 'next ' + fmtDate(st.next, true)}</div></div><span class="pillnote ${st.st === 'missed' ? 'bad' : st.st === 'due' ? 'warn' : 'in'}">${st.paid ? 'Paid' : st.n && st.st === 'missed' ? `${st.n} of ${st.of} seen` : st.st === 'missed' ? 'Not seen yet' : st.st === 'due' ? 'Due ' + dueWord(st.next) : 'On track'}</span></button>`; }).join('') : ''; })()}
+      ${(() => { return mine.length ? mine.map((sp) => { const st = sipStatus(sp); return `<button class="item" style="padding:9px 0" data-act="sipSheet" data-id="${sp.id}"><div class="grow"><div class="t">${esc(sp.name)}</div><div class="s">${inr(sp.amount, 0)}${sp.parts?.length > 1 ? ` (${sp.parts.map((v) => inr(v, 0).replace('₹', '')).join(' + ')})` : ''} on the ${ordinal(sp.day)}${sp.toAccount && accById(sp.toAccount) ? ` into ${esc(accById(sp.toAccount).name)}` : ''} · ${st.paid ? 'paid ' + fmtDate(st.paid.date, true) : st.n ? `${st.n} of ${st.of} paid this month` : st.lastPaid ? 'last paid ' + fmtDate(st.lastPaid.date, true) : 'next ' + fmtDate(st.next, true)}</div></div><span class="pillnote ${st.st === 'missed' ? 'bad' : st.st === 'due' ? 'warn' : 'in'}">${st.paid ? 'Paid' : st.n && st.st === 'missed' ? `${st.n} of ${st.of} seen` : st.st === 'missed' ? 'Not seen yet' : st.st === 'due' ? 'Due ' + dueWord(st.next) : 'On track'}</span></button>`; }).join('') : ''; })()}
       ${auto.length ? auto.map((s) => `<div class="item" style="padding:8px 0"><div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${inr(s.amount, 0)} a month · last ${fmtDate(s.last, true)} · ${s.months} months seen</div></div><span class="pillnote ${s.status === 'missed' ? 'bad' : s.status === 'due' ? 'warn' : 'in'}">${s.status === 'missed' ? `Not seen for ${MON[+s.next.slice(5, 7) - 1]}` : s.status === 'due' ? 'Due ' + dueWord(s.next) : 'On track'}</span></div>`).join('')
       : mine.length ? '' : '<p class="small muted" style="margin:6px 0 0">Add your SIP so Ledger tracks each month\'s payment and keeps it out of your spending. Ledger also spots SIPs on its own once the same debit shows up in two months.</p>'}</div>`;
 }
@@ -3234,9 +3266,11 @@ const forms = {
     const parts = String(f.get('amount')).split(/[,+]/).map((t) => parseRupees(t)).filter((v) => v > 0);
     const amount = parts.reduce((t, v) => t + v, 0), day = Math.min(31, Math.max(1, parseInt(f.get('day'), 10) || 0));
     if (!amount || !day) return toast('Enter the amount and the day of the month.');
-    const v = { name: f.get('name').trim(), amount, parts: parts.length > 1 ? parts : undefined, day, accountId: f.get('accountId'), match: f.get('match').trim() };
+    const inv = parseRupees(f.get('invested'));
+    const v = { name: f.get('name').trim(), amount, parts: parts.length > 1 ? parts : undefined, toAccount: f.get('toAccount') || undefined, invested: inv > 0 ? inv : undefined, investedOn: inv > 0 ? todayIso() : undefined, day, accountId: f.get('accountId'), match: f.get('match').trim() };
     const ex = f.get('id') && sips().find((x) => x.id === f.get('id'));
-    if (ex) Object.assign(ex, v); else sips().push({ id: uid(), ...v });
+    if (ex) { if (ex.invested === v.invested) v.investedOn = ex.investedOn; Object.assign(ex, v); } else sips().push({ id: uid(), linkedOn: todayIso(), ...v });
+    if (v.toAccount && (!ex || ex.toAccount !== v.toAccount)) (ex || sips().at(-1)).linkedOn = todayIso();
     processSips(); save(); closeSheet(); render(); done('SIP saved');
   },
   budget: (f) => { const lim = parseRupees(f.get('lim')); const c = f.get('cat'); if (!c) return toast('Pick a category.'); if (!lim || lim <= 0) return toast('Enter a monthly limit.'); budgets()[c] = lim; (D.settings.budgetSince ||= {})[c] ||= ymOf(todayIso()); save(); closeSheet(); render(); done('Budget set'); },
