@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.6.2';
+const APP_VERSION = '1.6.6';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -82,7 +82,7 @@ function migrate(d) {
   // Future schema upgrades go here. Add any default categories that are missing.
   const have = new Set(d.categories.map((c) => c.id));
   for (const c of DEFAULT_CATEGORIES) if (!have.has(c.id)) d.categories.push({ ...c });
-  d.budgets ||= {}; d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= []; d.vault ||= [];
+  d.budgets ||= {}; if (d.sips) { delete d.sips; d.valuations = (d.valuations || []).filter((v) => !/^SIP .* added$/.test(v.note || '')); for (const x of d.transactions || []) delete x.sipTo; } d.inbox ||= []; d.smsSeen ||= []; d.bills ||= []; d.receipts ||= []; d.vault ||= [];
   d.settings.ai ||= { model: null }; d.holdings ||= [];
   // Older versions read the date in a Shortcut log as the amount (e.g. ₹2,026): drop those so the log is read again
   if (!d.settings.logFix3) { d.transactions = d.transactions.filter((x) => !(x.source === 'log' && !x.catManual && x.amount % 100 === 0 && Math.abs(x.amount) / 100 >= 1990 && Math.abs(x.amount) / 100 <= 2100)); d.settings.logFix3 = true; }
@@ -135,10 +135,9 @@ function holdingsCard(a) {
     <div><div class="small muted">Profit / loss</div><div class="mid num ${pl >= 0 ? 'in' : 'bad'}">${inrS(pl, 0)} <span class="small">${pct(pl, cost)}</span></div></div></div>
     ${live.length ? `<p class="small" style="margin:8px 0 0">Today: <b class="num ${dayChg >= 0 ? 'in' : 'bad'}">${chgTxt(dayChg, dayBase)}</b></p>` : ''}
     ${hs.some((h) => h.type === 'stock' || h.type === 'etf') && !D.settings.priceRelay ? `<p class="small" style="margin:8px 0 0"><button class="link" data-act="stocksSheet">Turn on live stock prices</button></p>` : ''}
-    ${a.sips?.length ? `<p class="small" style="margin:8px 0 0">SIPs: <b>${inr(a.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</b> across ${a.sips.length} fund${a.sips.length > 1 ? 's' : ''}</p>` : ''}
     ${hs.some((h) => h.type !== 'mf' && h.priceAt) ? `<p class="small muted" style="margin:8px 0 0">${D.settings.priceRelay ? 'Live prices' : 'Prices about 15 minutes delayed'} · as of ${new Date(hs.filter((h) => h.priceAt).map((h) => h.priceAt).sort().pop()).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}. Tap 🔄 to update.</p>` : hs.some((h) => h.type === 'mf' && h.qty != null) ? `<p class="small muted" style="margin:8px 0 0">NAVs update automatically each day. ${a.navCheckedAt ? 'Last checked ' + new Date(a.navCheckedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''} <button class="link" data-act="refreshNav" data-id="${a.id}">Refresh now</button></p>` : `<p class="small muted" style="margin:8px 0 0">Values as on ${fmtDate(a.holdingsAsOn, true)}. Upload a newer statement to refresh.</p>`}</div>
     <div class="list">${hs.map((h) => `<div class="item"><div class="ico">${esc(initials(h.symbol))}</div>
-      <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${h.qty != null && h.type === 'mf' ? `${(+h.qty.toFixed(3)).toLocaleString('en-IN')} units × NAV ₹${(h.price / 100).toFixed(4)} (${fmtDate(h.priceDate)})` : h.qty != null ? `${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}` : `${h.folio ? 'Folio ' + esc(h.folio) : ''}${h.xirr != null ? ` · XIRR ${h.xirr}%` : ''}${(a.sips || []).find((x) => x.folio === h.folio) ? ` · SIP ${inr(a.sips.find((x) => x.folio === h.folio).amount, 0)}` : ''}`}</div></div>
+      <div class="grow"><div class="t">${esc(h.symbol)} ${h.type !== 'stock' ? `<span class="badge">${h.type.toUpperCase()}</span>` : ''}</div><div class="s">${h.qty != null && h.type === 'mf' ? `${(+h.qty.toFixed(3)).toLocaleString('en-IN')} units × NAV ₹${(h.price / 100).toFixed(4)} (${fmtDate(h.priceDate)})` : h.qty != null ? `${+h.qty.toFixed(3)} × ${inr(Math.round(h.price))} · avg ${inr(Math.round(h.avg), 0)}` : `${h.folio ? 'Folio ' + esc(h.folio) : ''}${h.xirr != null ? ` · XIRR ${h.xirr}%` : ''}`}</div></div>
       <div style="text-align:right"><div class="a num">${inr(h.value, 0)}</div><div class="tiny num ${h.value >= h.cost ? 'in' : 'bad'}">${inrS(h.value - h.cost, 0)} · ${pct(h.value - h.cost, h.cost)}</div>${h.prevClose && h.type !== 'mf' ? `<div class="tiny num ${h.price >= h.prevClose ? 'in' : 'bad'}">today ${h.price >= h.prevClose ? '+' : ''}${((h.price / h.prevClose - 1) * 100).toFixed(2)}%</div>` : ''}</div></div>`).join('')}</div>`;
 }
 // Card EMIs still to be billed (not yet in the statement balance) are real debt
@@ -1021,7 +1020,7 @@ function tagTripSheet() {
 }
 const tagDatalist = () => `<datalist id="tagList">${allTags().map((t) => `<option value="${esc(t.name)}">`).join('')}</datalist>`;
 
-// ===================== Investments: returns, allocation, SIPs =====================
+// ===================== Investments: returns and allocation =====================
 function xirr(flows) { // flows: [{d: iso, v: paise, + is money back to you}] -> annual rate
   if (flows.length < 2 || !flows.some((f) => f.v < 0) || !flows.some((f) => f.v > 0)) return null;
   const t0 = new Date(flows[0].d + 'T00:00:00');
@@ -1053,26 +1052,6 @@ function allocation() {
   const total = Object.values(B).reduce((s, v) => s + v, 0);
   return { total, parts: Object.entries(B).filter(([, v]) => v > 0).map(([k, v]) => ({ k, v, p: v / total })).sort((a, b) => b.v - a.v) };
 }
-const SIPY = /\b(SIP|MUTUAL|MF|BSE ?STAR|BSESTAR|NSE CLEARING|ICCL|INDIAN CLEARING|ZERODHA|COIN|GROWW|KUVERA|CAMS|KFIN|PPF|NPS|PROTEAN|SMALLCASE|PAYTM MONEY|ACH D)\b/i;
-function findSips() {
-  const g = new Map();
-  for (const x of D.transactions) {
-    if (x.amount >= 0) continue;
-    const c = catById(x.categoryId);
-    if (!(c?.id === 'investments' || (SIPY.test(`${x.payee} ${x.description}`) && (!c || c.kind === 'transfer')))) continue;
-    const k = pkey(x) + '|' + Math.round(-x.amount / 50000);
-    (g.get(k) || g.set(k, []).get(k)).push(x);
-  }
-  const out = [];
-  for (const xs of g.values()) {
-    const months = new Set(xs.map((x) => ymOf(x.date))); if (months.size < 2) continue;
-    xs.sort((a, b) => a.date.localeCompare(b.date));
-    const last = xs.at(-1), next = advance(last.date, 'month', +last.date.slice(8));
-    const late = daysUntil(next);
-    out.push({ name: last.payee || last.description, amount: -last.amount, last: last.date, next, months: months.size, status: late < -5 ? 'missed' : late <= 5 ? 'due' : 'ok' });
-  }
-  return out.sort((a, b) => b.amount - a.amount);
-}
 function returnsData() {
   const accs = D.accounts.filter((a) => !a.archived && D.holdings.some((h) => h.accountId === a.id) && shareOf(a));
   let value = 0, cost = 0;
@@ -1094,7 +1073,7 @@ function returnsData() {
 const ALLOC_COL = { Equity: 'var(--brand)', 'Debt & deposits': 'var(--gold)', Retirement: '#7c8f86', Gold: '#c9a54a', Cash: '#9fb7c9', Crypto: '#b07a5a', Other: 'var(--line)' };
 function renderInvest(m) {
   setTop('Investments', { back: 'closeView' });
-  const r = returnsData(), al = allocation(), sips = findSips();
+  const r = returnsData(), al = allocation();
   const pct = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
   m.innerHTML = `${r.accs.length ? `<div class="card"><h2>Returns</h2><div class="big num">${inr(r.value, 0)}</div>
       ${r.cost ? `<div class="small"><span class="${r.gain >= 0 ? 'in' : 'bad'} num">${r.gain >= 0 ? '+' : ''}${inr(r.gain, 0)} (${pct(r.gain / r.cost)})</span> <span class="muted">on ${inr(r.cost, 0)} invested</span></div>` : ''}
@@ -1105,8 +1084,7 @@ function renderInvest(m) {
     ${al.total ? `<div class="card"><h2>Where your money sits</h2><div class="allocbar" aria-hidden="true">${al.parts.map((p, i) => `<i style="--w:${(p.p * 100).toFixed(2)}%;background:${ALLOC_COL[p.k]};--d:${i * 70}ms"></i>`).join('')}</div>
       ${al.parts.map((p) => `<div class="row small" style="margin-top:8px"><span class="dot" style="background:${ALLOC_COL[p.k]}"></span><span class="grow">${p.k}</span><span class="num">${inr(p.v, 0)}</span><span class="muted num" style="width:3.2em;text-align:right">${Math.round(p.p * 100)}%</span></div>`).join('')}
       <p class="tiny muted" style="margin:8px 0 0">Leaves out property, vehicles and loans. Mutual funds are split by their names (debt, liquid and gilt funds count as debt).</p></div>` : ''}
-    <div class="card"><h2>SIPs</h2>${sips.length ? sips.map((s) => `<div class="item" style="padding:8px 0"><div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${inr(s.amount, 0)} a month · last ${fmtDate(s.last, true)} · ${s.months} months seen</div></div><span class="pillnote ${s.status === 'missed' ? 'bad' : s.status === 'due' ? 'warn' : 'in'}">${s.status === 'missed' ? `Not seen for ${MON[+s.next.slice(5, 7) - 1]}` : s.status === 'due' ? 'Due ' + dueWord(s.next) : 'On track'}</span></div>`).join('')
-      : '<p class="small muted" style="margin:0">No SIPs found yet. Ledger spots them once the same investment debit shows up in two different months.</p>'}</div>`;
+`;
 }
 
 function recapData(ym) {
@@ -1453,7 +1431,7 @@ function renderAccounts(m) {
   for (const a of D.accounts.filter((a) => !a.archived && accVisible(a))) (groups[typeOf(a.type).group] ||= []).push(a);
   const order = [...new Set(ACCOUNT_TYPES.map((t) => t.group))];
   m.innerHTML = whoSwitch() + `<div class="card"><h2>Net worth${multi() ? ' · ' + esc(D.settings.who === 'all' ? 'Combined' : memberName(D.settings.who)) : ''}</h2><div class="big num">${inr(nw.net, 0)}</div>${D.settings.loansSeparate && loansTotal() ? `<div class="small muted">Loans ${inr(loansTotal(), 0)}, kept out of net worth</div>` : ''}${multi() && D.settings.who !== 'all' && D.accounts.some((a) => ownerOf(a) === 'joint') ? '<div class="tiny muted">Joint accounts count half here.</div>' : ''}</div>` +
-    (allocation().total ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openInvest"><div class="ico tone-sage" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18l5-6 4 3 7-9"/><path d="M15 6h5v5"/></svg></div><div class="grow"><div class="t">Investments</div><div class="s">Returns, where your money sits, SIPs</div></div><div class="muted">›</div></button>` : '') +
+    (allocation().total ? `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openInvest"><div class="ico tone-sage" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18l5-6 4 3 7-9"/><path d="M15 6h5v5"/></svg></div><div class="grow"><div class="t">Investments</div><div class="s">Returns and where your money sits</div></div><div class="muted">›</div></button>` : '') +
     order.filter((g) => groups[g]).map((g) => {
       const total = groups[g].reduce((s2, a) => s2 + Math.round((balance(a) - unbilledEmi(a)) * shareOf(a)), 0);
       return `<div class="day"><span>${g}</span><span class="num">${inr(total, 0)}</span></div><div class="acards">${groups[g].map((a) => {
@@ -1900,7 +1878,7 @@ function renderBatch(m) {
       ${(() => { const hn = st?.holder; if (!hn) return ''; const first = hn.trim().split(/\s+/)[0]; const known = D.members.some((mb) => mb.name.toLowerCase().split(/\s+/)[0] === first.toLowerCase()); return known ? '' : `<p class="small warn" style="margin:0 0 8px">This statement is in the name of ${esc(hn)}. <button class="link" data-act="addHolder" data-name="${esc(first)}" data-i="${i}">Add ${esc(first.charAt(0) + first.slice(1).toLowerCase())} to the household</button></p>`; })()}
       ${!acc && !willReuse && multi() ? `<label class="row small" style="margin:0 0 8px"><span style="flex:none">Belongs to</span><select class="i" data-newowner="${i}" style="min-height:38px;padding:6px 10px">${ownerOptions(imp.owner ??= guessOwner(imp))}</select></label>` : ''}
       ${!acc && !willReuse ? `<input class="i" data-newname="${i}" value="${esc(imp.newName)}" placeholder="Account name, e.g. HDFC Savings" style="margin-bottom:8px">${imp.kind === 'csv' ? `<select class="i" data-newtype="${i}" style="margin-bottom:8px">${ACCOUNT_TYPES.filter((t) => t.mode === 'ledger' && t.id !== 'credit_card').map((t) => `<option value="${t.id}" ${imp.newType === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}</select>` : ''}` : ''}
-      ${imp.kind === 'cas' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds with units · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${acc ? 'Replaces the funds in ' + esc(acc.name) + '. ' : ''}Values will update daily from official NAVs.</p>` : imp.kind === 'mfsummary' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span>${st.xirr != null ? ` · XIRR ${st.xirr}%` : ''} ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p>${imp.parsed.sips?.length ? `<p class="tiny muted" style="margin:0 0 8px">SIPs ${inr(imp.parsed.sips.reduce((t, x) => t + x.amount, 0), 0)} a month</p>` : ''}` : imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
+      ${imp.kind === 'cas' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds with units · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${acc ? 'Replaces the funds in ' + esc(acc.name) + '. ' : ''}Values will update daily from official NAVs.</p>` : imp.kind === 'mfsummary' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} funds · invested ${inr(st.cost, 0)} · gain <span class="${st.value >= st.cost ? 'in' : 'bad'}">${inrS(st.value - st.cost, 0)}</span>${st.xirr != null ? ` · XIRR ${st.xirr}%` : ''} ${imp.parsed.recon?.ok ? '· <span class="in">matches the statement total</span>' : ''}</p>` : imp.kind === 'holdings' ? `<p class="small muted" style="margin:0 0 8px">${imp.parsed.holdings.length} holdings · invested ${inr(st.invested, 0)} · P&amp;L <span class="${st.value >= st.invested ? 'in' : 'bad'}">${inrS(st.value - st.invested, 0)}</span> ${imp.parsed.recon?.ok ? '· <span class="in">matches Zerodha\'s total</span>' : ''}</p><p class="tiny muted" style="margin:0 0 8px">${imp.parsed.holdings.slice(0, 6).map((h) => esc(h.symbol)).join(', ')}${imp.parsed.holdings.length > 6 ? '…' : ''}</p>` : `
       <p class="small muted" style="margin:0 0 8px">${inc} new transactions${dups ? ` · ${dups} already imported` : ''}${sms ? ` · ${sms} confirm earlier entries` : ''} ${ok ? '· <span class="in">totals check out</span>' : ok === false ? '· <span class="warn">totals off</span>' : ''}</p>
       ${(imp.loans || []).map((l, j) => `<label class="row small" style="margin:6px 0"><input type="checkbox" class="chk" data-loan="${i}:${j}" ${l.create ? 'checked' : ''}><span>Payments go to loan account ••${esc(l.no.slice(-4))}. Add it as a home loan?</span></label>
         ${l.create ? `<input class="i num" data-loan-amt="${i}:${j}" inputmode="decimal" placeholder="Outstanding today (₹), optional" value="${esc(l.outstanding)}" style="margin-bottom:6px">` : ''}`).join('')}
@@ -2031,7 +2009,7 @@ function renderMore(m) {
     <button class="item" data-act="shortcutHelp"><div class="grow">Set up "Log to Ledger" for Siri</div><div class="muted">›</div></button>
     <button class="item" data-act="openBudgets"><div class="grow">Budgets<div class="s">${Object.keys(D.budgets || {}).length ? Object.keys(D.budgets).length + ' set' : 'Monthly limits by category'}</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openTags"><div class="grow">Trips & events<div class="s">What each trip or occasion cost</div></div><div class="muted">›</div></button>
-    <button class="item" data-act="openInvest"><div class="grow">Investments<div class="s">Returns, where your money sits, SIPs</div></div><div class="muted">›</div></button>
+    <button class="item" data-act="openInvest"><div class="grow">Investments<div class="s">Returns and where your money sits</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openDupes"><div class="grow">Possible duplicates<div class="s">Check payments counted twice</div></div><div class="muted">›</div></button>
     <button class="item" data-act="summarySheet"><div class="grow">Summary for AI<div class="s">Copy your month into Claude or ChatGPT for a report</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openVault"><div class="grow">Family vault<div class="s">${(D.vault || []).length} policies and documents, encrypted</div></div><div class="muted">›</div></button>
