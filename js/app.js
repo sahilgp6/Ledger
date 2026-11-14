@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.4';
+const APP_VERSION = '1.7.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -852,6 +852,7 @@ function safeToSpend() {
   const emiList = loans.filter((x) => { const nd = x.loan.nextDue || ''; return !nd || (nd >= today && nd <= end); }).map((x) => ({ name: x.name, amount: Math.round(x.loan.emi * (shareOf(x) || 1)), next: x.loan.nextDue }));
   const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= end && !/emi/i.test(x.name));
   const bills = billList.reduce((t, x) => t + x.amount, 0), emi = emiList.reduce((t, x) => t + x.amount, 0);
+  const laterBill = (D.bills || []).filter((x) => x.amount && x.next && x.next > end && !/emi/i.test(x.name)).sort((p, q) => p.next.localeCompare(q.next))[0];
   const goal = D.settings.saveTarget || 0;
   const left = bal + extra - (o.card ? cardDue : 0) - (o.bills ? bills : 0) - (o.emi ? emi : 0) - (o.goal ? goal : 0);
   const daysLeft = Math.max(1, daysUntil(next));
@@ -866,7 +867,7 @@ function safeToSpend() {
   const spentFrom = (f, t) => spendIn(ids, f, t);
   const spentToday = spentFrom(today, today);
   const cycKey = `${cyc && !cyc.stale ? cyc.from : ymOf(today)}|${next}`;
-  const setKey = JSON.stringify([acct.id, extra, goal, o]);
+  const setKey = JSON.stringify([acct.id, extra, goal, o, o.bills ? (D.bills || []).filter((x) => x.amount && ((x.next && x.next <= end) || (x.lastPaid && cyc && !cyc.stale && x.lastPaid >= cyc.from))).map((x) => x.id).sort() : 0, o.emi ? emi : 0]);
   let m2 = D.settings.safeMeter;
   // Money moved in (salary, a transfer from another account) since the meter started resets it, so the new money counts
   const ins = (from) => D.transactions.filter((x) => x.accountId === acct.id && x.amount > 0 && x.date >= from && ['transfer', 'income'].includes(catById(x.categoryId)?.kind)).map((x) => x.id);
@@ -885,7 +886,7 @@ function safeToSpend() {
   const tone = todayLeft < 0 ? 'bad' : allowance > 0 && spentToday > allowance * 0.8 ? 'warn' : 'ok';
   const usual = 0;
   const asOf = D.transactions.filter((x) => x.accountId === acct.id).reduce((m2, x) => (x.date > m2 ? x.date : m2), '');
-  return { acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
+  return { acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, laterBill, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
 }
 function safeCard() {
   const s = safeToSpend();
@@ -924,7 +925,7 @@ function safeSheet() {
     <div class="list" style="margin:0 0 12px"><div class="item" style="padding:10px 14px"><div class="grow">${esc(s.acct.name)}<div class="s">${s.asOf ? 'Balance as of your latest entry, ' + fmtDate(s.asOf, true) : 'Current balance'}</div></div><span class="num">${inr(s.bal, 0)}</span></div>
       <div class="item" style="padding:10px 14px"><div class="grow">Other money I can use<div class="s">Cash, another account, money coming in</div></div><input class="i num" id="safeExtra" inputmode="decimal" placeholder="0" style="width:8.5em;text-align:right;min-height:40px" value="${s.extra ? s.extra / 100 : ''}"></div>
       ${s.cards.length ? sw('card', 'Credit card dues', s.cardDue, 'Paid from this account when the bill comes') : ''}
-      ${sw('bills', 'Bills before salary', s.bills, bl.length ? esc(bl.join(' · ')) : 'None due')}
+      ${sw('bills', 'Bills before salary', s.bills, (bl.length ? esc(bl.join(' · ')) : 'None due') + (s.laterBill ? ` · ${esc(s.laterBill.name)} on ${fmtDate(s.laterBill.next, true).replace(/ \d{4}$/, '')} comes from the next salary` : ''))}
       ${s.emiList.length ? sw('emi', 'Loan EMIs before salary', s.emi, 'Turn on if the EMI comes out of this account') : ''}
       ${sw('goal', 'Savings goal', s.goal, s.goal ? 'Kept aside, not for spending' : 'Not set')}
       <div class="item" style="padding:12px 14px"><div class="grow"><b>Left for the rest of the cycle</b><div class="s">until ${s.salaryKnown ? 'salary on ' : ''}${fmtDate(s.next, true)}, ${s.daysLeft} days</div></div><div style="text-align:right"><div class="num ${s.left < 0 ? 'bad' : 'in'}"><b>${inr(s.left, 0)}</b></div><div class="small muted">${inr(Math.max(0, s.perDay), 0)} a day</div></div></div></div>
