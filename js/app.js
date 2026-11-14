@@ -474,7 +474,7 @@ function renderBills(m) {
   <div class="list">${bills.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="bill"><div class="grow" style="color:var(--brand)">+ Add a bill</div></button></div>
   <div class="day"><span>Reminders</span></div>
   <div class="list">${rems.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="reminder"><div class="grow" style="color:var(--brand)">+ Add a reminder</div></button></div>
-  <p class="small muted" style="margin:10px 4px">Subscriptions and bills move to their next date by themselves when the payment shows up from a statement or SMS, or tap <b>Mark paid</b>. Reminders are yours to set: pick the date and how often, and tap <b>Mark done</b> when it's handled. Add any of them to your iPhone Calendar to get an alert.</p>`;
+  <p class="small muted" style="margin:10px 4px">Bills tick themselves off when the payment shows up. Reminders you mark done yourself.</p>`;
   ui.found = found;
 }
 function billSheet(b, kind = 'reminder', pre = {}) {
@@ -656,7 +656,7 @@ function renderVault(m) {
   <div class="list">${pol.map((v) => `<button class="item" data-act="vaultOpen" data-id="${v.id}">${vaultIcon(v.type)}<div class="grow"><div class="t">${esc(v.title)}</div><div class="s">${esc([v.provider, v.cover].filter(Boolean).join(' · '))}</div></div><div class="muted">${v.files?.length ? '📎 ' : ''}›</div></button>`).join('') || '<div class="item"><div class="grow s">No policies yet</div></div>'}</div>
   ${docs.length ? `<div class="day"><span>Documents</span></div><div class="list">${docs.map((v) => `<button class="item" data-act="vaultOpen" data-id="${v.id}">${vaultIcon('Other')}<div class="grow"><div class="t">${esc(v.title)}</div><div class="s">${esc(v.notes || '')}</div></div><div class="muted">›</div></button>`).join('')}</div>` : ''}
   <p class="small" style="margin:0 4px 8px"><button class="link" data-act="vaultImport">Import a vault file</button></p>
-  <p class="small muted" style="margin:6px 4px">Everything here is encrypted on this phone, like the rest of Ledger. Attach policy PDFs, e-cards and ID scans to each item. Renewal and premium reminders live in Bills &amp; subscriptions.</p>`;
+  <p class="small muted" style="margin:6px 4px">Encrypted on this phone. Attach PDFs, e-cards and ID scans to each item.</p>`;
 }
 // Emails, phone numbers and links in the vault open Mail, the phone or WhatsApp
 function contactLink(val) {
@@ -1128,7 +1128,7 @@ function safeSheet() {
       <div class="item" style="padding:12px 14px"><div class="grow"><b>Left for the rest of the cycle</b><div class="s">until ${s.salaryKnown ? 'salary on ' : ''}${fmtDate(s.next, true)}, ${s.daysLeft} days</div></div><div style="text-align:right"><div class="num ${s.left < 0 ? 'bad' : 'in'}"><b>${inr(s.left, 0)}</b></div><div class="small muted">${inr(Math.max(0, s.perDay), 0)} a day</div></div></div></div>
     <div class="split"><label class="f"><span>Spending account</span><select class="i" id="safeAcct">${live.map((x) => `<option value="${x.id}" ${x.id === s.acct.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
     <label class="f"><span>Save each month (₹)</span><input class="i" id="safeGoal" inputmode="decimal" placeholder="e.g. 30000" value="${s.goal ? s.goal / 100 : ''}"></label></div>
-    <p class="small muted">The balance updates with every bank SMS, Shortcut log or statement you add.${s.salaryKnown ? '' : ' No recent salary found, so this runs to the end of the month.'}</p>`);
+    <p class="small muted">${s.salaryKnown ? 'Updates with every SMS, log or statement.' : 'No recent salary found, so this runs to the end of the month.'}</p>`);
 }
 
 // ===================== Category budgets =====================
@@ -1217,7 +1217,7 @@ function renderTags(m) {
   if (ui.view.tag) return renderTag(m, ui.view.tag);
   const tags = allTags();
   m.innerHTML = tags.length ? `<div class="list">${tags.map((t) => `<button class="item" data-act="openTag" data-tag="${esc(t.name)}"><div class="ico tone-sand" aria-hidden="true">#</div><div class="grow"><div class="t">${esc(t.name)}</div><div class="s">${fmtDate(t.from, true)}${t.to !== t.from ? ' to ' + fmtDate(t.to, true) : ''} · ${t.n} transaction${t.n > 1 ? 's' : ''}</div></div><div class="a num">${inr(t.spend, 0)}</div></button>`).join('')}</div>
-    <p class="small muted" style="margin:10px 4px">Trips and events show their own totals, and Summary for AI lists them separately so one-offs don't skew your monthly averages.</p>`
+    <p class="small muted" style="margin:10px 4px">Trip totals are kept out of your monthly averages.</p>`
     : `<div class="card" style="text-align:center;padding:26px 20px"><svg width="80" height="60" viewBox="0 0 96 72" fill="none" stroke="var(--gold)" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M20 40l26-26h24v24L44 64z"/><circle cx="60" cy="24" r="4"/></svg><div class="serif" style="font-size:1.25rem;margin:8px 0 4px">No trips or events yet</div><p class="small muted">Tag a trip like "Goa, Dec 2026" to see what it cost. You can tag everything between two dates in one go.</p><button class="btn" data-act="tagTrip">Tag a trip or event</button></div>`;
 }
 function renderTag(m, tag) {
@@ -1309,7 +1309,7 @@ function renderInvest(m) {
       <div class="list" style="margin:10px -4px 0">${r.accs.map((a) => { let v = 0, c = 0; for (const h of D.holdings.filter((h2) => h2.accountId === a.id)) { v += holdValue(h); c += holdCost(h); } return `<button class="item" data-act="openAccount" data-id="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">${c ? `<span class="${v >= c ? 'in' : 'bad'}">${pct((v - c) / c)}</span> on ${inr(c, 0)}` : ''}</div></div><div class="a num">${inr(v, 0)}</div></button>`; }).join('')}</div></div>` : ''}
     ${al.total ? `<div class="card"><h2>Where your money sits</h2><div class="allocbar" aria-hidden="true">${al.parts.map((p, i) => `<i style="--w:${(p.p * 100).toFixed(2)}%;background:${ALLOC_COL[p.k]};--d:${i * 70}ms"></i>`).join('')}</div>
       ${al.parts.map((p) => `<div class="row small" style="margin-top:8px"><span class="dot" style="background:${ALLOC_COL[p.k]}"></span><span class="grow">${p.k}</span><span class="num">${inr(p.v, 0)}</span><span class="muted num" style="width:3.2em;text-align:right">${Math.round(p.p * 100)}%</span></div>`).join('')}
-      <p class="tiny muted" style="margin:8px 0 0">Leaves out property, vehicles and loans. Mutual funds are split by their names (debt, liquid and gilt funds count as debt).</p></div>` : ''}
+      <p class="tiny muted" style="margin:8px 0 0">Excludes property, vehicles and loans.</p></div>` : ''}
 `;
 }
 
@@ -1562,7 +1562,7 @@ function waterfall(ym) {
 
 // ---- Loading shimmer while a statement is read
 function showReading(name) {
-  openSheet(`<div class="skel-wrap" data-skel><h3>Reading ${esc(name)}</h3><p class="small muted" style="margin-top:-6px">Only on this phone. Nothing is uploaded.</p>
+  openSheet(`<div class="skel-wrap" data-skel><h3>Reading ${esc(name)}</h3><p class="small muted" style="margin-top:-6px">Read on this phone only.</p>
     ${[80, 60, 72].map((w) => `<div class="skel" style="height:58px;margin:10px 0"></div><div class="skel" style="height:12px;width:${w}%;margin:-2px 0 6px"></div>`).join('')}</div>`);
 }
 
@@ -1992,7 +1992,7 @@ function renderImport(m) {
   </div>
   <div class="card"><h2>Bank SMS</h2>
     <button class="btn wide" data-act="pickFile" data-kind="inbox">Read SMS inbox file</button>
-    <p class="small muted">Picks up new SMS saved by your Shortcut. Already-read messages are skipped.</p>
+    <p class="small muted">Already-read messages are skipped.</p>
     <div class="row"><button class="btn ghost" style="flex:1" data-act="pasteSms">Paste an SMS</button><button class="btn ghost" style="flex:1" data-act="smsSetup">Set up auto-capture</button></div>
   </div>
   ${D.inbox.length ? `<div class="day"><span>${D.inbox.length} SMS need attention</span></div><div class="list">${D.inbox.map(inboxItem).join('')}</div>` : ''}
@@ -2526,8 +2526,7 @@ function renderMore(m) {
     <button class="item" data-act="myUpiSheet"><div class="grow">My UPI IDs</div><div class="muted">${(D.settings.myUpi || []).length} ›</div></button>
   </div>
   <div class="day"><span>About</span></div>
-  <div class="card small"><p style="margin-top:0"><b>Ledger ${APP_VERSION}</b>. Your data never leaves this phone. It is encrypted with a key unlocked by Face ID or your recovery passphrase. The only network requests are for loading the app itself and, if you turn on Ask Ledger, a one-time download of the AI model from Hugging Face.</p>
-  <p class="muted" style="margin-bottom:0">Inspired by the open-source Sure app. Not affiliated with it or with any bank.</p></div>
+  <div class="card small"><p style="margin:0"><b>Ledger ${APP_VERSION}</b> · <span class="muted">Your data stays encrypted on this phone.</span></p></div>
   <button class="btn wide ghost" data-act="forceUpdate">Get the latest version</button><div style="height:10px"></div>
   <button class="btn wide danger" data-act="eraseAll">Erase everything on this phone</button>`;
   $('#autoLock')?.addEventListener('change', (e) => { D.settings.autoLockMin = +e.target.value; save(); });
@@ -3013,7 +3012,7 @@ function transferSheet(fromId) {
     <div class="split"><label class="f"><span>Amount (₹)</span><input class="i num" name="amount" inputmode="decimal" required></label>
     <label class="f"><span>Date</span><input class="i" type="date" name="date" value="${todayIso()}" required></label></div>
     <label class="f"><span>Note</span><input class="i" name="note" placeholder="optional"></label>
-    <p class="small muted">Money out of one, into the other; neither counts as spending or income. If a statement or SMS later shows the same transfer, it replaces this entry instead of doubling it.</p>
+    <p class="small muted">Not counted as spending or income. A matching SMS or statement entry replaces it.</p>
     <button class="btn wide">Save transfer</button></form>`);
 }
 
@@ -3049,7 +3048,7 @@ function renderAsk(m) {
   <div class="chips">${ex.map((q) => `<button class="chip" data-act="askEx" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
   <div class="small muted" id="aiStatus" style="margin:0 4px 10px">${esc(ui.aiStatus)}</div>
   ${ui.ask.map((a) => `<div class="card"><div class="small muted" style="margin-bottom:6px">${esc(a.q)}</div>${a.html}</div>`).join('') ||
-    `<p class="small muted" style="margin:0 4px">Answers are calculated from your data on this phone, so the numbers are exact. Nothing is sent anywhere.${D.settings.ai?.model ? ' The on-device AI helps with questions Ledger can\'t read on its own.' : ''}</p>`}`;
+    `<p class="small muted" style="margin:0 4px">Worked out from your data, on this phone.</p>`}`;
 }
 function setAiStatus(t) { ui.aiStatus = t; const el = $('#aiStatus'); if (el) el.textContent = t; }
 async function ensureModel() {
@@ -3342,7 +3341,7 @@ const acts = {
   qaAttach: async () => { const fs = await pickFiles('image/*,application/pdf'); if (fs.length) { ui.qa.files.push(...fs); ui.qa.payee = $('#qaPayee')?.value ?? ui.qa.payee; renderQuick(); } },
   qaMore: () => { const q = ui.qa; const acc = payAccount(q.via); txSheet(null, acc?.id); setTimeout(() => { const f = document.querySelector('form[data-form=tx]'); if (!f) return; f.payee.value = $('#qaPayee')?.value || q.payee; if (q.amt) f.amount.value = q.amt; }, 0); },
   qaSave: () => qaSave(),
-  payWithSheet: () => { const opt = (via, filter) => `<option value="">Not set</option>${accOptions(payAccount(via, false)?.id || '', filter)}`; const led = (a) => typeOf(a.type).mode === 'ledger'; openSheet(`<h3>Where quick entries go</h3><p class="small muted">Used by Quick add and by the "Log to Ledger" Shortcut.</p><form data-form="payWith">
+  payWithSheet: () => { const opt = (via, filter) => `<option value="">Not set</option>${accOptions(payAccount(via, false)?.id || '', filter)}`; const led = (a) => typeOf(a.type).mode === 'ledger'; openSheet(`<h3>Where quick entries go</h3><p class="small muted">Used by Quick add and Log to Ledger.</p><form data-form="payWith">
     <label class="f"><span>UPI payments come from</span><select class="i" name="upi">${opt('upi', (a) => led(a) && a.type !== 'credit_card')}</select></label>
     <label class="f"><span>Card payments go on</span><select class="i" name="card">${opt('card', (a) => a.type === 'credit_card')}</select></label>
     <label class="f"><span>Cash</span><select class="i" name="cash">${opt('cash', led)}</select></label>
