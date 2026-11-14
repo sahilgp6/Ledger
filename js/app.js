@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.3';
+const APP_VERSION = '1.7.4';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -401,10 +401,11 @@ function processBills() {
   for (const b of D.bills || []) {
     if (b.every === 'once' || !b.next) continue;
     const day = b.day || +b.next.slice(8);
-    if (b.kind === 'subscription') {
-      // The newest matching payment since the last one we knew of moves the next date on from it
-      const after = b.lastPaid || isoAdd(b.next, -10);
-      const paid = D.transactions.filter((x) => x.amount < 0 && x.date > after && billMatches(b, x) && (!b.amount || Math.abs(-x.amount - b.amount) <= b.amount * 0.25)).sort((p, q) => p.date.localeCompare(q.date)).pop();
+    if (b.kind === 'subscription' || b.kind === 'bill') {
+      // The newest matching payment since the last one we knew of moves the next date on from it.
+      // Bills (electricity, phone) vary, so they match on the payee and allow a much wider amount range.
+      const after = b.lastPaid || isoAdd(b.next, -10), tol = b.kind === 'bill' ? 0.75 : 0.25;
+      const paid = D.transactions.filter((x) => x.amount < 0 && x.date > after && billMatches(b, x) && (!b.amount || Math.abs(-x.amount - b.amount) <= b.amount * tol)).sort((p, q) => p.date.localeCompare(q.date)).pop();
       if (paid) { b.lastPaid = paid.date; b.amount = -paid.amount; b.day = +paid.date.slice(8); b.next = advance(paid.date, b.every, b.day); changed = true; }
     }
   }
@@ -433,33 +434,36 @@ function renderBills(m) {
   D.settings.subsSeen = true;
   const found = detectSubs();
   const subs = (D.bills || []).filter((b) => b.kind === 'subscription').sort((p, q) => p.next.localeCompare(q.next));
-  const rems = (D.bills || []).filter((b) => b.kind !== 'subscription').sort((p, q) => p.next.localeCompare(q.next));
+  const bills = (D.bills || []).filter((b) => b.kind === 'bill').sort((p, q) => p.next.localeCompare(q.next));
+  const rems = (D.bills || []).filter((b) => b.kind !== 'subscription' && b.kind !== 'bill').sort((p, q) => p.next.localeCompare(q.next));
   m.innerHTML = `
   ${found.length ? `<div class="day"><span>Found in your spending</span></div><div class="list">${found.map((f, i) => `<div class="item" style="display:block"><div class="row"><div class="grow"><div class="t">${esc(f.name)}</div><div class="s">${inr(f.amount, 0)} · looks ${EVERY[f.every].toLowerCase()} · ${f.count > 1 ? `${f.count} payments, last ${fmtDate(f.last)}` : `paid ${fmtDate(f.last)}`}</div></div></div>
       <div class="row" style="margin-top:8px"><button class="chip on" data-act="subAdd" data-i="${i}">Add</button><button class="chip" data-act="subNo" data-key="${esc(f.key)}">Not a subscription</button></div></div>`).join('')}</div>` : ''}
   <div class="day"><span>Subscriptions${subs.length ? ' · ' + inr(subs.reduce((t, b) => t + perMonth(b), 0), 0) + ' a month' : ''}</span></div>
   <div class="list">${subs.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="subscription"><div class="grow" style="color:var(--brand)">+ Add a subscription</div></button></div>
+  <div class="day"><span>Bills${bills.length ? ' · about ' + inr(bills.reduce((t, b) => t + perMonth(b), 0), 0) + ' a month' : ''}</span></div>
+  <div class="list">${bills.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="bill"><div class="grow" style="color:var(--brand)">+ Add a bill</div></button></div>
   <div class="day"><span>Reminders</span></div>
   <div class="list">${rems.map(billItem).join('')}<button class="item" data-act="billSheet" data-kind="reminder"><div class="grow" style="color:var(--brand)">+ Add a reminder</div></button></div>
-  <p class="small muted" style="margin:10px 4px">Subscriptions move to their next date by themselves when the payment shows up from a statement or SMS. Reminders are yours to set: pick the date and how often, and tap <b>Mark done</b> when it's handled. Add any of them to your iPhone Calendar to get an alert.</p>`;
+  <p class="small muted" style="margin:10px 4px">Subscriptions and bills move to their next date by themselves when the payment shows up from a statement or SMS, or tap <b>Mark paid</b>. Reminders are yours to set: pick the date and how often, and tap <b>Mark done</b> when it's handled. Add any of them to your iPhone Calendar to get an alert.</p>`;
   ui.found = found;
 }
 function billSheet(b, kind = 'reminder', pre = {}) {
   const x = b || { kind, every: 'month', next: todayIso(), remind: 1, ...pre };
-  const isSub = x.kind === 'subscription';
-  openSheet(`<h3>${b ? 'Edit' : 'Add'} ${isSub ? 'subscription' : 'reminder'}</h3>
+  const isSub = x.kind === 'subscription', isBill = x.kind === 'bill', paidKind = isSub || isBill;
+  openSheet(`<h3>${b ? 'Edit' : 'Add'} ${isSub ? 'subscription' : isBill ? 'bill' : 'reminder'}</h3>
   <form data-form="bill" data-id="${b?.id || ''}" data-kind="${x.kind}">
-    <label class="f"><span>Name</span><input class="i" name="name" required value="${esc(x.name || '')}" placeholder="${isSub ? 'Apple' : 'Car insurance renewal'}"></label>
-    <label class="f"><span>Amount (₹)${isSub ? '' : ', optional'}</span><input class="i num" name="amount" inputmode="decimal" ${isSub ? 'required' : ''} value="${x.amount ? x.amount / 100 : ''}"></label>
-    <div class="split"><label class="f"><span>Repeats</span><select class="i" name="every">${Object.entries(EVERY).filter(([k]) => !isSub || k !== 'once').map(([k, v]) => `<option value="${k}" ${k === x.every ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-    <label class="f"><span>${isSub ? 'Next payment' : 'Date'}</span><input class="i" type="date" name="next" required value="${x.next}"></label></div>
+    <label class="f"><span>Name</span><input class="i" name="name" required value="${esc(x.name || '')}" placeholder="${isSub ? 'Apple' : isBill ? 'Electricity, phone, maintenance' : 'Car insurance renewal'}"></label>
+    <label class="f"><span>Amount (₹)${isSub ? '' : isBill ? ', usual' : ', optional'}</span><input class="i num" name="amount" inputmode="decimal" ${isSub ? 'required' : ''} value="${x.amount ? x.amount / 100 : ''}"></label>
+    <div class="split"><label class="f"><span>Repeats</span><select class="i" name="every">${Object.entries(EVERY).filter(([k]) => !paidKind || k !== 'once').map(([k, v]) => `<option value="${k}" ${k === x.every ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label class="f"><span>${isSub ? 'Next payment' : isBill ? 'Next due' : 'Date'}</span><input class="i" type="date" name="next" required value="${x.next}"></label></div>
     <label class="f"><span>Remind me</span><select class="i" name="remind">${[[0, 'On the day'], [1, '1 day before'], [3, '3 days before'], [7, 'A week before'], [15, '15 days before'], [30, 'A month before']].map(([v, l]) => `<option value="${v}" ${+v === +(x.remind ?? 1) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="f"><span>Paid from (optional)</span><select class="i" name="accountId"><option value="">Not set</option>${accOptions(x.accountId)}</select></label>
-    ${isSub ? `<label class="f"><span>Payments contain</span><input class="i" name="match" value="${esc(x.match || '')}" placeholder="apple" autocapitalize="off"></label><p class="tiny muted" style="margin-top:-6px">Words from the payee on your statement or SMS, so Ledger can tick it off when it's paid. Leave empty to use the name.</p>` : ''}
+    ${paidKind ? `<label class="f"><span>Payments contain</span><input class="i" name="match" value="${esc(x.match || '')}" placeholder="apple" autocapitalize="off"></label><p class="tiny muted" style="margin-top:-6px">Words from the payee on your statement or SMS, so Ledger can tick it off when it's paid. Leave empty to use the name.</p>` : ''}
     <label class="f"><span>Note</span><input class="i" name="note" value="${esc(x.note || '')}"></label>
     <button class="btn wide">Save</button>
   </form>
-  ${b ? `<div style="height:10px"></div>${b.kind !== 'subscription' ? `<button class="btn wide ghost" data-act="billDone" data-id="${b.id}">Mark done${b.every !== 'once' ? ' (move to next date)' : ''}</button><div style="height:10px"></div>` : ''}
+  ${b ? `<div style="height:10px"></div>${b.kind !== 'subscription' ? `<button class="btn wide ghost" data-act="billDone" data-id="${b.id}">${b.kind === 'bill' ? 'Mark paid' : 'Mark done'}${b.every !== 'once' ? ' (move to next date)' : ''}</button><div style="height:10px"></div>` : ''}
     <button class="btn wide ghost" data-act="billCal" data-id="${b.id}">Add to iPhone Calendar</button><div style="height:10px"></div>
     <button class="btn wide danger" data-act="billDelete" data-id="${b.id}">Delete</button>` : ''}`);
 }
@@ -735,6 +739,8 @@ function aiSummary(period = 'last') {
   if (small.length) L.push('', `SMALL PAYMENTS: ${small.length} payments under ₹500, adding up to ${r(small.reduce((t, x) => t - x.amount, 0))}`);
   const per = { month: 'a month', quarter: 'a quarter', year: 'a year', week: 'a week' };
   const subs = (D.bills || []).filter((x) => x.kind === 'subscription');
+  const billsL = (D.bills || []).filter((x) => x.kind === 'bill');
+  if (billsL.length) { L.push('', 'REGULAR BILLS'); for (const x of billsL) L.push(`- ${clean(x.name)}: ${x.amount ? 'about ' + r(x.amount) + ' ' + (per[x.every] || '') : 'amount varies'}`); }
   if (subs.length) { L.push('', 'SUBSCRIPTIONS'); for (const x of subs) L.push(`- ${clean(x.name)}: ${x.amount ? r(x.amount) + ' ' + (per[x.every] || '') : 'amount varies'}`); }
   const loans = D.accounts.filter((x) => x.loan && accVisible(x));
   if (loans.length) {
@@ -3453,7 +3459,7 @@ const forms = {
     const amt = parseRupees(f.get('amount') || '');
     const next = f.get('next'); if (!next) return toast('Pick a date.');
     const v = { name: f.get('name').trim(), amount: amt ? Math.abs(amt) : 0, every: f.get('every'), next, day: +next.slice(8), remind: +f.get('remind'), accountId: f.get('accountId') || null, note: (f.get('note') || '').trim() };
-    if (form.dataset.kind === 'subscription') v.match = (f.get('match') || '').trim().toLowerCase();
+    if (form.dataset.kind === 'subscription' || form.dataset.kind === 'bill') v.match = (f.get('match') || '').trim().toLowerCase();
     const id = form.dataset.id;
     if (id) Object.assign(D.bills.find((x) => x.id === id), v); else D.bills.push({ id: uid(), kind: form.dataset.kind, ...v, ...(ui.pendingLast && form.dataset.kind === 'subscription' ? { lastPaid: ui.pendingLast } : {}) });
     ui.pendingLast = null;
