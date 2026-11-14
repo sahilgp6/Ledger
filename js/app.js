@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.8.4';
+const APP_VERSION = '1.8.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -899,12 +899,13 @@ function safeToSpend() {
   // minus bill payments, which are already set aside.
   // The meter only counts days it has actually watched: it starts the first day it runs in a pay cycle (no guessing
   // about earlier days), and starts again when the cycle, your settings, or money moved into the account change.
-  // Card purchases always count as spending, whether or not card dues are set aside.
-  const ids = new Set([acct.id, ...cards.map((x) => x.id)]);
+  // Card purchases count only when card dues are paid from this account (switch on). Otherwise the card is paid
+  // from next salary (the card bill target), so the meter watches this account alone.
+  const ids = new Set([acct.id, ...(o.card ? cards.map((x) => x.id) : [])]);
   const spentFrom = (f, t) => spendIn(ids, f, t);
   const spentToday = spentFrom(today, today);
   const cycKey = `${cyc && !cyc.stale ? cyc.from : ymOf(today)}|${next}`;
-  const setKey = JSON.stringify([acct.id, extra, goal, o, o.bills ? (D.bills || []).filter((x) => x.amount && ((x.next && x.next <= next) || (x.lastPaid && cyc && !cyc.stale && x.lastPaid >= cyc.from))).map((x) => x.id).sort() : 0, o.emi ? emi : 0]);
+  const setKey = JSON.stringify(['m2', acct.id, extra, goal, o, o.bills ? (D.bills || []).filter((x) => x.amount && ((x.next && x.next <= next) || (x.lastPaid && cyc && !cyc.stale && x.lastPaid >= cyc.from))).map((x) => x.id).sort() : 0, o.emi ? emi : 0]);
   let m2 = D.settings.safeMeter;
   // Money moved in (salary, a transfer from another account) since the meter started resets it, so the new money counts
   const ins = (from) => D.transactions.filter((x) => x.accountId === acct.id && x.amount > 0 && x.date >= from && ['transfer', 'income'].includes(catById(x.categoryId)?.kind)).map((x) => x.id);
@@ -1072,7 +1073,7 @@ function safeSheet() {
       ${dl(s.carry >= 0 ? 'Saved on earlier days' : 'Overspent on earlier days', `${s.carry >= 0 ? '+' : '−'} ${inr(Math.abs(s.carry), 0)}`, s.carry >= 0 ? 'in' : 'bad')}
       ${dl('Spent today', `− ${inr(s.spentToday, 0)}`)}
       ${dl('<b>Left today</b>', `<b>${inr(s.todayLeft, 0)}</b>`, s.todayLeft < 0 ? 'bad' : 'in')}</div>
-    <p class="small muted" style="margin:-4px 0 10px">Whatever you don't spend today is added to tomorrow. Bills, EMIs and your goal below are set aside first. Card purchases always count as spending. A payment only counts once it's in Ledger (bank SMS, Shortcut log or statement).</p>
+    <p class="small muted" style="margin:-4px 0 10px">Whatever you don't spend today is added to tomorrow. Bills, EMIs and your goal below are set aside first. Only money leaving ${esc(s.acct.name)} counts${s.o.card ? ', plus card purchases, since card dues are paid from it' : '. Card spending is tracked by the card bill target instead'}. A payment only counts once it's in Ledger (bank SMS, Shortcut log or statement).</p>
     <button class="btn ghost wide" style="margin-bottom:12px" data-act="safeReset">Start the meter again from today</button>
     <div class="day"><span>Where the money comes from</span></div>
     <div class="list" style="margin:0 0 12px"><div class="item" style="padding:10px 14px"><div class="grow">${esc(s.acct.name)}<div class="s">${s.asOf ? 'Balance as of your latest entry, ' + fmtDate(s.asOf, true) : 'Current balance'}</div></div><span class="num">${inr(s.bal, 0)}</span></div>
