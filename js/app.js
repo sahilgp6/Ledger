@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.6.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -778,55 +778,83 @@ function summarySheet(period) {
 // and what has already gone. Loan EMIs are transfers (only their interest shows as spending), so the
 // full EMI is set aside and the interest already counted is taken back out of spending.
 const dim = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5), 0).getDate();
-function safeToSpend() {
-  const today = todayIso(), ym = ymOf(today), st = monthStats(ym), prev = monthStats(addMonths(ym, -1));
-  // Salary may not have arrived yet: expect the larger of the last two months' income
-  const ref = Math.max(prev.income, monthStats(addMonths(ym, -2)).income);
-  let income = st.income, est = false;
-  if (ref && st.income < ref * 0.6) { income = Math.max(st.income, ref); est = true; }
-  if (!income) return null;
-  const goal = D.settings.saveTarget || 0;
+// Pay cycle: from the latest salary credit to the next one expected. Only salary counts as money in,
+// so balances, refunds, transfers and other credits never inflate what's available.
+function rangeSpend(from, to) {
+  let spend = 0, loanInt = 0;
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
+  for (const x of D.transactions) {
+    if (x.date < from || x.date > to) continue;
+    if (multi() && D.settings.who !== 'all' && !vis.has(x.accountId)) continue;
+    const c = catById(x.categoryId);
+    if (c?.kind === 'transfer') { if (x.interest) loanInt += x.interest; continue; }
+    if (c?.kind === 'income') continue;
+    if (!c && x.amount > 0) continue;
+    spend -= x.amount;
+  }
+  return { spend, loanInt };
+}
+function payCycle(today = todayIso()) {
+  const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
+  const sal = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0 && x.date <= today && (!multi() || D.settings.who === 'all' || vis.has(x.accountId))).sort((p, q) => q.date.localeCompare(p.date));
+  if (!sal.length) return null;
+  const last = sal[0];
+  if (daysUntil(last.date) < -45) return { stale: last.date };
+  // Credits within 5 days of the latest one are the same pay (e.g. salary plus allowances, or both of you)
+  const from = sal.filter((x) => daysUntil(x.date) >= daysUntil(last.date) - 5).at(-1).date;
+  const pay = sal.filter((x) => x.date >= from).reduce((t, x) => t + x.amount, 0);
+  // Next salary: the same day of the month as this one; use the usual gap if earlier pays show a pattern
+  const next = advance(from, 'month', +from.slice(8));
+  return { from, next, pay, prevPay: sal.find((x) => x.date < from && daysUntil(x.date) < daysUntil(from) - 5)?.amount || 0 };
+}
+function safeToSpend() {
+  const today = todayIso(), cyc = payCycle(today);
+  if (!cyc || cyc.stale) return cyc ? { stale: cyc.stale } : null;
+  const { from, next, pay } = cyc, end = isoAdd(next, -1);
+  const goal = D.settings.saveTarget || 0;
   const loans = D.accounts.filter((a) => a.loan?.emi && !a.archived && accVisible(a));
-  const loanIds = new Set(loans.map((a) => a.id));
   const emi = loans.reduce((t, a) => t + Math.round(a.loan.emi * (shareOf(a) || 1)), 0);
-  const loanInt = D.transactions.filter((x) => x.date.startsWith(ym) && x.interest && (loanIds.has(x.accountId) || vis.has(x.accountId))).reduce((t, x) => t + x.interest, 0);
-  const billList = (D.bills || []).filter((b) => b.amount && b.next && b.next >= today && b.next.startsWith(ym) && !/emi/i.test(b.name));
+  const billList = (D.bills || []).filter((b) => b.amount && b.next && b.next >= today && b.next <= end && !/emi/i.test(b.name));
   const bills = billList.reduce((t, b) => t + b.amount, 0);
-  const spent = Math.max(0, st.spend - loanInt);
-  const budget = income - goal - emi - bills;
+  const rs = rangeSpend(from, today);
+  const spent = Math.max(0, rs.spend - rs.loanInt); // EMI interest is inside the EMI set aside above
+  const budget = pay - goal - emi - bills;
   const left = budget - spent;
-  const days = dim(ym), day = +today.slice(8), daysLeft = days - day + 1;
+  const days = daysUntil(next) - daysUntil(from), daysLeft = Math.max(1, daysUntil(next));
+  const day = days - daysLeft + 1;
   const perDay = left / daysLeft;
   const pace = budget > 0 ? spent / (budget * ((day - 0.5) / days)) : 9;
   const tone = left < 0 ? 'bad' : pace > 1.1 ? 'warn' : 'ok';
-  return { income, est, goal, emi, bills, billList, spent, budget, left, perDay, daysLeft, days, day, tone, used: budget > 0 ? Math.min(1, spent / budget) : 1 };
+  return { pay, from, next, goal, emi, bills, billList, spent, budget, left, perDay, daysLeft, days, day, tone, used: budget > 0 ? Math.min(1, spent / budget) : 1 };
 }
 function safeCard() {
   const s = safeToSpend();
   if (!s) return '';
+  if (s.stale) return `<div class="card small muted" style="margin-bottom:14px"><b style="color:var(--ink)">Safe to spend</b> starts when your next salary arrives. The last one Ledger saw was on ${fmtDate(s.stale, true)}. Read your salary SMS or import a statement.</div>`;
   const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[s.tone];
   const msg = s.left < 0 ? `Over by ${inr(-s.left, 0)} this month` : s.tone === 'warn' ? 'Spending faster than planned' : 'On track';
   return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet">
     <div class="row"><h2 class="grow" style="margin:0">Safe to spend</h2><span class="pillnote" style="color:${col}">${msg}</span></div>
     <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money" data-count="${Math.max(0, Math.round(s.perDay / 100))}">${inr(Math.max(0, s.perDay), 0)}</div><div class="muted">a day</div></div>
-    <div class="small muted">${s.left >= 0 ? `${inr(s.left, 0)} left for the next ${s.daysLeft} day${s.daysLeft > 1 ? 's' : ''}` : 'Cut back until the month ends'}${s.goal ? ` · ${inr(s.goal, 0)} goal set aside` : ''}</div>
+    <div class="small muted">${s.left >= 0 ? `${inr(s.left, 0)} left until salary on ${fmtDate(s.next, true).replace(/ \d{4}$/, '')}` : `Cut back until salary on ${fmtDate(s.next, true).replace(/ \d{4}$/, '')}`}${s.goal ? ` · ${inr(s.goal, 0)} goal set aside` : ''}</div>
     <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${(s.used * 100).toFixed(1)}%;background:${col}"></i><b style="left:${((s.day - 0.5) / s.days * 100).toFixed(1)}%"></b></div>
-    <div class="row tiny muted" style="margin-top:4px"><span class="grow">Spent ${inr(s.spent, 0)} of ${inr(Math.max(0, s.budget), 0)}</span><span>today ▴</span></div>
+    <div class="row tiny muted" style="margin-top:4px"><span class="grow">Spent ${inr(s.spent, 0)} of ${inr(Math.max(0, s.budget), 0)}</span><span>${s.daysLeft} day${s.daysLeft > 1 ? 's' : ''} to go</span></div>
   </button>`;
 }
 function safeSheet() {
   const s = safeToSpend();
-  if (!s) return toast('Ledger needs your salary for this or last month first.');
+  if (!s || s.stale) return toast('Ledger needs a recent salary credit first.');
   const row2 = (k, v, cls = '') => `<tr><td>${k}</td><td class="num ${cls}" style="text-align:right">${v}</td></tr>`;
   openSheet(`<h3>Safe to spend</h3>
-    <table class="t">${row2(`Income${s.est ? ' (expected, from recent months)' : ''}`, inr(s.income, 0))}
+    <p class="small muted" style="margin-top:-6px">From your salary on ${fmtDate(s.from, true)} until the next one, expected ${fmtDate(s.next, true)}.</p>
+    <table class="t">${row2('Salary received', inr(s.pay, 0))}
       ${row2('Savings goal', s.goal ? '− ' + inr(s.goal, 0) : 'not set')}
       ${s.emi ? row2('Loan EMIs', '− ' + inr(s.emi, 0)) : ''}
       ${s.billList.map((b) => row2(`${esc(b.name)}, ${fmtDate(b.next, true)}`, '− ' + inr(b.amount, 0))).join('')}
-      ${row2('Spent so far', '− ' + inr(s.spent, 0))}
+      ${row2(`Spent since ${fmtDate(s.from, true).replace(/ \d{4}$/, '')}`, '− ' + inr(s.spent, 0))}
       ${row2('<b>Left this month</b>', `<b>${inr(s.left, 0)}</b>`, s.left < 0 ? 'bad' : 'in')}
       ${row2(`Per day, for ${s.daysLeft} days`, inr(Math.max(0, s.perDay), 0))}</table>
+    <p class="small muted">Only salary counts as money in. Your balances, refunds, transfers from others and other credits don't change this number.</p>
     <label class="f" style="margin-top:14px"><span>Save each month (₹)</span><input class="i" id="safeGoal" inputmode="decimal" placeholder="e.g. 30000" value="${s.goal ? s.goal / 100 : ''}"></label>
     <p class="small muted">Spending here leaves out transfers between your accounts and card bill payments. Card purchases count on the day you make them.</p>`);
 }
