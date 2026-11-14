@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.6';
+const APP_VERSION = '1.7.7';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -808,19 +808,20 @@ function lastWeekday(ym) {
   while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
   return `${ym}-${String(d.getDate()).padStart(2, '0')}`;
 }
+// Salary lands on the last weekday of each month (the 30th, or the Friday before when the month ends on a weekend).
+// The cycle runs from the last payday to the next one, by that rule, so it never depends on how a credit was
+// categorised. A salary that arrives a few days early (a holiday) starts the new cycle on the day it lands.
 function payCycle(today = todayIso()) {
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
-  const sal = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0 && x.date <= today && (!multi() || D.settings.who === 'all' || vis.has(x.accountId))).sort((p, q) => q.date.localeCompare(p.date));
-  if (!sal.length) return null;
-  const last = sal[0];
-  if (daysUntil(last.date) < -45) return { stale: last.date };
-  // Credits within 5 days of the latest one are the same pay (e.g. salary plus allowances, or both of you)
-  const from = sal.filter((x) => daysUntil(x.date) >= daysUntil(last.date) - 5).at(-1).date;
-  const pay = sal.filter((x) => x.date >= from).reduce((t, x) => t + x.amount, 0);
-  // Next salary: the last weekday of the month (the 30th, or the Friday before if the month ends on a weekend).
-  // A salary paid early, near the end of a month, belongs to that month, so the next one is next month's.
-  const next = lastWeekday(ymOf(from)) > isoAdd(from, 5) ? lastWeekday(ymOf(from)) : lastWeekday(addMonths(ymOf(from), 1));
-  return { from, next, pay, prevPay: sal.find((x) => x.date < from && daysUntil(x.date) < daysUntil(from) - 5)?.amount || 0 };
+  const sal = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0 && x.date <= today && (!multi() || D.settings.who === 'all' || vis.has(x.accountId)));
+  const ym = ymOf(today), thisPay = lastWeekday(ym);
+  let from, next;
+  const early = thisPay > today && sal.filter((x) => x.date >= isoAdd(thisPay, -5)).sort((p, q) => p.date.localeCompare(q.date))[0];
+  if (thisPay <= today) { from = thisPay; next = lastWeekday(addMonths(ym, 1)); }
+  else if (early) { from = early.date; next = lastWeekday(addMonths(ym, 1)); }
+  else { from = lastWeekday(addMonths(ym, -1)); next = thisPay; }
+  const pay = sal.filter((x) => x.date >= isoAdd(from, -5) && x.date <= isoAdd(from, 5)).reduce((t, x) => t + x.amount, 0);
+  return { from, next, pay };
 }
 // Safe to spend = what's in your spending account (HDFC savings by default) plus any other money you
 // choose to count, minus what will definitely leave before salary: card dues, bills and EMIs, and your goal.
@@ -877,7 +878,7 @@ function safeToSpend() {
   let m2 = D.settings.safeMeter;
   // Money moved in (salary, a transfer from another account) since the meter started resets it, so the new money counts
   const ins = (from) => D.transactions.filter((x) => x.accountId === acct.id && x.amount > 0 && x.date >= from && ['transfer', 'income'].includes(catById(x.categoryId)?.kind)).map((x) => x.id);
-  const inflow = m2 && ins(m2.from).some((id) => !(m2.seenIn || []).includes(id));
+  const inflow = m2 && ins(m2.from).some((id) => !(m2.seenIn || []).includes(id) && accById(acct.id) && D.transactions.find((x) => x.id === id)?.categoryId !== 'salary');
   if (!m2 || m2.cyc !== cycKey || m2.set !== setKey || m2.from > today || inflow) {
     // What's left now, plus anything already spent today, spread over today and the days to salary
     m2 = D.settings.safeMeter = { cyc: cycKey, set: setKey, from: today, daily: Math.round((left + spentToday) / daysLeft), seenIn: ins(today) };
