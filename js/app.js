@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.9.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1956,7 +1956,7 @@ function renderAccount(m, id) {
       <div class="split"><div><div class="small muted">Total due</div><div class="mid num">${inr(st.totalDue, 0)}</div></div>
       <div><div class="small muted">Minimum due</div><div class="mid num">${inr(st.minDue, 0)}</div></div></div>
       <p class="small" style="margin:10px 0 0">Due <b>${fmtDate(st.dueDate, true)}</b>${d != null ? ` (${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`})` : ''}
-      ${st.totalDue > 0 ? ` · <button class="link" data-act="togglePaid" data-id="${a.id}">${st.paid ? 'Marked paid ✓' : 'Mark as paid'}</button>` : ''}</p>
+      ${st.totalDue > 0 ? ` · <button class="link" data-act="togglePaid" data-id="${a.id}">${st.paid ? (st.paidAuto ? 'Paid ✓ (found the payment)' : 'Marked paid ✓') : 'Mark as paid'}</button>` : ''}</p>
       ${st.creditLimit ? `<p class="small muted" style="margin:6px 0 0">Limit ${inr(st.creditLimit, 0)} · available ${inr(st.availableLimit, 0)}</p>` : ''}
       ${lastStmt ? `<p class="small" style="margin:8px 0 0">${lastStmt.ok ? '<span class="badge">Balance matches statement</span>' : `<span class="badge warn">Balance differs from statement by ${inr(lastStmt.diff)}</span>`}</p>` : ''}
       ${lastStmt?.strays ? `<p class="small warn" style="margin:6px 0 0">${lastStmt.strays} SMS entries in this period were not on the statement (declined or reversed?). <button class="link" data-act="showStrays" data-id="${a.id}">Review</button></p>` : ''}
@@ -3037,6 +3037,32 @@ function matchTransfers() {
     if (!o) continue;
     const t = uid(); i.transferId = o.transferId = t; i.categoryId = o.categoryId = 'self_transfer'; n++;
   }
+  n += settleCards();
+  return n;
+}
+// A card bill paid from the bank: if the card's side of it hasn't reached Ledger (no "payment received" SMS),
+// add it, so the card's outstanding drops. Then mark the statement paid once payments since it cover the total.
+// The added entry is replaced by the real one when the next card statement is imported.
+function settleCards() {
+  let n = 0;
+  const cards = D.accounts.filter((a) => a.type === 'credit_card' && !a.archived);
+  if (!cards.length) return 0;
+  const since = (a) => a.statement?.periodTo || a.statement?.statementDate || null;
+  for (const b of D.transactions.filter((x) => x.amount < 0 && !x.transferId && x.categoryId === 'card_payment' && accById(x.accountId)?.type !== 'credit_card')) {
+    const txt = `${b.payee} ${b.description} ${b.raw || ''}`;
+    const own = cards.filter((a) => ownerOf(a) === ownerOf(accById(b.accountId) || {}));
+    const card = own.find((a) => a.last4 && txt.includes(a.last4)) || (own.length === 1 ? own[0] : null);
+    if (!card || !since(card) || b.date <= since(card)) continue; // older payments are already in the card's statements
+    const t = uid(); b.transferId = t;
+    D.transactions.push({ id: uid(), accountId: card.id, date: b.date, time: b.time || null, amount: -b.amount, payee: 'Card payment', description: `Paid from ${accById(b.accountId)?.name || 'bank'}`, categoryId: 'card_payment', notes: '', raw: '', ref: b.ref || null, hash: 'paid|' + b.id, source: 'transfer', importId: null, transferId: t, auto: true });
+    n++;
+  }
+  for (const a of cards) {
+    const st = a.statement; if (!st || st.paid || !(st.totalDue > 0)) continue;
+    const from = st.statementDate || st.periodTo; if (!from) continue;
+    const paid = D.transactions.filter((x) => x.accountId === a.id && x.amount > 0 && x.date > from && x.categoryId === 'card_payment').reduce((t, x) => t + x.amount, 0);
+    if (paid >= st.totalDue - 100) { st.paid = true; st.paidAuto = todayIso(); n++; }
+  }
   return n;
 }
 
@@ -3255,6 +3281,7 @@ async function offerFaceId() {
 }
 async function afterUnlock() {
   D = migrate(vault.data); vault.data = D;
+  try { if (settleCards()) save(); } catch (e) { console.warn(e); }
   if (processEmis() | processEpf()) save();
   refreshNavs().then((n) => { if (n && D) render(); }).catch(() => {});
   refreshStocks().then((n) => { if (n && D) render(); }).catch(() => {});
