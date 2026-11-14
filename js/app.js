@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.9';
+const APP_VERSION = '1.8.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -411,6 +411,7 @@ function processBills() {
   }
   return changed;
 }
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
 const dueWord = (iso) => { const d = daysUntil(iso); return d === 0 ? 'today' : d === 1 ? 'tomorrow' : d < 0 ? `${-d} day${d < -1 ? 's' : ''} ago` : `in ${d} days`; };
 function billItem(b) {
   const d = daysUntil(b.next);
@@ -739,6 +740,7 @@ function aiSummary(period = 'last') {
   if (small.length) L.push('', `SMALL PAYMENTS: ${small.length} payments under ₹500, adding up to ${r(small.reduce((t, x) => t - x.amount, 0))}`);
   const per = { month: 'a month', quarter: 'a quarter', year: 'a year', week: 'a week' };
   const subs = (D.bills || []).filter((x) => x.kind === 'subscription');
+  if (D.cardPlan) { const cp = cardPlan(); if (cp.salary) L.push('', 'CARD BILL PLAN', `- Expected salary ${r(cp.salary)}, fixed costs ${r(cp.bank)}, goal ${r(cp.goal)}, money for UPI ${r(cp.upi)}`, `- Card bill target ${r(cp.target)}; spent on the card so far this statement ${r(cp.spent)}${cp.pace != null ? `, heading for ${r(cp.pace)}` : ''}`); }
   const billsL = (D.bills || []).filter((x) => x.kind === 'bill');
   if (billsL.length) { L.push('', 'REGULAR BILLS'); for (const x of billsL) L.push(`- ${clean(x.name)}: ${x.amount ? 'about ' + r(x.amount) + ' ' + (per[x.every] || '') : 'amount varies'}`); }
   if (subs.length) { L.push('', 'SUBSCRIPTIONS'); for (const x of subs) L.push(`- ${clean(x.name)}: ${x.amount ? r(x.amount) + ' ' + (per[x.every] || '') : 'amount varies'}`); }
@@ -870,9 +872,9 @@ function safeToSpend() {
   const loans = D.accounts.filter((x) => x.loan?.emi && !x.archived && ownerOf(x) !== 'other');
   const emiList = loans.filter((x) => { const nd = x.loan.nextDue || ''; return !nd || (nd >= today && nd <= end); }).map((x) => ({ name: x.name, amount: Math.round(x.loan.emi * (shareOf(x) || 1)), next: x.loan.nextDue }));
   // Bills due up to and including payday are set aside: a bill due the day salary lands is still paid from this cycle
-  const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= next && !/emi/i.test(x.name));
+  const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= next && !/\bemi\b/i.test(x.name));
   const bills = billList.reduce((t, x) => t + x.amount, 0), emi = emiList.reduce((t, x) => t + x.amount, 0);
-  const laterBill = (D.bills || []).filter((x) => x.amount && x.next && x.next > next && !/emi/i.test(x.name)).sort((p, q) => p.next.localeCompare(q.next))[0];
+  const laterBill = (D.bills || []).filter((x) => x.amount && x.next && x.next > next && !/\bemi\b/i.test(x.name)).sort((p, q) => p.next.localeCompare(q.next))[0];
   const goal = D.settings.saveTarget || 0;
   const left = bal + extra - (o.card ? cardDue : 0) - (o.bills ? bills : 0) - (o.emi ? emi : 0) - (o.goal ? goal : 0);
   const daysLeft = Math.max(1, daysUntil(next));
@@ -908,6 +910,116 @@ function safeToSpend() {
   const asOf = D.transactions.filter((x) => x.accountId === acct.id).reduce((m2, x) => (x.date > m2 ? x.date : m2), '');
   return { acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, laterBill, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
 }
+// ===================== Card bill target =====================
+// One sum: expected salary − fixed costs − savings goal − money for UPI = what the card bill can be.
+// Fixed costs come from your loans and bills (switch any off) plus ones you add. Card-paid ones stay inside the target.
+const cplan = () => (D.cardPlan ||= { fixed: [], off: {}, stmtDay: 2 });
+function cardCycle(today = todayIso()) {
+  const sd = cplan().stmtDay || 2, ym = ymOf(today);
+  const at = (m) => `${m}-${String(Math.min(sd, dim(m))).padStart(2, '0')}`;
+  const start = at(ym) <= today ? at(ym) : at(addMonths(ym, -1));
+  const next = at(addMonths(ymOf(start), 1));
+  return { start, next };
+}
+function cardSpend(ids, from, to) {
+  let t = 0;
+  for (const x of D.transactions) {
+    if (x.date < from || x.date > to || !ids.has(x.accountId)) continue;
+    const k = catById(x.categoryId)?.kind;
+    if (k === 'transfer' || k === 'income' || (!k && x.amount > 0)) continue;
+    t -= x.amount;
+  }
+  return Math.max(0, t);
+}
+function usualUpi() {
+  const a = safeAccount(); if (!a) return 0;
+  const ym = ymOf(todayIso()); let t = 0, n = 0;
+  for (let i = 1; i <= 3; i++) {
+    const m = addMonths(ym, -i), from = `${m}-01`, to = `${m}-${String(dim(m)).padStart(2, '0')}`;
+    if (!D.transactions.some((x) => x.accountId === a.id && x.date >= from && x.date <= to)) continue;
+    t += spendIn(new Set([a.id]), from, to); n++;
+  }
+  return n ? Math.round(t / n / 10000) * 10000 : 0;
+}
+function lastSalary() {
+  const s = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0).sort((p, q) => q.date.localeCompare(p.date));
+  if (!s.length) return 0;
+  return s.filter((x) => daysUntil(x.date) >= daysUntil(s[0].date) - 5).reduce((t, x) => t + x.amount, 0);
+}
+function cardFixed() {
+  const p = cplan(), today = todayIso(), soon = isoAdd(today, 60), out = [];
+  for (const a of D.accounts) if (a.loan?.emi && !a.archived) out.push({ key: 'loan:' + a.id, name: `${a.name} EMI`, amount: Math.round(a.loan.emi * (shareOf(a) || 1)), by: 'bank', note: 'every month' });
+  for (const b of D.bills || []) {
+    if (!b.amount || /\bemi\b/i.test(b.name)) continue;
+    const monthly = b.every === 'month' || b.every === 'week';
+    if (!monthly && !(b.next && b.next <= soon)) continue;
+    const by = b.kind === 'subscription' ? 'card' : 'bank';
+    out.push({ key: 'bill:' + b.id, name: b.name, amount: b.every === 'week' ? Math.round(b.amount * 52 / 12) : b.amount, by, note: monthly ? 'every month' : `due ${fmtDate(b.next, true).replace(/ \d{4}$/, '')}` });
+  }
+  for (const f of p.fixed) {
+    if (f.every === 'once' && f.ym !== ymOf(today) && f.ym !== ymOf(addMonths(ymOf(today), 1))) continue;
+    const div = { quarter: 3, year: 12 }[f.every] || 1; // spread 3-monthly and yearly costs over each month
+    out.push({ key: 'own:' + f.id, id: f.id, name: f.name, amount: Math.round(f.amount / div), by: f.by, note: { month: 'every month', quarter: `${inr(f.amount, 0)} every 3 months, set aside monthly`, year: `${inr(f.amount, 0)} a year, set aside monthly`, once: 'just this month' }[f.every] || '', own: true });
+  }
+  return out.map((x) => ({ ...x, on: !p.off[x.key] }));
+}
+function cardPlan() {
+  const p = cplan();
+  const salary = p.salary ?? lastSalary(), upi = p.upi ?? usualUpi(), goal = D.settings.saveTarget || 0;
+  const fixed = cardFixed();
+  const bank = fixed.filter((x) => x.on && x.by === 'bank').reduce((t, x) => t + x.amount, 0);
+  const onCard = fixed.filter((x) => x.on && x.by === 'card').reduce((t, x) => t + x.amount, 0);
+  const target = salary - bank - goal - upi;
+  const cards = D.accounts.filter((a) => !a.archived && a.type === 'credit_card' && accVisible(a));
+  const { start, next } = cardCycle();
+  const today = todayIso(), spent = cardSpend(new Set(cards.map((a) => a.id)), start, today);
+  const days = daysUntil(next) - daysUntil(start), gone = daysUntil(today) - daysUntil(start) + 1, daysLeft = Math.max(1, days - gone + 1);
+  const perDay = (target - spent) / daysLeft, pace = gone >= 3 ? (spent / gone) * days : null;
+  const tone = spent > target ? 'bad' : pace != null && pace > target * 1.05 ? 'warn' : 'ok';
+  return { salary, salaryGuessed: p.salary == null, upi, upiGuessed: p.upi == null, goal, fixed, bank, onCard, target, cards, start, next, spent, days, gone, daysLeft, perDay, pace, tone };
+}
+function cardPlanCard() {
+  const c = cardPlan();
+  if (!c.cards.length) return '';
+  const nd = fmtDate(c.next, true).replace(/ \d{4}$/, ''), sd = fmtDate(c.start, true).replace(/ \d{4}$/, '');
+  if (!c.salary) return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet"><h2 style="margin:0">Card bill target</h2><p class="small muted" style="margin:6px 0 0">Enter your expected salary and Ledger works out how big your next card bill can be.</p><span class="link small">Plan it ›</span></button>`;
+  const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[c.tone];
+  const used = c.target > 0 ? Math.min(100, (c.spent / c.target) * 100) : 100, mark = Math.min(100, ((c.gone - 0.5) / c.days) * 100);
+  return `<button class="card item cplan tone-${c.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet">
+    <div class="row"><h2 class="grow" style="margin:0">Card bill target</h2><span class="pillnote" style="color:var(--gold-ink)">Bill on ${nd}</span></div>
+    <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money ${c.target < 0 ? 'bad' : ''}" data-count="${Math.round(c.target)}" data-ck="cardt">${inr(c.target, 0)}</div><div class="muted small">for the card</div></div>
+    <div class="small muted">From ${c.salaryGuessed ? 'a' : 'your'} ${inr(c.salary, 0)} salary${c.salaryGuessed ? ' (your last one, tap to change)' : ''}</div>
+    <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${used.toFixed(1)}%;background:${col}"></i><b style="left:${mark.toFixed(1)}%"></b></div>
+    <div class="row tiny muted" style="margin-top:4px"><span class="grow">${inr(c.spent, 0)} on the card since ${sd}</span><span>today ▴</span></div>
+    <div class="cp-tiles"><div><span>On the card each day</span><b class="num">${inr(Math.max(0, c.perDay), 0)}</b><span>for ${c.daysLeft} day${c.daysLeft > 1 ? 's' : ''}</span></div>
+      <div class="${c.tone !== 'ok' ? 'warn' : ''}"><span>At this pace</span><b class="num">${c.pace == null ? '…' : inr(c.pace, 0)}</b><span>${c.pace == null ? 'after a few days' : c.pace > c.target ? inr(c.pace - c.target, 0) + ' over' : inr(c.target - c.pace, 0) + ' under'}</span></div></div>
+  </button>`;
+}
+function cardPlanSheet() {
+  const c = cardPlan();
+  const row = (x) => `<label class="item" style="padding:10px 14px"><div class="grow">${esc(x.name)}<div class="s">${esc(x.note)}${x.by === 'card' ? ' · on the card, stays inside the target' : ''}</div></div><span class="num" style="margin-right:10px;${x.on ? '' : 'opacity:.4;text-decoration:line-through'}${x.by === 'card' ? ';color:var(--muted)' : ''}">${x.by === 'card' ? '' : '− '}${inr(x.amount, 0)}</span>${x.own ? `<button type="button" class="link small" style="margin-right:8px" data-act="cpFixedSheet" data-id="${x.id}">Edit</button>` : ''}<input type="checkbox" switch data-cpoff="${esc(x.key)}" ${x.on ? 'checked' : ''}></label>`;
+  openSheet(`<h3>Plan the card bill</h3><p class="small muted" style="margin-top:-6px">For card spending from ${fmtDate(c.start, true).replace(/ \d{4}$/, '')}, billed on ${fmtDate(c.next, true)}.</p>
+    <div class="split"><label class="f"><span>Expected salary (₹)</span><input class="i num" id="cpSalary" inputmode="decimal" placeholder="e.g. 180000" value="${c.salaryGuessed ? '' : c.salary / 100}"></label>
+      <label class="f"><span>Money for UPI (₹)</span><input class="i num" id="cpUpi" inputmode="decimal" placeholder="${c.upiGuessed && c.upi ? c.upi / 100 : '0'}" value="${c.upiGuessed ? '' : c.upi / 100}"></label></div>
+    <p class="small muted" style="margin:-6px 0 12px">${c.salaryGuessed && c.salary ? `Using your last salary, ${inr(c.salary, 0)}, until you type one. ` : ''}${c.upiGuessed && c.upi ? `UPI uses your usual ${inr(c.upi, 0)} a month from ${esc(safeAccount()?.name || 'your bank')} until you type an amount.` : 'UPI: Ranjeet and anything else you pay from the bank, not the card.'}</p>
+    <div class="day"><span>Fixed costs</span></div>
+    <div class="list" style="margin-bottom:12px">${c.fixed.map(row).join('')}<button class="item" data-act="cpFixedSheet"><div class="grow" style="color:var(--brand)">+ Add a fixed cost</div></button></div>
+    <div class="list" style="margin-bottom:12px"><div class="item" style="padding:10px 14px"><div class="grow">Savings goal</div><span class="num">${c.goal ? '− ' + inr(c.goal, 0) : 'not set'}</span></div>
+      <div class="item" style="padding:10px 14px"><div class="grow">Money for UPI</div><span class="num">− ${inr(c.upi, 0)}</span></div></div>
+    <div class="cp-result"><div><span>CARD BILL TARGET</span><small>${inr(c.salary, 0)} − ${inr(c.bank, 0)} fixed − ${inr(c.goal, 0)} goal − ${inr(c.upi, 0)} UPI</small></div><b class="num">${inr(c.target, 0)}</b></div>
+    ${c.onCard ? `<p class="small muted">Includes ${inr(c.onCard, 0)} of subscriptions already on the card.</p>` : ''}
+    <label class="f" style="margin-top:12px"><span>Card statement made on</span><select class="i" id="cpStmt">${[1, 2, 3, 4, 5, 10, 15, 20, 25].map((d) => `<option value="${d}" ${d === (cplan().stmtDay || 2) ? 'selected' : ''}>the ${ordinal(d)} of the month</option>`).join('')}</select></label>`);
+}
+function cpFixedSheet(id) {
+  const f = id ? cplan().fixed.find((x) => x.id === id) : null;
+  openSheet(`<h3>${f ? 'Edit fixed cost' : 'Add a fixed cost'}</h3><form data-form="cpFixed">${f ? `<input type="hidden" name="id" value="${f.id}">` : ''}
+    <label class="f"><span>Name</span><input class="i" name="name" required placeholder="e.g. Car insurance, gym, school fees" value="${esc(f?.name || '')}"></label>
+    <div class="split"><label class="f"><span>Amount (₹)</span><input class="i num" name="amount" inputmode="decimal" required value="${f ? f.amount / 100 : ''}"></label>
+      <label class="f"><span>How often</span><select class="i" name="every">${[['month', 'Every month'], ['quarter', 'Every 3 months'], ['year', 'Every year'], ['once', 'Just this month']].map(([k, t]) => `<option value="${k}" ${f?.every === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
+    <label class="f"><span>Paid by</span><select class="i" name="by"><option value="bank" ${f?.by !== 'card' ? 'selected' : ''}>Bank (comes off before the card target)</option><option value="card" ${f?.by === 'card' ? 'selected' : ''}>Credit card (stays inside the target)</option></select></label>
+    <button class="btn wide">Save</button></form>${f ? `<div style="height:10px"></div><button class="btn wide ghost" data-act="cpFixedDel" data-id="${f.id}">Remove</button>` : ''}`);
+}
+
 function safeCard() {
   const s = safeToSpend();
   if (!s) return '';
@@ -1650,6 +1762,7 @@ function renderHome(m) {
     </div>
     ${D.settings.loansSeparate && loans ? `<button class="item" style="margin:10px -4px 0;padding:10px 4px;border-top:1px solid var(--line)" data-act="tab" data-tab="accounts"><div class="grow"><div class="small muted">Loans, kept out of net worth</div><div class="num">${inr(loans, 0)}</div></div><div class="muted">›</div></button>` : ''}</div>
   ${safeCard()}
+  ${cardPlanCard()}
   ${recapCard()}
   ${dues.map((a) => { const d = daysUntil(a.statement.dueDate); return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAccount" data-id="${a.id}">
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
@@ -3099,6 +3212,9 @@ const acts = {
   lpTag: (d) => lpTagSheet(d.id),
   calDay: (d) => calDaySheet(d.d),
   safeSheet: () => safeSheet(),
+  cardPlanSheet: () => cardPlanSheet(),
+  cpFixedSheet: (d) => cpFixedSheet(d.id),
+  cpFixedDel: (d) => { const p = cplan(); p.fixed = p.fixed.filter((x) => x.id !== d.id); delete p.off['own:' + d.id]; save(); render(); cardPlanSheet(); },
   safeReset: () => { delete D.settings.safeMeter; save(); render(); safeSheet(); done('Meter restarted'); },
   openBudgets: () => { ui.view = { page: 'budgets' }; render(); window.scrollTo(0, 0); },
   budgetSheet: (d) => budgetSheet(d.id),
@@ -3458,6 +3574,13 @@ document.addEventListener('click', (e) => {
 });
 
 const forms = {
+  cpFixed: (f) => {
+    const amount = parseRupees(f.get('amount')); if (!amount || amount <= 0) return toast('Enter an amount.');
+    const v = { name: f.get('name').trim(), amount, every: f.get('every'), by: f.get('by'), ym: f.get('every') === 'once' ? ymOf(todayIso()) : undefined };
+    const ex = f.get('id') && cplan().fixed.find((x) => x.id === f.get('id'));
+    if (ex) Object.assign(ex, v); else cplan().fixed.push({ id: uid(), ...v });
+    save(); render(); cardPlanSheet(); done('Fixed cost saved');
+  },
   txTag: (f) => { const x = D.transactions.find((t) => t.id === f.get('id')); if (!x) return; const t = parseTags(f.get('tag'))[0]; if (t) x.tags = [t]; else delete x.tags; save(); closeSheet(); render(); done(t ? `Tagged #${t}` : 'Tag removed'); },
   budget: (f) => { const lim = parseRupees(f.get('lim')); const c = f.get('cat'); if (!c) return toast('Pick a category.'); if (!lim || lim <= 0) return toast('Enter a monthly limit.'); budgets()[c] = lim; (D.settings.budgetSince ||= {})[c] ||= ymOf(todayIso()); save(); closeSheet(); render(); done('Budget set'); },
   tagTrip: (f) => {
@@ -3702,6 +3825,9 @@ window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recap
 
 // Savings goal and AI style on the Summary sheet: saved as you leave each box
 document.addEventListener('change', (e) => {
+  if (['cpSalary', 'cpUpi'].includes(e.target.id)) { const v = parseRupees(e.target.value), k = e.target.id === 'cpSalary' ? 'salary' : 'upi'; if (e.target.value.trim() === '') delete cplan()[k]; else if (v != null && v >= 0) cplan()[k] = v; save(); render(); const t = $('#sheet').scrollTop; cardPlanSheet(); $('#sheet').scrollTop = t; return; }
+  if (e.target.id === 'cpStmt') { cplan().stmtDay = +e.target.value; save(); render(); cardPlanSheet(); return; }
+  if (e.target.dataset?.cpoff) { const k = e.target.dataset.cpoff; if (e.target.checked) delete cplan().off[k]; else cplan().off[k] = true; save(); render(); const t = $('#sheet').scrollTop; cardPlanSheet(); $('#sheet').scrollTop = t; return; }
   if (e.target.id === 'safeExtra') { const v = parseRupees(e.target.value); D.settings.safeExtra = v && v > 0 ? v : 0; save(); render(); safeSheet(); return; }
   if (e.target.id === 'safeAcct') { D.settings.safeAcct = e.target.value; save(); render(); safeSheet(); return; }
   if (e.target.dataset?.safe) { safeOpts()[e.target.dataset.safe] = e.target.checked; save(); render(); const t = $('#sheet').scrollTop; safeSheet(); $('#sheet').scrollTop = t; return; }
