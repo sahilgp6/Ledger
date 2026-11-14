@@ -230,7 +230,7 @@ main.flipin>*:not(:first-child){animation:fade .3s ease-out .14s both}
 @keyframes meterIn{from{stroke-dashoffset:var(--c)}}
 .meter-p{font-family:Fraunces,serif;font-size:20px;fill:var(--ink)}.meter-l{font-size:9.5px;fill:var(--muted)}
 .cp-tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
-.cp-tiles>div{background:var(--chip);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.cp-tiles>div{background:var(--chip);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;cursor:pointer;transition:transform .12s}.cp-tiles>div:active{transform:scale(.97)}
 .cp-tiles span{font-size:.7rem;color:var(--muted)} .cp-tiles b{font-family:Fraunces,serif;font-size:1.2rem;font-weight:500}
 .cp-tiles .warn{background:color-mix(in oklch,var(--warn) 16%,var(--card))} .cp-tiles .warn span,.cp-tiles .warn b{color:color-mix(in oklch,var(--warn) 70%,var(--ink))}
 .cp-result{display:flex;align-items:center;gap:12px;background:var(--brand-bg);color:var(--on-brand);border-radius:18px;padding:14px 16px}

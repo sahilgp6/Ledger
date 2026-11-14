@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.8.9';
+const APP_VERSION = '1.9.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1013,11 +1013,35 @@ function cardPlanCard() {
     <div class="small muted">From ${c.salaryGuessed ? 'a' : 'your'} ${inr(c.salary, 0)} salary${c.salaryGuessed ? ' (your last one, tap to change)' : ''}</div>
     <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${used.toFixed(1)}%;background:${col}"></i><b style="left:${mark.toFixed(1)}%"></b></div>
     <div class="row tiny muted" style="margin-top:4px"><span class="grow">${inr(c.owed, 0)} outstanding${c.emiNext ? ` + ${inr(c.emiNext, 0)} card EMIs due` : ' on the card'}</span><span>today ▴</span></div>
-    <div class="cp-tiles"><div><span>On the card each day</span><b class="num">${inr(Math.max(0, c.perDay), 0)}</b><span>for ${c.daysLeft} day${c.daysLeft > 1 ? 's' : ''}</span></div>
-      <div class="${c.tone !== 'ok' ? 'warn' : ''}"><span>At this pace</span><b class="num">${c.pace == null ? '…' : inr(c.pace, 0)}</b><span>${c.pace == null ? 'after a few days' : c.pace > c.target ? inr(c.pace - c.target, 0) + ' over' : inr(c.target - c.pace, 0) + ' under'}</span></div></div>
+    <div class="cp-tiles"><div data-act="cpTip" data-k="day" role="button" aria-label="How the daily amount is worked out"><span>On the card each day ⓘ</span><b class="num">${inr(Math.max(0, c.perDay), 0)}</b><span>for ${c.daysLeft} day${c.daysLeft > 1 ? 's' : ''}</span></div>
+      <div class="${c.tone !== 'ok' ? 'warn' : ''}" data-act="cpTip" data-k="pace" role="button" aria-label="How the projection is worked out"><span>At this pace ⓘ</span><b class="num">${c.pace == null ? '…' : inr(c.pace, 0)}</b><span>${c.pace == null ? 'after a few days' : c.pace > c.target ? inr(c.pace - c.target, 0) + ' over' : inr(c.target - c.pace, 0) + ' under'}</span></div></div>
   </button>`;
 }
 function cardPlanSheet() { openSheet(cardPlanHtml()); }
+// Tap a tile: the sum behind it, with your numbers, and what can make it wrong
+function cpTip(k) {
+  const c = cardPlan(), nd = fmtDate(c.next, true).replace(/ \d{4}$/, '');
+  const line = (l, v, cls = '') => `<div class="item" style="padding:9px 14px"><div class="grow small">${l}</div><span class="num ${cls}">${v}</span></div>`;
+  const emiNote = c.emiNext ? `<li>Card EMIs are estimated from your last imported statement (what's left ÷ months left). The bank's instalment can differ by a little.</li>` : '';
+  const owedNote = `<li>The outstanding is worked out from your last card statement plus every entry since. Payments that never reached Ledger aren't in it, so compare it with the HDFC app.</li>
+    <li>If last month's bill is paid but Ledger doesn't know, the outstanding is too high. Mark it paid on the card's page.</li>`;
+  if (k === 'day') {
+    const room = c.target - c.billed;
+    openSheet(`<h3>On the card each day</h3><p class="small muted" style="margin-top:-6px">What you can put on the card each day until the ${nd} statement and still land on your target.</p>
+      <div class="list" style="margin:0 0 12px">${line('Card bill target', inr(c.target, 0))}${line('Outstanding on the card now', '− ' + inr(c.owed, 0))}${c.emiNext ? line('Card EMIs on the next bill', '− ' + inr(c.emiNext, 0)) : ''}${line('<b>Left to spend</b>', inr(room, 0), room < 0 ? 'bad' : '')}${line(`÷ ${c.daysLeft} day${c.daysLeft > 1 ? 's' : ''} to ${nd}`, '<b>' + inr(Math.max(0, c.perDay), 0) + ' a day</b>')}</div>
+      ${room < 0 ? `<p class="small bad">You're already ${inr(-room, 0)} over the target, so there's nothing left for new card spending this cycle.</p>` : ''}
+      <p class="small" style="margin:0 0 4px"><b>Worth knowing</b></p><ul class="small muted" style="padding-left:18px;margin:0 0 12px;line-height:1.5">${owedNote}${emiNote}</ul>
+      <button class="btn wide" data-act="closeSheet">Got it</button>`);
+  } else {
+    const rate = c.gone ? c.owed / c.gone : 0;
+    openSheet(`<h3>At this pace</h3><p class="small muted" style="margin-top:-6px">Your ${nd} bill if you keep putting money on the card at the same rate as so far.</p>
+      ${c.pace == null ? '<p class="small">Shows after the first 3 days of the cycle, when there\'s enough to go on.</p>' : `<div class="list" style="margin:0 0 12px">${line(`Outstanding ÷ ${c.gone} day${c.gone > 1 ? 's' : ''} so far`, inr(rate, 0) + ' a day')}${line(`× ${c.days} days in this cycle`, inr(Math.round(rate * c.days), 0))}${c.emiNext ? line('+ Card EMIs on the next bill', inr(c.emiNext, 0)) : ''}${line('<b>Projected bill</b>', '<b>' + inr(c.pace, 0) + '</b>', c.pace > c.target ? 'bad' : '')}${line('Against your target', c.pace > c.target ? inr(c.pace - c.target, 0) + ' over' : inr(c.target - c.pace, 0) + ' under', c.pace > c.target ? 'bad' : 'in')}</div>`}
+      <p class="small" style="margin:0 0 4px"><b>Worth knowing</b></p><ul class="small muted" style="padding-left:18px;margin:0 0 12px;line-height:1.5">
+      <li>It assumes everything outstanding was spent in this cycle. If it still includes last month's bill, the projection runs high.</li>
+      <li>Early in the cycle one big purchase swings it a lot. It steadies as the month goes on.</li>${owedNote.split('</li>')[0]}</li>${emiNote}</ul>
+      <button class="btn wide" data-act="closeSheet">Got it</button>`);
+  }
+}
 // Typing a salary or UPI amount updates the sums in place, so a tap on a button right after still lands
 function cardPlanRefresh() {
   const tmp = document.createElement('div'); tmp.innerHTML = cardPlanHtml();
@@ -3235,6 +3259,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- events ----------
 const acts = {
+  cpTip: (d) => cpTip(d.k),
   summarySheet: () => summarySheet(),
   donutSel: (d) => { haptic(); donutSelect(d.id); },
   lpTag: (d) => lpTagSheet(d.id),
