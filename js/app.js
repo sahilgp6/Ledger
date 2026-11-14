@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.5';
+const APP_VERSION = '1.7.6';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -803,6 +803,11 @@ function rangeSpend(from, to) {
   }
   return { spend, loanInt };
 }
+function lastWeekday(ym) {
+  const d = new Date(+ym.slice(0, 4), +ym.slice(5), 0);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  return `${ym}-${String(d.getDate()).padStart(2, '0')}`;
+}
 function payCycle(today = todayIso()) {
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
   const sal = D.transactions.filter((x) => x.categoryId === 'salary' && x.amount > 0 && x.date <= today && (!multi() || D.settings.who === 'all' || vis.has(x.accountId))).sort((p, q) => q.date.localeCompare(p.date));
@@ -812,8 +817,9 @@ function payCycle(today = todayIso()) {
   // Credits within 5 days of the latest one are the same pay (e.g. salary plus allowances, or both of you)
   const from = sal.filter((x) => daysUntil(x.date) >= daysUntil(last.date) - 5).at(-1).date;
   const pay = sal.filter((x) => x.date >= from).reduce((t, x) => t + x.amount, 0);
-  // Next salary: the same day of the month as this one; use the usual gap if earlier pays show a pattern
-  const next = advance(from, 'month', +from.slice(8));
+  // Next salary: the last weekday of the month (the 30th, or the Friday before if the month ends on a weekend).
+  // A salary paid early, near the end of a month, belongs to that month, so the next one is next month's.
+  const next = lastWeekday(ymOf(from)) > isoAdd(from, 5) ? lastWeekday(ymOf(from)) : lastWeekday(addMonths(ymOf(from), 1));
   return { from, next, pay, prevPay: sal.find((x) => x.date < from && daysUntil(x.date) < daysUntil(from) - 5)?.amount || 0 };
 }
 // Safe to spend = what's in your spending account (HDFC savings by default) plus any other money you
