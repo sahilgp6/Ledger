@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.2';
+const APP_VERSION = '1.7.3';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -853,13 +853,27 @@ function safeToSpend() {
   // Daily meter: the cycle's money is spread evenly over its days. What isn't spent one day carries into the next,
   // overspending comes out of the days after. Spending is everything from this account (and its cards, when counted),
   // minus bill payments, which are already set aside.
-  const start = cyc && !cyc.stale ? cyc.from : ymOf(today) + '-01';
-  const ids = new Set([acct.id, ...(o.card ? cards.map((x) => x.id) : [])]);
+  // The meter only counts days it has actually watched: it starts the first day it runs in a pay cycle (no guessing
+  // about earlier days), and starts again when the cycle, your settings, or money moved into the account change.
+  // Card purchases always count as spending, whether or not card dues are set aside.
+  const ids = new Set([acct.id, ...cards.map((x) => x.id)]);
   const spentFrom = (f, t) => spendIn(ids, f, t);
-  const spentToday = spentFrom(today, today), spentBefore = start < today ? spentFrom(start, isoAdd(today, -1)) : 0;
-  const days = Math.max(1, daysUntil(next) - daysUntil(start)), day = Math.min(days, days - daysLeft + 1);
-  const pool = left + spentBefore + spentToday;     // what this cycle had to spend
-  const daily = pool / days;
+  const spentToday = spentFrom(today, today);
+  const cycKey = `${cyc && !cyc.stale ? cyc.from : ymOf(today)}|${next}`;
+  const setKey = JSON.stringify([acct.id, extra, goal, o]);
+  let m2 = D.settings.safeMeter;
+  // Money moved in (salary, a transfer from another account) since the meter started resets it, so the new money counts
+  const ins = (from) => D.transactions.filter((x) => x.accountId === acct.id && x.amount > 0 && x.date >= from && ['transfer', 'income'].includes(catById(x.categoryId)?.kind)).map((x) => x.id);
+  const inflow = m2 && ins(m2.from).some((id) => !(m2.seenIn || []).includes(id));
+  if (!m2 || m2.cyc !== cycKey || m2.set !== setKey || m2.from > today || inflow) {
+    // What's left now, plus anything already spent today, spread over today and the days to salary
+    m2 = D.settings.safeMeter = { cyc: cycKey, set: setKey, from: today, daily: Math.round((left + spentToday) / daysLeft), seenIn: ins(today) };
+    save();
+  }
+  const start = m2.from, daily = m2.daily;
+  const days = Math.max(1, daysUntil(next) - daysUntil(start)), day = daysUntil(today) - daysUntil(start) + 1;
+  const spentBefore = start < today ? spentFrom(start, isoAdd(today, -1)) : 0;
+  const pool = daily * days;
   const carry = daily * (day - 1) - spentBefore;    // + saved on earlier days, − overspent
   const allowance = daily + carry, todayLeft = allowance - spentToday;
   const tone = todayLeft < 0 ? 'bad' : allowance > 0 && spentToday > allowance * 0.8 ? 'warn' : 'ok';
@@ -894,11 +908,12 @@ function safeSheet() {
   const bl = s.billList.map((x) => `${x.name}, ${fmtDate(x.next, true).replace(/ \d{4}$/, '')}`);
   const dl = (k, v, cls = '') => `<div class="item" style="padding:10px 14px"><div class="grow">${k}</div><span class="num ${cls}">${v}</span></div>`;
   openSheet(`<h3>Safe to spend today</h3>
-    <div class="list" style="margin:0 0 12px">${dl(`Daily budget<div class="s">${inr(s.pool, 0)} for ${s.days} days, from ${fmtDate(s.start, true).replace(/ \d{4}$/, '')}</div>`, inr(s.daily, 0))}
+    <div class="list" style="margin:0 0 12px">${dl(`Daily budget<div class="s">${s.start === todayIso() ? `${inr(s.left + s.spentToday, 0)} over ${s.daysLeft} days to ${s.salaryKnown ? 'salary' : 'month end'}` : `Set on ${fmtDate(s.start, true).replace(/ \d{4}$/, '')} for ${s.days} days`}</div>`, inr(s.daily, 0))}
       ${dl(s.carry >= 0 ? 'Saved on earlier days' : 'Overspent on earlier days', `${s.carry >= 0 ? '+' : '−'} ${inr(Math.abs(s.carry), 0)}`, s.carry >= 0 ? 'in' : 'bad')}
       ${dl('Spent today', `− ${inr(s.spentToday, 0)}`)}
       ${dl('<b>Left today</b>', `<b>${inr(s.todayLeft, 0)}</b>`, s.todayLeft < 0 ? 'bad' : 'in')}</div>
-    <p class="small muted" style="margin:-4px 0 10px">Whatever you don't spend today is added to tomorrow. Bills, EMIs and your goal below are set aside first and never count against today.</p>
+    <p class="small muted" style="margin:-4px 0 10px">Whatever you don't spend today is added to tomorrow. Bills, EMIs and your goal below are set aside first. Card purchases always count as spending. A payment only counts once it's in Ledger (bank SMS, Shortcut log or statement).</p>
+    <button class="btn ghost wide" style="margin-bottom:12px" data-act="safeReset">Start the meter again from today</button>
     <div class="day"><span>Where the money comes from</span></div>
     <div class="list" style="margin:0 0 12px"><div class="item" style="padding:10px 14px"><div class="grow">${esc(s.acct.name)}<div class="s">${s.asOf ? 'Balance as of your latest entry, ' + fmtDate(s.asOf, true) : 'Current balance'}</div></div><span class="num">${inr(s.bal, 0)}</span></div>
       <div class="item" style="padding:10px 14px"><div class="grow">Other money I can use<div class="s">Cash, another account, money coming in</div></div><input class="i num" id="safeExtra" inputmode="decimal" placeholder="0" style="width:8.5em;text-align:right;min-height:40px" value="${s.extra ? s.extra / 100 : ''}"></div>
@@ -3057,6 +3072,7 @@ const acts = {
   lpTag: (d) => lpTagSheet(d.id),
   calDay: (d) => calDaySheet(d.d),
   safeSheet: () => safeSheet(),
+  safeReset: () => { delete D.settings.safeMeter; save(); render(); safeSheet(); done('Meter restarted'); },
   openBudgets: () => { ui.view = { page: 'budgets' }; render(); window.scrollTo(0, 0); },
   budgetSheet: (d) => budgetSheet(d.id),
   budgetRemove: (d) => { delete budgets()[d.id]; delete (D.settings.budgetSince || {})[d.id]; save(); closeSheet(); render(); },
