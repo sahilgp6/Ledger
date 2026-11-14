@@ -147,7 +147,8 @@ export function parseLog(text) {
   let parts = String(text).split(/\s*[|\n]\s*/).map((x) => x.trim()).filter(Boolean);
   // No separators ("250 Chai with crew Credit 5678"): amount first, account words at the end
   if (parts.length === 1) {
-    const m = parts[0].match(/^(?:rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)\s+(.*?)\s*((?:savings|saving|credit|card|cash|upi|hdfc|dns)(?:\s+card)?(?:\s+\d{4})?)?$/i);
+    // Also when iOS drops the spaces and line breaks: "599AC RepairCredit 9550"
+    const m = parts[0].match(/^(?:rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)\s*(.*?)\s*((?:savings|saving|credit|card|cash|upi|hdfc|dns)(?:\s*card)?(?:\s*\d{4})?)?$/i);
     if (m) parts = [m[1], m[2] || 'Expense', m[3] || ''].filter((x, i) => i < 2 || x);
   }
   if (!parts.length) return null;
