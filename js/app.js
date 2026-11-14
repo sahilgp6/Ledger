@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -943,41 +943,6 @@ function matchRefunds() {
   return n;
 }
 const refundFor = (x) => D.transactions.find((r) => r.refundOf === x.id);
-// Same account, same amount and direction, within a day, similar payee, and not already explained
-function findDupes() {
-  const no = new Set(D.settings.notDupes || []), byKey = new Map(), out = [];
-  for (const x of D.transactions) { if (x.transferId) continue; const k = x.accountId + '|' + x.amount; (byKey.get(k) || byKey.set(k, []).get(k)).push(x); }
-  for (const g of byKey.values()) {
-    if (g.length < 2) continue;
-    g.sort((p, q) => p.date.localeCompare(q.date));
-    for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
-      const a = g[i], b = g[j];
-      if (Math.abs(daysUntil(b.date) - daysUntil(a.date)) > 1) break;
-      if (a.ref && b.ref && a.ref !== b.ref) continue;
-      if (pkey(a) !== pkey(b) && !(a.ref && a.ref === b.ref)) continue;
-      if (a.refundOf || b.refundOf || refundFor(a) && refundFor(b)) continue;
-      const key = [a.id, b.id].sort().join('|'); if (no.has(key)) continue;
-      out.push({ a, b, key, sure: !!(a.ref && a.ref === b.ref) });
-    }
-  }
-  return out;
-}
-function dupesCard() {
-  const d = findDupes(); if (!d.length) return '';
-  return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-flip data-act="openDupes"><div class="ico tone-clay" aria-hidden="true">2×</div><div class="grow"><div class="t">${d.length} possible duplicate${d.length > 1 ? 's' : ''}</div><div class="s">Same amount, same payee, a day apart. Check before they count twice.</div></div><div class="muted">›</div></button>`;
-}
-function renderDupes(m) {
-  setTop('Possible duplicates', { back: 'closeView' });
-  const d = findDupes();
-  const one = (x) => `<div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)}${x.time ? ' ' + x.time : ''} · ${x.source === 'sms' ? 'SMS' : x.source === 'log' ? 'logged' : x.importId ? 'statement' : 'added by hand'}${x.ref ? ' · ref ' + esc(String(x.ref).slice(-6)) : ''}</div></div>`;
-  m.innerHTML = d.length ? d.map((p) => `<div class="card dupe"><div class="row"><span class="small muted grow">${esc(accShort(accById(p.a.accountId)))}</span><span class="num ${p.a.amount > 0 ? 'in' : ''}">${inr(p.a.amount)}</span></div>
-      ${p.sure ? '<p class="tiny warn" style="margin:4px 0 0">Same bank reference. Almost certainly a duplicate.</p>' : ''}
-      <div class="item" style="padding:8px 0">${one(p.a)}<button class="btn ghost" style="min-height:34px;padding:4px 10px" data-act="dupeDel" data-id="${p.a.id}">Delete</button></div>
-      <div class="item" style="padding:8px 0;border-top:1px solid var(--line)">${one(p.b)}<button class="btn ghost" style="min-height:34px;padding:4px 10px" data-act="dupeDel" data-id="${p.b.id}">Delete</button></div>
-      <button class="btn wide ghost" style="margin-top:6px" data-act="dupeKeep" data-key="${p.key}">Both are real</button></div>`).join('')
-    : `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.25rem">No duplicates</div><p class="small muted">Everything is counted once.</p></div>`;
-}
-
 // ===================== Trips and events (tags) =====================
 const tagsOf = (x) => x.tags || [];
 function allTags() {
@@ -1338,24 +1303,6 @@ function waterfall(ym) {
     <p class="small" style="margin:4px 0 0;opacity:.9">Saved <b>${inr(saved, 0)}</b>${goal ? ` · goal ${inr(goal, 0)} ${saved >= goal ? '<span style="color:#b8e0c8">met</span>' : `<span style="color:#f2b8a8">${inr(goal - saved, 0)} short</span>`}` : ''}</p>`;
 }
 
-// ---- Goal bullet chart: where this pay cycle is heading against the savings goal
-function goalCard() {
-  const goal = D.settings.saveTarget || 0; if (!goal) return '';
-  const cyc = payCycle(); if (!cyc || cyc.stale) return '';
-  const today = todayIso(), spent = Math.max(0, rangeSpend(cyc.from, today).spend);
-  const days = daysUntil(cyc.next) - daysUntil(cyc.from), gone = Math.max(1, days - Math.max(0, daysUntil(cyc.next)));
-  const usual = Math.max(0, rangeSpend(isoAdd(cyc.from, -90), isoAdd(cyc.from, -1)).spend) / 90;
-  const daily = gone >= 7 ? spent / gone : usual || spent / gone;
-  const proj = cyc.pay - (spent + daily * Math.max(0, days - gone)), sofar = cyc.pay - spent;
-  const mx = Math.max(goal * 1.5, proj * 1.05, 1);
-  const pc = (v) => `${Math.max(0, Math.min(100, (v / mx) * 100)).toFixed(1)}%`;
-  const ok = proj >= goal;
-  return `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Savings goal</h2><span class="pillnote ${ok ? 'in' : 'warn'}">${ok ? 'On pace' : 'Behind'}</span></div>
-    <div class="mid num" style="margin-top:6px">${inr(Math.max(0, proj), 0)} <span class="small muted">likely saved this cycle</span></div>
-    <div class="bullet" aria-hidden="true"><span class="band" style="width:${pc(goal)}"></span><i class="grow-x ${ok ? 'ok' : 'warn'}" style="--w:${pc(proj)}"></i><b style="left:${pc(goal)}"></b></div>
-    <div class="row tiny muted" style="margin-top:6px"><span class="grow">${ok ? `${inr(proj - goal, 0)} above your ${inr(goal, 0)} goal` : `${inr(goal - proj, 0)} short of ${inr(goal, 0)} at this pace`}</span><span>${inr(Math.max(0, sofar), 0)} left now</span></div></div>`;
-}
-
 // ---- Loading shimmer while a statement is read
 function showReading(name) {
   openSheet(`<div class="skel-wrap" data-skel><h3>Reading ${esc(name)}</h3><p class="small muted" style="margin-top:-6px">Only on this phone. Nothing is uploaded.</p>
@@ -1551,7 +1498,6 @@ function renderCore() {
   if (ui.view?.page === 'bills') return renderBills(m);
   if (ui.view?.page === 'receipts') return renderReceipts(m);
   if (ui.view?.page === 'budgets') return renderBudgets(m);
-  if (ui.view?.page === 'dupes') return renderDupes(m);
   if (ui.view?.page === 'tags') return renderTags(m);
   if (ui.view?.page === 'invest') return renderInvest(m);
 
@@ -1624,9 +1570,7 @@ function renderHome(m) {
     </div>
     ${D.settings.loansSeparate && loans ? `<button class="item" style="margin:10px -4px 0;padding:10px 4px;border-top:1px solid var(--line)" data-act="tab" data-tab="accounts"><div class="grow"><div class="small muted">Loans, kept out of net worth</div><div class="num">${inr(loans, 0)}</div></div><div class="muted">›</div></button>` : ''}</div>
   ${safeCard()}
-  ${goalCard()}
   ${recapCard()}
-  ${dupesCard()}
   ${dues.map((a) => { const d = daysUntil(a.statement.dueDate); return `<button class="card item" style="border-radius:var(--r);margin-bottom:14px;border:0" data-act="openAccount" data-id="${a.id}">
       <div class="grow"><div class="t">${esc(accShort(a))} due ${d === 0 ? 'today' : d < 0 ? `${-d} days ago` : `in ${d} days`}</div>
       <div class="s">${fmtDate(a.statement.dueDate, true)} · minimum ${inr(a.statement.minDue, 0)}</div></div>
@@ -2289,7 +2233,6 @@ function renderMore(m) {
     <button class="item" data-act="openBudgets"><div class="grow">Budgets<div class="s">${Object.keys(D.budgets || {}).length ? Object.keys(D.budgets).length + ' set' : 'Monthly limits by category'}</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openTags"><div class="grow">Trips & events<div class="s">What each trip or occasion cost</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openInvest"><div class="grow">Investments<div class="s">Returns and where your money sits</div></div><div class="muted">›</div></button>
-    <button class="item" data-act="openDupes"><div class="grow">Possible duplicates<div class="s">Check payments counted twice</div></div><div class="muted">›</div></button>
     <button class="item" data-act="summarySheet"><div class="grow">Summary for AI<div class="s">Copy your month into Claude or ChatGPT for a report</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openVault"><div class="grow">Family vault<div class="s">${(D.vault || []).length} policies and documents, encrypted</div></div><div class="muted">›</div></button>
     <button class="item" data-act="openReceipts"><div class="grow">Receipts & bills<div class="s">${D.receipts.length} kept, encrypted</div></div><div class="muted">›</div></button>
@@ -3079,9 +3022,6 @@ const acts = {
   openBudgets: () => { ui.view = { page: 'budgets' }; render(); window.scrollTo(0, 0); },
   budgetSheet: (d) => budgetSheet(d.id),
   budgetRemove: (d) => { delete budgets()[d.id]; delete (D.settings.budgetSince || {})[d.id]; save(); closeSheet(); render(); },
-  openDupes: () => { ui.view = { page: 'dupes' }; render(); window.scrollTo(0, 0); },
-  dupeDel: (d) => { D.transactions = D.transactions.filter((x) => x.id !== d.id); for (const x of D.transactions) if (x.refundOf === d.id) delete x.refundOf; save(); render(); done('Deleted'); },
-  dupeKeep: (d) => { (D.settings.notDupes ||= []).push(d.key); save(); render(); },
   openTags: () => { ui.view = { page: 'tags' }; render(); window.scrollTo(0, 0); },
   openTag: (d) => { ui.view = { page: 'tags', tag: d.tag }; render(); window.scrollTo(0, 0); },
   tagTrip: () => tagTripSheet(),
