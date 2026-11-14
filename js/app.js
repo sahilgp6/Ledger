@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.6.1';
+const APP_VERSION = '1.6.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -807,56 +807,68 @@ function payCycle(today = todayIso()) {
   const next = advance(from, 'month', +from.slice(8));
   return { from, next, pay, prevPay: sal.find((x) => x.date < from && daysUntil(x.date) < daysUntil(from) - 5)?.amount || 0 };
 }
+// Safe to spend = what's in your spending account (HDFC savings by default) plus any other money you
+// choose to count, minus what will definitely leave before salary: card dues, bills and EMIs, and your goal.
+// Each deduction can be switched off in the sheet.
+const safeOpts = () => Object.assign((D.settings.safe ||= {}), { card: true, bills: true, emi: false, goal: true, ...D.settings.safe });
+function safeAccount() {
+  const id = D.settings.safeAcct; const a = id && accById(id);
+  return a && !a.archived ? a : payAccount('upi', false);
+}
 function safeToSpend() {
-  const today = todayIso(), cyc = payCycle(today);
-  if (!cyc || cyc.stale) return cyc ? { stale: cyc.stale } : null;
-  const { from, next, pay } = cyc, end = isoAdd(next, -1);
+  const acct = safeAccount(); if (!acct) return null;
+  const today = todayIso(), o = safeOpts(), cyc = payCycle(today);
+  const next = cyc && !cyc.stale ? cyc.next : isoAdd(ymOf(addMonths(ymOf(today), 1)) + '-01', -1); // no recent salary: end of month
+  const end = isoAdd(next, -1);
+  const bal = balance(acct), extra = D.settings.safeExtra || 0;
+  const cards = D.accounts.filter((x) => !x.archived && x.type === 'credit_card' && ownerOf(x) === ownerOf(acct));
+  const cardDue = cards.reduce((t, x) => t + Math.max(0, -balance(x)), 0);
+  const loans = D.accounts.filter((x) => x.loan?.emi && !x.archived && ownerOf(x) !== 'other');
+  const emiList = loans.filter((x) => { const nd = x.loan.nextDue || ''; return !nd || (nd >= today && nd <= end); }).map((x) => ({ name: x.name, amount: Math.round(x.loan.emi * (shareOf(x) || 1)), next: x.loan.nextDue }));
+  const billList = (D.bills || []).filter((x) => x.amount && x.next && x.next >= today && x.next <= end && !/emi/i.test(x.name));
+  const bills = billList.reduce((t, x) => t + x.amount, 0), emi = emiList.reduce((t, x) => t + x.amount, 0);
   const goal = D.settings.saveTarget || 0;
-  const loans = D.accounts.filter((a) => a.loan?.emi && !a.archived && accVisible(a));
-  const emi = loans.reduce((t, a) => t + Math.round(a.loan.emi * (shareOf(a) || 1)), 0);
-  const billList = (D.bills || []).filter((b) => b.amount && b.next && b.next >= today && b.next <= end && !/emi/i.test(b.name));
-  const bills = billList.reduce((t, b) => t + b.amount, 0);
-  const rs = rangeSpend(from, today);
-  const spent = Math.max(0, rs.spend - rs.loanInt); // EMI interest is inside the EMI set aside above
-  const budget = pay - goal - emi - bills;
-  const left = budget - spent;
-  const days = daysUntil(next) - daysUntil(from), daysLeft = Math.max(1, daysUntil(next));
-  const day = days - daysLeft + 1;
+  const left = bal + extra - (o.card ? cardDue : 0) - (o.bills ? bills : 0) - (o.emi ? emi : 0) - (o.goal ? goal : 0);
+  const daysLeft = Math.max(1, daysUntil(next));
   const perDay = left / daysLeft;
-  const pace = budget > 0 ? spent / (budget * ((day - 0.5) / days)) : 9;
-  const tone = left < 0 ? 'bad' : pace > 1.1 ? 'warn' : 'ok';
-  return { pay, from, next, goal, emi, bills, billList, spent, budget, left, perDay, daysLeft, days, day, tone, used: budget > 0 ? Math.min(1, spent / budget) : 1 };
+  // Usual daily spend over the last 30 days, to say whether the number is comfortable
+  const usual = Math.max(0, rangeSpend(isoAdd(today, -30), isoAdd(today, -1)).spend) / 30;
+  const tone = left < 0 ? 'bad' : usual && perDay < usual ? 'warn' : 'ok';
+  const asOf = D.transactions.filter((x) => x.accountId === acct.id).reduce((m2, x) => (x.date > m2 ? x.date : m2), '');
+  return { acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
 }
 function safeCard() {
   const s = safeToSpend();
   if (!s) return '';
-  if (s.stale) return `<div class="card small muted" style="margin-bottom:14px"><b style="color:var(--ink)">Safe to spend</b> starts when your next salary arrives. The last one Ledger saw was on ${fmtDate(s.stale, true)}. Read your salary SMS or import a statement.</div>`;
   const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[s.tone];
-  const msg = s.left < 0 ? `Over by ${inr(-s.left, 0)} this month` : s.tone === 'warn' ? 'Spending faster than planned' : 'On track';
+  const msg = s.left < 0 ? 'Not enough set aside' : s.tone === 'warn' ? `Below your usual ${inr(s.usual, 0)} a day` : 'Comfortable';
+  const nd = fmtDate(s.next, true).replace(/ \d{4}$/, '');
+  const total = s.bal + s.extra, ded = total - s.left;
   return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet">
     <div class="row"><h2 class="grow" style="margin:0">Safe to spend</h2><span class="pillnote" style="color:${col}">${msg}</span></div>
-    <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money" data-count="${Math.max(0, Math.round(s.perDay / 100))}">${inr(Math.max(0, s.perDay), 0)}</div><div class="muted">a day</div></div>
-    <div class="small muted">${s.left >= 0 ? `${inr(s.left, 0)} left until salary on ${fmtDate(s.next, true).replace(/ \d{4}$/, '')}` : `Cut back until salary on ${fmtDate(s.next, true).replace(/ \d{4}$/, '')}`}${s.goal ? ` · ${inr(s.goal, 0)} goal set aside` : ''}</div>
-    <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${(s.used * 100).toFixed(1)}%;background:${col}"></i><b style="left:${((s.day - 0.5) / s.days * 100).toFixed(1)}%"></b></div>
-    <div class="row tiny muted" style="margin-top:4px"><span class="grow">Spent ${inr(s.spent, 0)} of ${inr(Math.max(0, s.budget), 0)}</span><span>${s.daysLeft} day${s.daysLeft > 1 ? 's' : ''} to go</span></div>
+    <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money">${inr(Math.max(0, s.perDay), 0)}</div><div class="muted">a day</div></div>
+    <div class="small muted">${s.left >= 0 ? `${inr(s.left, 0)} to spend until ${s.salaryKnown ? 'salary on ' : ''}${nd}` : `${inr(-s.left, 0)} short until ${s.salaryKnown ? 'salary on ' : ''}${nd}`}</div>
+    <div class="safebar" aria-hidden="true"><i class="grow-x" style="--w:${total > 0 ? Math.max(0, Math.min(100, s.left / total * 100)).toFixed(1) : 0}%;background:${col}"></i></div>
+    <div class="row tiny muted" style="margin-top:4px"><span class="grow">${esc(s.acct.name)}${s.extra ? ' + other money' : ''}: ${inr(total, 0)}</span><span>${ded > 0 ? inr(ded, 0) + ' set aside' : ''}</span></div>
   </button>`;
 }
 function safeSheet() {
   const s = safeToSpend();
-  if (!s || s.stale) return toast('Ledger needs a recent salary credit first.');
-  const row2 = (k, v, cls = '') => `<tr><td>${k}</td><td class="num ${cls}" style="text-align:right">${v}</td></tr>`;
+  if (!s) return toast('Add your savings account first.');
+  const sw = (k, label, v, sub = '') => `<label class="item" style="padding:10px 14px"><div class="grow">${label}${sub ? `<div class="s">${sub}</div>` : ''}</div><span class="num" style="margin-right:10px;${s.o[k] ? '' : 'opacity:.4;text-decoration:line-through'}">− ${inr(v, 0)}</span><input type="checkbox" switch data-safe="${k}" ${s.o[k] ? 'checked' : ''}></label>`;
+  const live = D.accounts.filter((x) => !x.archived && ['savings', 'current'].includes(x.type));
+  const bl = s.billList.map((x) => `${x.name}, ${fmtDate(x.next, true).replace(/ \d{4}$/, '')}`);
   openSheet(`<h3>Safe to spend</h3>
-    <p class="small muted" style="margin-top:-6px">From your salary on ${fmtDate(s.from, true)} until the next one, expected ${fmtDate(s.next, true)}.</p>
-    <table class="t">${row2('Salary received', inr(s.pay, 0))}
-      ${row2('Savings goal', s.goal ? '− ' + inr(s.goal, 0) : 'not set')}
-      ${s.emi ? row2('Loan EMIs', '− ' + inr(s.emi, 0)) : ''}
-      ${s.billList.map((b) => row2(`${esc(b.name)}, ${fmtDate(b.next, true)}`, '− ' + inr(b.amount, 0))).join('')}
-      ${row2(`Spent since ${fmtDate(s.from, true).replace(/ \d{4}$/, '')}`, '− ' + inr(s.spent, 0))}
-      ${row2('<b>Left until next salary</b>', `<b>${inr(s.left, 0)}</b>`, s.left < 0 ? 'bad' : 'in')}
-      ${row2(`Per day, for ${s.daysLeft} days`, inr(Math.max(0, s.perDay), 0))}</table>
-    <p class="small muted">Only salary counts as money in. Your balances, refunds, transfers from others and other credits don't change this number.</p>
-    <label class="f" style="margin-top:14px"><span>Save each month (₹)</span><input class="i" id="safeGoal" inputmode="decimal" placeholder="e.g. 30000" value="${s.goal ? s.goal / 100 : ''}"></label>
-    <p class="small muted">Spending here leaves out transfers between your accounts and card bill payments. Card purchases count on the day you make them.</p>`);
+    <div class="list" style="margin:0 0 12px"><div class="item" style="padding:10px 14px"><div class="grow">${esc(s.acct.name)}<div class="s">${s.asOf ? 'Balance as of your latest entry, ' + fmtDate(s.asOf, true) : 'Current balance'}</div></div><span class="num">${inr(s.bal, 0)}</span></div>
+      <div class="item" style="padding:10px 14px"><div class="grow">Other money I can use<div class="s">Cash, another account, money coming in</div></div><input class="i num" id="safeExtra" inputmode="decimal" placeholder="0" style="width:8.5em;text-align:right;min-height:40px" value="${s.extra ? s.extra / 100 : ''}"></div>
+      ${s.cards.length ? sw('card', 'Credit card dues', s.cardDue, 'Paid from this account when the bill comes') : ''}
+      ${sw('bills', 'Bills before salary', s.bills, bl.length ? esc(bl.join(' · ')) : 'None due')}
+      ${s.emiList.length ? sw('emi', 'Loan EMIs before salary', s.emi, 'Turn on if the EMI comes out of this account') : ''}
+      ${sw('goal', 'Savings goal', s.goal, s.goal ? 'Kept aside, not for spending' : 'Not set')}
+      <div class="item" style="padding:12px 14px"><div class="grow"><b>Safe to spend</b><div class="s">until ${s.salaryKnown ? 'salary on ' : ''}${fmtDate(s.next, true)}, ${s.daysLeft} days</div></div><div style="text-align:right"><div class="num ${s.left < 0 ? 'bad' : 'in'}"><b>${inr(s.left, 0)}</b></div><div class="small muted">${inr(Math.max(0, s.perDay), 0)} a day</div></div></div></div>
+    <div class="split"><label class="f"><span>Spending account</span><select class="i" id="safeAcct">${live.map((x) => `<option value="${x.id}" ${x.id === s.acct.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="f"><span>Save each month (₹)</span><input class="i" id="safeGoal" inputmode="decimal" placeholder="e.g. 30000" value="${s.goal ? s.goal / 100 : ''}"></label></div>
+    <p class="small muted">The balance updates with every bank SMS, Shortcut log or statement you add.${s.salaryKnown ? '' : ' No recent salary found, so this runs to the end of the month.'}</p>`);
 }
 
 // ===================== Category budgets =====================
@@ -3406,6 +3418,9 @@ window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recap
 
 // Savings goal and AI style on the Summary sheet: saved as you leave each box
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'safeExtra') { const v = parseRupees(e.target.value); D.settings.safeExtra = v && v > 0 ? v : 0; save(); render(); safeSheet(); return; }
+  if (e.target.id === 'safeAcct') { D.settings.safeAcct = e.target.value; save(); render(); safeSheet(); return; }
+  if (e.target.dataset?.safe) { safeOpts()[e.target.dataset.safe] = e.target.checked; save(); render(); const t = $('#sheet').scrollTop; safeSheet(); $('#sheet').scrollTop = t; return; }
   if (e.target.id === 'safeGoal') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); render(); safeSheet(); return; }
   if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); acts.sumRefresh(); }
   else if (e.target.id === 'sumAll') { D.settings.sumAll = e.target.checked; save(); acts.sumRefresh(); }
