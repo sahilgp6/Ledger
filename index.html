@@ -309,6 +309,28 @@ nav.tabs [data-tab].on svg{animation:tabpop .34s var(--ease) both}
 @media (prefers-color-scheme: light){.card,.list,.acard{box-shadow:0 0 0 1px rgba(29,42,36,.05),0 1px 2px rgba(29,42,36,.05),0 4px 14px -4px rgba(29,42,36,.08)}}
 @media (prefers-reduced-motion: reduce){main.tab-r,main.tab-l,main.push,main.pop,main.fade,.wf,.dn .dseg,#lp *,#cele *,.skel,nav.tabs [data-tab].on svg{animation:none!important}.whoseg .ink{transition:none}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}.draw{stroke-dashoffset:0}}
+
+/* ---- GSAP motion layer (js/motion.js) ---- */
+.odo{display:inline-block;overflow:hidden;vertical-align:top}.odo-col{display:block;will-change:transform}.odo-col span{display:block;text-align:center}.odo-sep{display:inline-block}
+svg.meter.gs .meter-arc{animation:none}
+.expander{position:fixed;z-index:40;pointer-events:none;box-shadow:0 10px 30px rgba(15,21,18,.18)}
+.tipdot{pointer-events:none}
+.freshrow{animation:freshtint 2.6s ease-out both}
+@keyframes freshtint{0%,35%{box-shadow:inset 0 0 0 999px color-mix(in srgb,var(--gold) 22%,transparent)}100%{box-shadow:inset 0 0 0 999px transparent}}
+.savedpill{position:fixed;left:50%;top:calc(var(--safe-t) + 14px);z-index:60;display:flex;gap:6px;align-items:center;background:var(--ink);color:var(--bg);padding:8px 15px 8px 11px;border-radius:999px;font-weight:600;font-size:.9rem;opacity:0;pointer-events:none;box-shadow:0 8px 24px rgba(15,21,18,.22)}
+.savedpill svg{width:18px;height:18px}.savedpill path{fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.spark{position:absolute;width:7px;height:7px;border-radius:50%;pointer-events:none;z-index:3}
+.burstnote{position:absolute;left:50%;top:12px;z-index:4;background:var(--ink);color:var(--bg);font-size:.8rem;font-weight:600;padding:7px 13px;border-radius:999px;white-space:nowrap;pointer-events:none;opacity:0;box-shadow:0 8px 20px rgba(15,21,18,.2)}
+.intro{position:fixed;inset:0;z-index:70;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+.intro .iw{font-family:var(--serif);font-size:2.7rem;font-weight:500}.intro .il{width:180px;height:6px;overflow:visible}.intro .il path{stroke:var(--gold);stroke-width:2;fill:none;stroke-linecap:round}
+.intro .ilab{font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-top:14px}.intro .ival{min-height:1.2em}
+/* the big title shrinks into a slim bar as you scroll; the page under it doesn't move */
+header.top{padding-top:calc(var(--safe-t) + 10px - 4px * var(--k,0));padding-bottom:calc(10px - 6px * var(--k,0));margin-bottom:calc(10px * var(--k,0));transition:box-shadow .2s}
+header.top h1{transform:scale(calc(1 - .32 * var(--k,0)));transform-origin:left center}
+header.top.slim{box-shadow:0 1px 0 var(--line)}
+/* exits are quicker than entrances */
+#sheet:not(.on){transition:transform .24s cubic-bezier(.4,0,1,1),bottom .25s var(--ease-ios)}
+#scrim:not(.on){transition:opacity .2s ease-in}
 </style>
 </head>
 <body>
@@ -329,6 +351,10 @@ nav.tabs [data-tab].on svg{animation:tabpop .34s var(--ease) both}
 <div id="toast"></div>
 <input type="file" id="file" class="hidden" accept="application/pdf,.pdf,text/csv,.csv,text/plain,.txt">
 <input type="file" id="restoreFile" class="hidden" accept=".json,application/json">
+<script defer src="vendor/gsap/gsap.min.js"></script>
+<script defer src="vendor/gsap/MotionPathPlugin.min.js"></script>
+<script defer src="vendor/gsap/DrawSVGPlugin.min.js"></script>
+<script defer src="js/motion.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

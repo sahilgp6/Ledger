@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.9.2';
+const APP_VERSION = '1.10.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -57,6 +57,8 @@ function openSheet(html) {
   // No contact or password autofill bars over Ledger's own fields
   sh.querySelectorAll('input:not([type=checkbox]):not([type=hidden]):not([type=file]),textarea').forEach((i) => { if (!i.hasAttribute('autocomplete')) i.setAttribute('autocomplete', 'off'); });
   sh.classList.add('on'); $('#scrim').classList.add('on'); sh.scrollTop = 0; lockPage();
+  const g = ui.grow; ui.grow = null;
+  if (g && Date.now() - g.t < 600 && window.LM?.ok) LM.sheetFrom(g.r, sh, g.bg);
 }
 // Keep sheets above the keyboard: iOS shrinks only the visible area, so lift the sheet by the keyboard's height
 if (window.visualViewport) {
@@ -934,10 +936,11 @@ function safeToSpend() {
   const pool = daily * days;
   const carry = daily * (day - 1) - spentBefore;    // + saved on earlier days, − overspent
   const allowance = daily + carry, todayLeft = allowance - spentToday;
+  const yday = isoAdd(today, -1), spentYest = start <= yday ? spentFrom(yday, yday) : null;
   const tone = todayLeft < 0 ? 'bad' : allowance > 0 && spentToday > allowance * 0.8 ? 'warn' : 'ok';
   const usual = 0;
   const asOf = D.transactions.filter((x) => x.accountId === acct.id).reduce((m2, x) => (x.date > m2 ? x.date : m2), '');
-  return { acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, laterBill, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
+  return { spentYest, ydayUnder: spentYest != null && spentYest <= daily, acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, laterBill, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
 }
 // ===================== Card bill target =====================
 // One sum: expected salary − fixed costs − savings goal − money for UPI = what the card bill can be.
@@ -1055,7 +1058,7 @@ function cardPlanCard() {
   const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[c.tone];
   // The bar shows what you owe on the card right now against the target
   const used = c.target > 0 ? Math.min(100, (c.billed / c.target) * 100) : 100, mark = Math.min(100, ((c.gone - 0.5) / c.days) * 100);
-  return `<button class="card item cplan tone-${c.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet">
+  return `<button class="card item cplan tone-${c.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet" data-grow>
     <div class="row"><h2 class="grow" style="margin:0">Card bill target</h2><span class="pillnote" style="color:var(--gold-ink)">Bill on ${nd}</span></div>
     <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money ${c.target < 0 ? 'bad' : ''}" data-count="${Math.round(c.target)}" data-ck="cardt">${inr(c.target, 0)}</div><div class="muted small">for the card</div></div>
     <div class="small muted">From ${c.salaryGuessed ? 'a' : 'your'} ${inr(c.salary, 0)} salary${c.salaryGuessed ? ' (your last one, tap to change)' : ''}</div>
@@ -1127,7 +1130,7 @@ function safeCard() {
   const R = 46, C = 2 * Math.PI * R, frac = s.allowance > 0 ? Math.max(0, Math.min(1, s.todayLeft / s.allowance)) : 0;
   const carryTxt = Math.abs(s.carry) < 100 ? '' : s.carry > 0 ? `+ ${inr(s.carry, 0)} saved from earlier days` : `− ${inr(-s.carry, 0)} overspent earlier`;
   const msg = s.todayLeft < 0 ? `Over by ${inr(-s.todayLeft, 0)}` : s.spentToday ? `${inr(s.spentToday, 0)} spent today` : 'Nothing spent yet';
-  return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet">
+  return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet" data-grow>
     <div class="row"><h2 class="grow" style="margin:0">Safe to spend today</h2><span class="pillnote" style="color:${col}">${msg}</span></div>
     <div class="row" style="gap:16px;align-items:center;margin-top:8px">
       <svg class="meter" viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle cx="55" cy="55" r="${R}" fill="none" stroke="var(--chip)" stroke-width="10"/>
@@ -1197,12 +1200,12 @@ function avgSpend(catId, n = 3) {
 }
 function renderBudgets(m) {
   setTop('Budgets', { back: 'closeView' });
-  const ym = ymOf(todayIso()), rows = budgetRows(ym), st = monthStats(ym);
+  const cur = ymOf(todayIso()), ym = ui.bym && ui.bym < cur ? ui.bym : cur, rows = budgetRows(ym), st = monthStats(ym);
   const set = new Set(rows.map((r) => r.id));
   const ideas = [...new Set([...st.byCat.map(([k]) => k), ...D.categories.filter((c) => c.kind === 'expense').map((c) => c.id)])].filter((k) => k !== '_none' && !set.has(k) && catById(k)?.kind === 'expense')
     .map((k) => ({ id: k, avg: avgSpend(k) })).filter((x) => x.avg > 0).sort((a, b) => b.avg - a.avg).slice(0, 8);
   const lp = budgetRows(addMonths(ym, -1));
-  m.innerHTML = `${rows.length ? `<div class="card"><h2>${monthLabel(ym)}</h2>${rows.map((r) => `<button class="item" style="padding:10px 0" data-act="budgetSheet" data-id="${r.id}"><div class="grow"><div class="row"><span class="grow">${esc(r.name)}</span><span class="num small ${r.pct >= 1 ? 'bad' : ''}">${inr(r.v, 0)} <span class="muted">of ${inr(r.lim, 0)}</span></span></div>${budBar(r)}<div class="tiny muted" style="margin-top:3px">${r.v <= r.lim ? `${inr(r.lim - r.v, 0)} left` : `${inr(r.v - r.lim, 0)} over`}</div></div></button>`).join('')}</div>` : `<div class="card" style="text-align:center"><div class="serif" style="font-size:1.25rem">Set your first budget</div><p class="small muted">Pick a category below. Ledger suggests a limit from your last 3 months and warns you at 80%.</p></div>`}
+  m.innerHTML = `<div class="month"><button data-act="bmonth" data-d="-1" aria-label="Earlier month">‹</button><b>${monthLabel(ym)}</b>${ym < cur ? '<button data-act="bmonth" data-d="1" aria-label="Later month">›</button>' : '<button disabled style="opacity:.25">›</button>'}</div>${rows.length ? `<div class="card"><h2>${monthLabel(ym)}</h2>${rows.map((r) => `<button class="item" style="padding:10px 0" data-act="budgetSheet" data-id="${r.id}"><div class="grow"><div class="row"><span class="grow">${esc(r.name)}</span><span class="num small ${r.pct >= 1 ? 'bad' : ''}">${inr(r.v, 0)} <span class="muted">of ${inr(r.lim, 0)}</span></span></div>${budBar(r)}<div class="tiny muted" style="margin-top:3px">${r.v <= r.lim ? `${inr(r.lim - r.v, 0)} left` : `${inr(r.v - r.lim, 0)} over`}</div></div></button>`).join('')}</div>` : `<div class="card" style="text-align:center"><div class="serif" style="font-size:1.25rem">Set your first budget</div><p class="small muted">Pick a category below. Ledger suggests a limit from your last 3 months and warns you at 80%.</p></div>`}
     ${lp.length ? `<div class="card"><h2>Last month's scorecard</h2><p class="mid serif" style="margin:0">Kept ${lp.filter((r) => r.pct <= 1).length} of ${lp.length}</p>${lp.filter((r) => r.pct > 1).map((r) => `<p class="small" style="margin:6px 0 0">${esc(r.name)}: <span class="bad">${inr(r.v - r.lim, 0)} over</span></p>`).join('')}</div>` : ''}
     ${ideas.length ? `<div class="day"><span>Add a budget</span></div><div class="list">${ideas.map((x) => `<button class="item" data-act="budgetSheet" data-id="${x.id}">${catIcon(x.id)}<div class="grow">${esc(catName(x.id))}<div class="s">About ${inr(x.avg, 0)} a month lately</div></div><div class="muted">+</div></button>`).join('')}</div>` : ''}
     <div class="list"><button class="item" data-act="budgetSheet"><div class="grow" style="color:var(--brand)">+ Another category</div></button></div>`;
@@ -1368,6 +1371,7 @@ function countUps(root) {
     const key = el.dataset.ck || 'x', to = +el.dataset.count, from = ui.vals[key] ?? 0;
     ui.vals[key] = to;
     if (RM() || from === to) { el.textContent = inr(to, 0); return; }
+    if (window.LM?.ok && ['nw', 'safe', 'cardt'].includes(key)) { LM.odo(el, inr(from, 0), inr(to, 0)); return; }
     const t0 = performance.now(), dur = 720;
     el.textContent = inr(from, 0);
     const step = (t) => {
@@ -1397,7 +1401,13 @@ function pageMotion(main, page) {
   clearTimeout(ui.animT); ui.animT = setTimeout(() => main.classList.remove('anim', 'push', 'pop', 'tab-r', 'tab-l', 'fade'), cls === 'anim' ? 900 : 420);
 }
 // Card-to-page: the tapped card grows into the page's first card
-document.addEventListener('click', (e) => { const c = e.target.closest?.('[data-flip]'); if (c && !RM()) ui.flip = { r: c.getBoundingClientRect() }; }, true);
+document.addEventListener('click', (e) => {
+  if (RM()) return;
+  // the card's own look for the growing surface: its gradient, else its colour, else the card colour
+  const look = (el) => { const cs = getComputedStyle(el); return cs.backgroundImage !== 'none' ? cs.backgroundImage : /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor; };
+  const c = e.target.closest?.('[data-flip]'); if (c) ui.flip = { r: c.getBoundingClientRect(), bg: look(c), rad: getComputedStyle(c).borderRadius };
+  const g = e.target.closest?.('[data-grow]'); if (g && !e.target.closest('[data-act=cpTip]')) ui.grow = { r: g.getBoundingClientRect(), bg: look(g), t: Date.now() };
+}, true);
 function runFlip(main) {
   const f = ui.flip; ui.flip = null; if (!f) return;
   requestAnimationFrame(() => {
@@ -1437,6 +1447,38 @@ document.addEventListener('touchend', () => {
     setTimeout(() => { main.style.transition = 'none'; main.style.transform = ''; main.style.opacity = ''; ui.noAnim = true; acts.closeView(); requestAnimationFrame(() => { main.style.transition = ''; }); }, 170);
   } else { main.style.transition = 'transform .26s var(--ease-ios), opacity .26s'; main.style.transform = ''; main.style.opacity = ''; }
 }, { capture: true });
+
+// ---- Swipe left or right to change month: Activity, Budgets, and the monthly recap card on Home.
+// Transaction rows keep their own swipe actions, and a swipe from the left edge still goes back.
+let msw = null;
+document.addEventListener('touchstart', (e) => {
+  msw = null;
+  if (!D || e.touches.length > 1 || $('#sheet').classList.contains('on') || document.getElementById('lp')) return;
+  const t = e.touches[0], tg = e.target; if (t.clientX <= 28) return;
+  if (tg.closest?.('input,select,textarea,.chart,.chips,.whoseg,.sw,.cal,#tabs,header,.safebar,.rng')) return;
+  const rc = tg.closest?.('.recap');
+  const kind = rc ? 'recap' : !ui.view && ui.tab === 'tx' && !ui.q && !ui.src ? 'tx' : ui.view?.page === 'budgets' ? 'budgets' : null;
+  if (!kind || !$('#main').contains(tg)) return;
+  msw = { x: t.clientX, y: t.clientY, kind, lock: null, dx: 0, el: rc || $('#main') };
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!msw) return;
+  const t = e.touches[0], mx = t.clientX - msw.x, my = t.clientY - msw.y;
+  if (msw.lock == null && (Math.abs(mx) > 10 || Math.abs(my) > 10)) msw.lock = Math.abs(mx) > Math.abs(my) * 1.4 ? 'x' : 'y';
+  if (msw.lock !== 'x') return;
+  msw.dx = mx; if (!RM()) { msw.el.style.transition = 'none'; msw.el.style.transform = `translateX(${mx * 0.35}px)`; }
+}, { passive: true });
+document.addEventListener('touchend', () => {
+  if (!msw) return; const m2 = msw; msw = null;
+  if (m2.lock !== 'x') return;
+  m2.el.style.transition = 'transform .28s var(--ease)'; m2.el.style.transform = '';
+  setTimeout(() => { m2.el.style.transition = ''; }, 300);
+  if (Math.abs(m2.dx) < 70) return;
+  const d = m2.dx < 0 ? 1 : -1, cur = ymOf(todayIso());
+  if (m2.kind === 'tx') { const n = addMonths(ui.month, d); if (n > cur) return; ui.month = n; ui.slideDir = d; haptic(); render(); }
+  else if (m2.kind === 'budgets') { const b = ui.bym && ui.bym < cur ? ui.bym : cur, n = addMonths(b, d); if (n > cur) return; ui.bym = n; ui.slideDir = d; haptic(); render(); }
+  else { const last = addMonths(cur, -1), b = ui.recapYm && ui.recapYm < last ? ui.recapYm : last, n = addMonths(b, d); if (n > last) return; acts.recapMonth({ d: String(d) }); haptic(); }
+});
 
 // ---- Small celebrations: once a month, when last month closed on the savings goal or with every budget kept
 function celebrate(title, sub) {
@@ -1609,13 +1651,13 @@ function recapData(ym) {
 }
 function recapCard(force) {
   const today = todayIso(), dd = +today.slice(8);
-  const ym = addMonths(ymOf(today), -1);
-  if (!force && (dd > 7 || D.settings.recapSeen === ym)) return '';
+  const last = addMonths(ymOf(today), -1), ym = ui.recapYm && ui.recapYm < last ? ui.recapYm : last;
+  if (!force && (dd > 7 || D.settings.recapSeen === last)) return '';
   const r = recapData(ym); if (!r.spend) return '';
   const max = Math.max(1, ...r.top.map((t) => t.v));
   const mn = MON[+ym.slice(5) - 1];
   const br = budgetRows(ym);
-  return `<div class="card recap"><div class="row"><h2 class="grow" style="margin:0;color:var(--on-brand);opacity:.8">Your ${mn}</h2><button class="link" style="color:var(--on-brand);opacity:.8" data-act="recapHide" aria-label="Hide recap">✕</button></div>
+  return `<div class="card recap"><div class="row"><button class="link" style="color:var(--on-brand);opacity:.8;padding:4px 8px 4px 0" data-act="recapMonth" data-d="-1" aria-label="Earlier month">‹</button><h2 class="grow" style="margin:0;color:var(--on-brand);opacity:.8">Your ${mn}${ym.slice(0, 4) !== today.slice(0, 4) ? ' ' + ym.slice(0, 4) : ''}</h2>${ym < last ? `<button class="link" style="color:var(--on-brand);opacity:.8;padding:4px 8px" data-act="recapMonth" data-d="1" aria-label="Later month">›</button>` : ''}<button class="link" style="color:var(--on-brand);opacity:.8" data-act="recapHide" aria-label="Hide recap">✕</button></div>
     <div class="big money">${inr(r.spend, 0)}</div><div class="small" style="opacity:.85">spent across ${r.n} payments${r.prev ? ` · ${r.spend > r.prev ? '▲' : '▼'} ${inr(Math.abs(r.spend - r.prev), 0)} vs ${MON[+addMonths(ym, -1).slice(5) - 1]}` : ''}</div>
     ${waterfall(ym) || r.top.map((t) => `<div style="margin-top:10px"><div class="row small"><span class="grow">${esc(t.name)}</span><span class="num money">${inr(t.v, 0)}</span></div><div class="bar" style="background:rgba(255,255,255,.16)"><i style="width:${(t.v / max) * 100}%;background:#e9d7ae"></i></div></div>`).join('')}
     ${br.length ? `<p class="small" style="margin:12px 0 0;opacity:.9">Budgets kept: <b>${br.filter((b) => b.pct <= 1).length} of ${br.length}</b>${br.some((b) => b.pct > 1) ? ' · over on ' + br.filter((b) => b.pct > 1).map((b) => esc(b.name)).join(', ') : ''}</p>` : ''}
@@ -1768,6 +1810,7 @@ function haptic() {
 // A short check mark for things that are done
 function done(msg) {
   haptic();
+  if (window.LM?.ok) { LM.saved(msg); return; }
   document.getElementById('done')?.remove();
   const el = document.createElement('div'); el.id = 'done'; el.className = 'pop'; el.setAttribute('role', 'status');
   el.innerHTML = `<svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="21" fill="var(--brand-bg)"/><path class="tick" d="M13 22.5l6 6 12-13" fill="none" stroke="var(--on-brand)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${esc(msg)}</span>`;
@@ -1775,13 +1818,54 @@ function done(msg) {
 }
 function render() {
   if (!D) return;
+  window.LM?.killIdle();
   renderCore();
-  const m = $('#main'); armHaptics(document); countUps(m); runFlip(m);
+  const m = $('#main'); armHaptics(document); countUps(m);
+  const arrive = ui.arrive; ui.arrive = false;
+  if (ui.flip && arrive && window.LM?.ok) { const f = ui.flip; ui.flip = null; LM.expand(f.r, f.bg, f.rad); LM.enter(m); } else runFlip(m);
+  if (window.LM) {
+    LM.ring(m);
+    if (arrive) { LM.markers(m); LM.charts(m); }
+    if (ui.fresh && Date.now() - ui.fresh.t < 8000) LM.fresh(m, ui.fresh.ids);
+    if (ui.slideDir) { LM.slide(m, ui.slideDir); ui.slideDir = 0; }
+    LM.onScroll();
+  }
+  moments(m);
+}
+// Once-a-day moments on Home: the intro, a day kept under budget, a card bill that landed under target
+function moments(m) {
+  if (ui.tab !== 'home' || ui.view || !window.LM) return;
+  const today = todayIso();
+  let introAt = 0;
+  if (D.settings.introDay !== today && LM.ok) {
+    D.settings.introDay = today; save();
+    const s = safeToSpend();
+    LM.intro(s ? 'Safe to spend today' : 'Net worth', '₹0', s ? inr(s.todayLeft, 0) : inr(netWorth().net, 0));
+    introAt = 2300;
+  }
+  if (D.settings.burstDay !== today) {
+    D.settings.burstDay = today; save();
+    const s = safeToSpend();
+    if (s?.ydayUnder && s.daily - s.spentYest >= 1) setTimeout(() => LM.burst($('#main .safe'), `Under budget yesterday · ${inr(s.daily - s.spentYest, 0)} carried`), introAt + 700);
+  }
+  const c = D.cardPlan ? cardPlan() : null;
+  if (c?.cards?.length && c.target > 0) {
+    const snap = (D.cardPlan.snap ||= {}), k = ymOf(c.next);
+    if (snap[k] !== Math.round(c.target)) { snap[k] = Math.round(c.target); save(); }
+    for (const a of c.cards) {
+      const st = a.statement, sd = st?.statementDate; if (!sd || !(st.totalDue > 0)) continue;
+      const tg = snap[ymOf(sd)], wins = (D.settings.cardWins ||= []);
+      if (!tg || st.totalDue > tg || wins.includes(sd) || daysUntil(sd) < -20) continue;
+      wins.push(sd); save();
+      setTimeout(() => LM.burst($('#main .cplan'), `Card bill ${inr(st.totalDue, 0)} · ${inr(tg - st.totalDue, 0)} under target`), introAt + 1400);
+      break;
+    }
+  }
 }
 function renderCore() {
   const page = ui.view?.page ? ui.view.page + (ui.view.id || '') : ui.tab + (ui.view?.tag || '');
   const main = $('#main');
-  if (page !== ui.lastPage) { pageMotion(main, page); ui.lastPage = page; ui.draw = true; clearTimeout(ui.drawT); ui.drawT = setTimeout(() => { ui.draw = false; }, 900); }
+  if (page !== ui.lastPage) { pageMotion(main, page); ui.lastPage = page; ui.arrive = true; ui.draw = true; clearTimeout(ui.drawT); ui.drawT = setTimeout(() => { ui.draw = false; }, 900); }
   $('#app').classList.toggle('masked', !!D.settings.masked);
   document.querySelectorAll('#tabs [data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const m = $('#main');
@@ -2712,6 +2796,7 @@ async function handleInbox(text, source) {
     return;
   }
   const res = { added: 0, known: 0, skipped: 0, attention: 0, old: 0, reasons: {} };
+  const before = new Set(D.transactions.map((x) => x.id));
   ui.inboxReadAt = Date.now();
   // Messages a newer parser can now read: retry anything waiting under "need attention" as unreadable
   for (const x of [...D.inbox]) {
@@ -2743,6 +2828,7 @@ async function handleInbox(text, source) {
   // Keep a year of fingerprints
   const cutoff = Date.now() - 400 * 864e5; D.smsSeen = D.smsSeen.filter((s) => s.at > cutoff);
   const tm = matchTransfers();
+  ui.fresh = { ids: new Set(D.transactions.filter((x) => !before.has(x.id)).map((x) => x.id)), t: Date.now() };
   save(); render();
   const why = Object.entries(res.reasons).map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ');
   openSheet(`<h3>SMS read</h3>
@@ -3391,6 +3477,8 @@ const acts = {
     } catch (e) { toast(e.message || 'Could not read that file', 4000); }
   },
   vaultDelete: (d) => { if (!confirm('Delete this from the vault? Attached files stay in Receipts.')) return; D.vault = D.vault.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
+  recapMonth: (d) => { const last = addMonths(ymOf(todayIso()), -1); ui.recapYm = addMonths(ui.recapYm && ui.recapYm < last ? ui.recapYm : last, +d.d); if (ui.recapYm > last) ui.recapYm = last; render(); const rc = $('#main .recap'); if (rc) window.LM?.slide({ children: [rc] }, +d.d); },
+  bmonth: (d) => { const cur = ymOf(todayIso()); ui.bym = addMonths(ui.bym && ui.bym < cur ? ui.bym : cur, +d.d); if (ui.bym > cur) ui.bym = cur; ui.slideDir = +d.d; render(); },
   recapHide: () => { D.settings.recapSeen = addMonths(ymOf(todayIso()), -1); save(); render(); },
   recapSee: (d) => { ui.tab = 'tx'; ui.view = null; ui.month = d.ym; render(); window.scrollTo(0, 0); },
   recapShare: async (d) => { try { const f = await recapImage(d.ym); if (navigator.canShare?.({ files: [f] })) await navigator.share({ files: [f] }); else { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); } } catch (e) { if (e.name !== 'AbortError') toast('Could not make the image'); } },
@@ -3434,12 +3522,17 @@ const acts = {
   },
   tab: (d) => { if (ui.tab !== d.tab) haptic(); ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
   closeSheet, closeView: () => { ui.navBack = true; ui.view = ui.view?.page === 'tags' && ui.view.tag ? { page: 'tags' } : null; render(); },
-  month: (d) => { ui.month = addMonths(ui.month, +d.d); render(); },
+  month: (d) => { ui.month = addMonths(ui.month, +d.d); ui.slideDir = +d.d; render(); },
   showUncat: () => { ui.tab = 'tx'; ui.cat = '_none'; ui.month = ymOf(todayIso()); ui.view = null; render(); },
   showCat: (d) => { ui.tab = 'tx'; ui.cat = d.id; ui.month = ymOf(todayIso()); ui.view = null; render(); },
   editTx: (d) => txSheet(D.transactions.find((x) => x.id === d.id)),
   addTx: (d) => txSheet(null, d.acc || ui.view?.id),
-  deleteTx: (d) => { if (!confirm('Delete this transaction?')) return; D.transactions = D.transactions.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
+  deleteTx: (d) => {
+    if (!confirm('Delete this transaction?')) return;
+    D.transactions = D.transactions.filter((x) => x.id !== d.id); save(); closeSheet();
+    const row = document.querySelector(`#main .sw[data-id="${d.id}"]`);
+    if (row && window.LM?.ok) LM.fold(row, () => { ui.noAnim = true; render(); }); else render();
+  },
   openAccount: (d) => { ui.tab = 'accounts'; ui.view = { page: 'account', id: d.id }; render(); window.scrollTo(0, 0); },
   addAccount: () => openSheet(`<h3>Add an account</h3><div class="list"><button class="item" data-act="tab" data-tab="import"><div class="grow">Import a statement<div class="s">Ledger sets the account up from it</div></div><div class="muted">›</div></button><button class="item" data-act="addAccountManual"><div class="grow">Add by hand</div><div class="muted">›</div></button></div>`),
   addAccountManual: () => accountSheet(null),
@@ -3583,7 +3676,7 @@ const acts = {
   pwDel: (d) => { D.settings.pdfPasswords.splice(+d.i, 1); save(); acts.pwSheet(); render(); },
   pasteSms: () => openSheet(`<h3>Paste an SMS</h3><form data-form="pasteSms"><textarea class="i" name="t" rows="7" placeholder="Txn Rs.198.00 On HDFC Bank Card 1234 …" required></textarea><div style="height:10px"></div><button class="btn wide">Add</button></form>`),
   smsSetup: () => smsSetupSheet(),
-  inboxDismiss: (d) => { D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); },
+  inboxDismiss: (d, el) => { D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); const row = el?.closest('.item'); if (row && window.LM?.ok) LM.fold(row, render); else render(); },
   inboxManual: (d) => { const it = D.inbox.find((x) => x.id === d.id); D.inbox = D.inbox.filter((x) => x.id !== d.id); save(); render(); txSheet(null); const n = document.querySelector('form[data-form=tx] textarea[name=notes]'); if (n) n.value = it.text; },
   inboxAI: async (d) => {
     const it = D.inbox.find((x) => x.id === d.id); if (!it) return;
@@ -3726,7 +3819,7 @@ const forms = {
     if (f.get('remind') && v.nextDue) D.bills.push({ id: uid(), kind: 'reminder', name: v.title + (v.premium ? ' premium' : ' renewal'), amount: v.premium || 0, every: v.freq || 'once', next: v.nextDue, day: +v.nextDue.slice(8), remind: 7, accountId: null, note: v.policyNo ? 'Policy ' + v.policyNo : '' });
     save(); closeSheet(); render(); done('Saved');
   },
-  payWith: (f) => { D.settings.payWith = { upi: f.get('upi') || null, card: f.get('card') || null, cash: f.get('cash') || null }; save(); closeSheet(); render(); if (ui.qa) renderQuick(); else toast('Saved'); },
+  payWith: (f) => { D.settings.payWith = { upi: f.get('upi') || null, card: f.get('card') || null, cash: f.get('cash') || null }; save(); closeSheet(); render(); if (ui.qa) renderQuick(); else done('Saved'); },
   receipt: async (f) => { const files = ui.rcPending || []; for (const file of files) await saveReceipt(file, { title: f.get('title').trim() + (files.length > 1 ? ' · ' + file.name : ''), date: f.get('date'), categoryId: f.get('categoryId') || null, note: f.get('note').trim() }); ui.rcPending = null; save(); closeSheet(); render(); done(files.length > 1 ? `${files.length} saved` : 'Receipt saved'); },
   bill: (f, form) => {
     const amt = parseRupees(f.get('amount') || '');
@@ -3736,7 +3829,7 @@ const forms = {
     const id = form.dataset.id;
     if (id) Object.assign(D.bills.find((x) => x.id === id), v); else D.bills.push({ id: uid(), kind: form.dataset.kind, ...v, ...(ui.pendingLast && form.dataset.kind === 'subscription' ? { lastPaid: ui.pendingLast } : {}) });
     ui.pendingLast = null;
-    processBills(); save(); closeSheet(); render(); toast('Saved');
+    processBills(); save(); closeSheet(); render(); done('Saved');
   },
   setup: async (f) => {
     if (f.get('p1') !== f.get('p2')) return toast('The passphrases do not match.');

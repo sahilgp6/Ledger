@@ -1,0 +1,2 @@
+GSAP 3.15.1 (gsap, MotionPathPlugin, DrawSVGPlugin) by GreenSock, free under the GSAP Standard "no charge" licence: https://gsap.com/standard-license
+Fetched from npm (gsap@3.15.1), unmodified.
