@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.11.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -38,7 +38,15 @@ const parseRupees = (s) => { const n = String(s).replace(/[₹,\s]/g, ''); if (!
 const daysApart = (a, b) => Math.abs(new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 864e5;
 const initials = (s) => (String(s || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?').toUpperCase();
 
-function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); }
+function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); needsField(msg); }
+// "Enter an amount", "Pick a date": the field in the open sheet that needs it gives a short shake
+function needsField(msg) {
+  if (!window.LM || !/^(Enter|Pick|Choose)\b/.test(msg)) return;
+  const sh = $('#sheet'); if (!sh?.classList.contains('on')) return;
+  const want = /amount|balance|value/i.test(msg) ? '[name=amount],[name=bal],[name=value],[name=lim]' : /date/i.test(msg) ? '[type=date]' : /categor/i.test(msg) ? '[name=cat],[name=categoryId]' : /account/i.test(msg) ? '[name=from],[name=to]' : '';
+  const el = sh.querySelector('.qa-amt') && /amount/i.test(msg) ? sh.querySelector('.qa-amt') : (want && sh.querySelector(want)) || [...sh.querySelectorAll('input:not([type=checkbox]):not([type=hidden]),select')].find((x) => !x.value);
+  if (el) { LM.shake(el); haptic(); }
+}
 // While a sheet is open the page behind it stays still (iOS ignores overflow:hidden, so pin the body in place)
 let pageLock = null;
 function lockPage() {
@@ -529,7 +537,7 @@ function renderQuick() {
   const q = ui.qa, acc = payAccount(q.via, false);
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'];
   openSheet(`<h3>Quick add</h3>
-  <div class="qa-amt num" aria-live="polite"><span class="cur">₹</span>${esc(q.amt ? Number(q.amt.replace(/\.$/, '')).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + (q.amt.endsWith('.') ? '.' : '') : '0')}</div>
+  <div class="qa-amt num" aria-live="polite"><span class="cur">₹</span>${[...(q.amt ? Number(q.amt.replace(/\.$/, '')).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + (q.amt.endsWith('.') ? '.' : '') : '0')].map((ch) => `<span class="qd">${esc(ch)}</span>`).join('')}</div>
   <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k}</button>`).join('')}</div>
   <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Groceries, chai, petrol…" autocomplete="off"></label>
   <div class="chips">${recentPayees().map((p) => `<button type="button" class="chip ${p === q.payee ? 'on' : ''}" data-act="qaPayee" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>
@@ -555,6 +563,8 @@ async function qaSave() {
   const x = { id: uid(), accountId: acc.id, date: q.date || todayIso(), amount: -amt, payee: q.payee, description: q.payee, categoryId: cat, notes: '', raw: '', hash: 'manual|' + uid(), source: 'manual', importId: null, ref: null, time: new Date().toTimeString().slice(0, 5) };
   D.transactions.push(x);
   for (const f of q.files) await saveReceipt(f, { txId: x.id, title: q.payee, date: x.date, categoryId: cat });
+  await window.LM?.wipe($('#sheet [data-act=qaSave]'));
+  ui.fresh = { ids: new Set([x.id]), t: Date.now() }; // the new row slides in, lit up
   ui.qa = null; save(); closeSheet(); render(); done(`Added ${inr(amt, 0)}`);
 }
 
@@ -1404,7 +1414,7 @@ function pageMotion(main, page) {
 document.addEventListener('click', (e) => {
   if (RM()) return;
   // the card's own look for the growing surface: its gradient, else its colour, else the card colour
-  const look = (el) => { const cs = getComputedStyle(el); return cs.backgroundImage !== 'none' ? cs.backgroundImage : /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor; };
+  const look = (el) => { if (el.matches('.cal-d')) return 'var(--card)'; const cs = getComputedStyle(el); return cs.backgroundImage !== 'none' ? cs.backgroundImage : /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor; };
   const c = e.target.closest?.('[data-flip]'); if (c) ui.flip = { r: c.getBoundingClientRect(), bg: look(c), rad: getComputedStyle(c).borderRadius };
   const g = e.target.closest?.('[data-grow]'); if (g && !e.target.closest('[data-act=cpTip]')) ui.grow = { r: g.getBoundingClientRect(), bg: look(g), t: Date.now() };
 }, true);
@@ -1553,6 +1563,7 @@ function donutSelect(id) {
   l.textContent = was ? 'Spent' : (sel.dataset.name.length > 14 ? sel.dataset.name.slice(0, 13) + '…' : sel.dataset.name);
   v.textContent = was ? inr(+card.dataset.total, 0) : sel.dataset.v;
   requestAnimationFrame(() => { l.classList.add('swapin'); v.classList.add('swapin'); });
+  if (!was) window.LM?.reveal(sel, card.querySelector(`.drow[data-id="${CSS.escape(id)}"] .dot`)?.style.background);
 }
 
 // ---- Long-press a transaction for quick actions
@@ -1605,7 +1616,7 @@ function calendarCard(ym = ymOf(todayIso())) {
   for (let i = 0; i < first; i++) cells.push('<i></i>');
   for (let d = 1; d <= days; d++) {
     const iso = `${ym}-${String(d).padStart(2, '0')}`, v = Math.max(0, tot.get(iso) || 0), k = v / mx;
-    cells.push(`<div class="cal-d hz ${iso === today ? 'today' : ''} ${iso > today ? 'future' : ''}" role="button" tabindex="0" data-act="calDay" data-d="${iso}" style="background:${v ? `color-mix(in oklch, var(--brand) ${Math.round(12 + k * 78)}%, var(--chip))` : 'var(--chip)'};${k > 0.55 ? 'color:var(--on-brand)' : ''}" aria-label="${fmtDate(iso, true)}: ${inr(v, 0)}">${d}</div>`);
+    cells.push(`<div class="cal-d hz ${iso === today ? 'today' : ''} ${iso > today ? 'future' : ''}" role="button" tabindex="0" data-act="calDay" data-grow data-d="${iso}" style="background:${v ? `color-mix(in oklch, var(--brand) ${Math.round(12 + k * 78)}%, var(--chip))` : 'var(--chip)'};${k > 0.55 ? 'color:var(--on-brand)' : ''}" aria-label="${fmtDate(iso, true)}: ${inr(v, 0)}">${d}</div>`);
   }
   return `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Day by day</h2><span class="tiny muted">${MON[+ym.slice(5) - 1]}</span></div>
     <div class="cal-h">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((w) => `<span>${w}</span>`).join('')}</div><div class="cal">${cells.join('')}</div>
@@ -3421,7 +3432,7 @@ document.addEventListener('visibilitychange', () => {
 // ---------- events ----------
 const acts = {
   stmtNudgeOff: () => { const o = (D.settings.stmtNudgeOff ||= {}); const until = addMonths(ymOf(todayIso()), 1) + '-01'; for (const x of statementsDue()) o[x.a.id] = { due: x.due, until }; save(); render(); },
-  cpTip: (d) => cpTip(d.k),
+  cpTip: (d) => { cpTip(d.k); window.LM?.steps($('#sheet')); },
   summarySheet: () => summarySheet(),
   donutSel: (d) => { haptic(); donutSelect(d.id); },
   lpTag: (d) => lpTagSheet(d.id),
@@ -3487,7 +3498,7 @@ const acts = {
   swSetCat: (d) => { const x = D.transactions.find((t) => t.id === d.id); if (!x) return; x.categoryId = d.c; x.catManual = true; delete x.suggest; save(); closeSheet(); render(); done(catName(d.c)); },
   swTransfer: (d) => { swClose(); acts.linkTransferSheet(d); },
   quickAdd: () => quickAdd(),
-  qaKey: (d) => { const q = ui.qa; let a = q.amt; if (d.k === '⌫') a = a.slice(0, -1); else if (d.k === '.') { if (!a.includes('.')) a = (a || '0') + '.'; } else if (!/\.\d\d$/.test(a) && a.replace('.', '').length < 9) a = (a === '0' ? '' : a) + d.k; q.amt = a; q.payee = $('#qaPayee')?.value ?? q.payee; haptic(); renderQuick(); },
+  qaKey: (d) => { const q = ui.qa; let a = q.amt; if (d.k === '⌫') a = a.slice(0, -1); else if (d.k === '.') { if (!a.includes('.')) a = (a || '0') + '.'; } else if (!/\.\d\d$/.test(a) && a.replace('.', '').length < 9) a = (a === '0' ? '' : a) + d.k; const grew = a.length > q.amt.length; q.amt = a; q.payee = $('#qaPayee')?.value ?? q.payee; haptic(); renderQuick(); window.LM?.digit($('#sheet .qa-amt'), grew ? 'in' : 'out'); },
   qaPayee: (d) => { const q = ui.qa; q.payee = d.p; if (!q.catTouched) q.cat = guessCategory(d.p, -1) || ''; renderQuick(); },
   qaVia: (d) => { ui.qa.via = d.v; ui.qa.payee = $('#qaPayee')?.value ?? ui.qa.payee; haptic(); renderQuick(); },
   qaAttach: async () => { const fs = await pickFiles('image/*,application/pdf'); if (fs.length) { ui.qa.files.push(...fs); ui.qa.payee = $('#qaPayee')?.value ?? ui.qa.payee; renderQuick(); } },
@@ -3511,7 +3522,7 @@ const acts = {
   billSheet: (d) => { ui.pendingLast = null; billSheet(d.id ? D.bills.find((b) => b.id === d.id) : null, d.kind || 'reminder'); },
   subAdd: (d) => { const f = ui.found?.[+d.i]; if (!f) return; billSheet(null, 'subscription', { name: f.name, amount: f.amount, every: f.every, next: f.next, accountId: f.accountId, match: f.name.toLowerCase().split(/\s+/).slice(0, 2).join(' '), remind: 1 }); },
   subNo: (d) => { D.settings.subDismissed = [...new Set([...(D.settings.subDismissed || []), d.key])]; save(); render(); },
-  billDone: (d) => { const b = D.bills.find((x) => x.id === d.id); if (!b) return; b.lastPaid = todayIso(); if (b.every === 'once') D.bills = D.bills.filter((x) => x.id !== b.id); else { const day = b.day || +b.next.slice(8); do { b.next = advance(b.next, b.every, day); } while (b.next <= todayIso()); } save(); closeSheet(); render(); done(b.every === 'once' ? 'Done' : `Next: ${fmtDate(b.next)}`); },
+  billDone: (d) => { const b = D.bills.find((x) => x.id === d.id); if (!b) return; b.lastPaid = todayIso(); if (b.every === 'once') D.bills = D.bills.filter((x) => x.id !== b.id); else { const day = b.day || +b.next.slice(8); do { b.next = advance(b.next, b.every, day); } while (b.next <= todayIso()); } save(); closeSheet(); render(); document.querySelectorAll(`#main [data-act=billSheet][data-id="${b.id}"]`).forEach((r) => window.LM?.paid(r)); done(b.every === 'once' ? 'Done' : `Next: ${fmtDate(b.next)}`); },
   billDelete: (d) => { D.bills = D.bills.filter((x) => x.id !== d.id); save(); closeSheet(); render(); },
   billCal: async (d) => {
     const b = D.bills.find((x) => x.id === d.id); if (!b) return;
@@ -3602,12 +3613,13 @@ const acts = {
   relayOff: () => { D.settings.priceRelay = ''; save(); closeSheet(); render(); },
   refreshAll: async (d, el) => {
     if (el.disabled) return; el.disabled = true; el.style.opacity = '.5';
-    toast('Refreshing prices…');
+    toast('Refreshing prices…'); document.body.classList.add('loading'); setTimeout(() => document.body.classList.remove('loading'), 20000);
     const e = processEmis();
     let n = 0, sN = 0, sErr = false;
     try { n = await refreshNavs({ force: true }); } catch (err) { console.warn(err); }
     try { sN = await refreshStocks({ force: true }); } catch (err) { console.warn(err); sErr = true; }
     if (e) save();
+    document.body.classList.remove('loading');
     render();
     const funds = D.holdings.filter((h) => h.type === 'mf' && h.qty != null).length;
     const stocks = D.holdings.filter((h) => (h.type === 'stock' || h.type === 'etf') && h.qty != null).length;
@@ -4054,7 +4066,7 @@ document.addEventListener('change', (e) => {
   const later = (sel, fn) => setTimeout(() => { if ($('#sheet ' + sel)) { const t = $('#sheet').scrollTop; fn(); $('#sheet').scrollTop = t; } }, 0);
   if (e.target.id === 'safeExtra') { const v = parseRupees(e.target.value); D.settings.safeExtra = v && v > 0 ? v : 0; save(); render(); later('#safeExtra', safeSheet); return; }
   if (e.target.id === 'safeAcct') { D.settings.safeAcct = e.target.value; save(); render(); later('#safeAcct', safeSheet); return; }
-  if (e.target.dataset?.safe) { safeOpts()[e.target.dataset.safe] = e.target.checked; save(); render(); const t = $('#sheet').scrollTop; safeSheet(); $('#sheet').scrollTop = t; return; }
+  if (e.target.dataset?.safe) { safeOpts()[e.target.dataset.safe] = e.target.checked; save(); render(); const t = $('#sheet').scrollTop, k = e.target.dataset.safe, on = e.target.checked; safeSheet(); $('#sheet').scrollTop = t; window.LM?.flip($(`#sheet input[data-safe="${k}"]`)?.closest('.item')?.querySelector('.num'), on); return; }
   if (e.target.id === 'safeGoal') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); render(); later('#safeGoal', safeSheet); return; }
   if (e.target.id === 'sumTarget') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); ui.sumText = aiSummary(ui.sumPeriod); setTimeout(() => { if ($('#sheet #sumTarget')) acts.sumRefresh(); }, 0); }
   else if (e.target.id === 'sumAll') { D.settings.sumAll = e.target.checked; save(); acts.sumRefresh(); }

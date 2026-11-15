@@ -331,6 +331,19 @@ header.top.slim{box-shadow:0 1px 0 var(--line)}
 /* exits are quicker than entrances */
 #sheet:not(.on){transition:transform .24s cubic-bezier(.4,0,1,1),bottom .25s var(--ease-ios)}
 #scrim:not(.on){transition:opacity .2s ease-in}
+
+/* ---- motion, round two (v1.11.0) ---- */
+.qa-amt .qd{display:inline-block}
+.btnwipe{position:absolute;inset:0;background:color-mix(in srgb,#fff 26%,transparent);pointer-events:none}
+.needs{box-shadow:0 0 0 2px var(--bad)!important;border-radius:12px;transition:box-shadow .3s}
+.lightsweep{position:absolute;top:-20%;bottom:-20%;left:0;width:26%;pointer-events:none;z-index:2;transform:skewX(-18deg);background:linear-gradient(90deg,transparent,color-mix(in srgb,#fff 34%,transparent),transparent)}
+.paidtick{position:absolute;right:12px;top:50%;margin-top:-15px;width:30px;height:30px;border-radius:50%;background:var(--in);display:grid;place-items:center;z-index:2;pointer-events:none}
+.paidtick svg{width:18px;height:18px}.paidtick path{fill:none;stroke:#fff;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+.dsel.picked-in{animation:pickin .5s var(--ease) both}
+@keyframes pickin{from{box-shadow:inset 3px 0 0 var(--pick)}to{box-shadow:inset 0 0 0 var(--pick)}}
+body.loading [data-nwval],body.loading .chart .cwrap,body.loading .hold-v{animation:loadpulse 1.1s ease-in-out infinite}
+@keyframes loadpulse{0%,100%{opacity:1}50%{opacity:.38}}
+@media (prefers-reduced-motion: reduce){body.loading [data-nwval],body.loading .chart .cwrap,.dsel.picked-in{animation:none}}
 </style>
 </head>
 <body>

@@ -177,6 +177,7 @@
     const lab = document.createElement('div'); lab.className = 'burstnote'; lab.textContent = text;
     el.style.position ||= 'relative'; el.appendChild(lab);
     if (!ready()) { setTimeout(() => lab.remove(), 2600); return; }
+    sweep(el, 0.35);
     const cols = ['#e2c27f', '#7fb08f', '#8fb3e8', '#d98b5f'];
     for (let i = 0; i < 22; i++) {
       const p = document.createElement('i'); p.className = 'spark';
@@ -211,6 +212,70 @@
       .to({}, { duration: 1.1 });
   }
 
+  /* ---------- quick add: each digit drops in as you type; deleting settles the rest ---------- */
+  function digit(el, mode) {
+    if (!ready() || !el) return;
+    const ds = el.querySelectorAll('.qd'); if (!ds.length) return;
+    if (mode === 'in') gsap.fromTo(ds[ds.length - 1], { y: -18, autoAlpha: 0, scale: 1.25 }, { y: 0, autoAlpha: 1, scale: 1, duration: 0.28, ease: E.pop, clearProps: 'transform,opacity,visibility' });
+    else gsap.fromTo(el, { x: 7 }, { x: 0, duration: 0.24, ease: E.out, clearProps: 'transform' });
+  }
+  /* ---------- a button fills with a quick wipe before its action lands ---------- */
+  function wipe(btn) {
+    if (!ready() || !btn) return Promise.resolve();
+    const o = document.createElement('i'); o.className = 'btnwipe';
+    btn.style.position = 'relative'; btn.style.overflow = 'hidden'; btn.appendChild(o);
+    return new Promise((res) => gsap.fromTo(o, { xPercent: -101 }, { xPercent: 0, duration: 0.24, ease: 'power2.inOut', onComplete: res }));
+  }
+  /* ---------- a field that needs attention gives a short shake ---------- */
+  function shake(el) {
+    if (!el) return;
+    el.classList.remove('needs'); void el.offsetWidth; el.classList.add('needs');
+    setTimeout(() => el.classList.remove('needs'), 1400);
+    if (!ready()) return;
+    gsap.fromTo(el, { x: 0 }, { keyframes: { x: [0, -9, 8, -6, 4, 0] }, duration: 0.42, ease: 'power1.out', clearProps: 'transform' });
+  }
+  /* ---------- one band of light across a card ---------- */
+  function sweep(el, delay = 0) {
+    if (!ready() || !el) return;
+    const o = document.createElement('i'); o.className = 'lightsweep';
+    el.style.position ||= 'relative'; const ov = el.style.overflow; el.style.overflow = 'hidden'; el.appendChild(o);
+    gsap.fromTo(o, { xPercent: -160 }, { xPercent: 520, duration: 1.05, ease: 'power2.inOut', delay, onComplete: () => { o.remove(); el.style.overflow = ov; } });
+  }
+  /* ---------- a sum: the steps arrive in order and the result lands last, a little larger ---------- */
+  function steps(sheet) {
+    if (!ready() || !sheet) return;
+    const rows = [...sheet.querySelectorAll('.list > .item')]; if (rows.length < 2) return;
+    const last = rows[rows.length - 1], rest = rows.slice(0, -1);
+    gsap.fromTo(rest, { autoAlpha: 0, x: -12 }, { autoAlpha: 1, x: 0, duration: 0.32, ease: E.soft, stagger: 0.09, delay: 0.25, clearProps: 'opacity,visibility,transform' });
+    gsap.fromTo(last, { autoAlpha: 0, scale: 0.94 }, { autoAlpha: 1, scale: 1, duration: 0.45, ease: E.pop, delay: 0.3 + rest.length * 0.09 + 0.12, clearProps: 'opacity,visibility,transform' });
+    const v = last.querySelector('.num'); if (v) gsap.fromTo(v, { scale: 1.28, transformOrigin: 'right center' }, { scale: 1, duration: 0.6, ease: E.out, delay: 0.3 + rest.length * 0.09 + 0.2, clearProps: 'transform' });
+  }
+  /* ---------- a paid bill: a tick stamps on, then the row comes back at its next date ---------- */
+  function paid(row) {
+    if (!ready() || !row) return;
+    const t = document.createElement('span'); t.className = 'paidtick';
+    t.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10.5l3.2 3.2L15 7"/></svg>';
+    row.style.position ||= 'relative'; row.appendChild(t);
+    gsap.timeline({ onComplete: () => t.remove() })
+      .fromTo(row, { autoAlpha: 0, x: 44 }, { autoAlpha: 1, x: 0, duration: 0.5, ease: E.out, delay: 0.2, clearProps: 'opacity,visibility,transform' })
+      .fromTo(t, { autoAlpha: 0, scale: 0.5 }, { autoAlpha: 1, scale: 1, duration: 0.3, ease: E.pop }, 0.3)
+      .fromTo(t.querySelector('path'), { drawSVG: '0%' }, { drawSVG: '100%', duration: 0.35, ease: 'power2.out' }, 0.36)
+      .to(t, { autoAlpha: 0, scale: 0.8, duration: 0.25, ease: E.exit }, 1.5);
+  }
+  /* ---------- a switch flips: its amount drops out of the sum or rolls back in ---------- */
+  function flip(amt, on) {
+    if (!ready() || !amt) return;
+    if (on) gsap.fromTo(amt, { y: 10, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.35, ease: E.pop, clearProps: 'transform,opacity,visibility' });
+    else gsap.fromTo(amt, { opacity: 1, x: -6 }, { opacity: 0.4, x: 0, duration: 0.4, ease: E.soft, clearProps: 'transform' });
+  }
+  /* ---------- the slice you picked opens into its payments ---------- */
+  function reveal(box, color) {
+    if (!ready() || !box) return;
+    const rows = [...box.querySelectorAll('.item')].slice(0, 8);
+    box.style.setProperty('--pick', color || 'var(--gold)'); box.classList.remove('picked-in'); void box.offsetWidth; box.classList.add('picked-in');
+    if (rows.length) gsap.fromTo(rows, { autoAlpha: 0, y: -8 }, { autoAlpha: 1, y: 0, duration: 0.3, ease: E.soft, stagger: 0.045, delay: 0.08, clearProps: 'opacity,visibility,transform' });
+  }
+
   /* ---------- the big title shrinks into a slim bar as you scroll ---------- */
   let raf = 0;
   function onScroll() {
@@ -225,6 +290,6 @@
   }
   addEventListener('scroll', onScroll, { passive: true });
 
-  window.LM = { get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll };
+  window.LM = { get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
