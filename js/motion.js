@@ -28,9 +28,12 @@
     if (!ready()) { el.textContent = toText; done && done(); return; }
     const lh = parseFloat(getComputedStyle(el).lineHeight) || el.getBoundingClientRect().height || 30;
     const fd = fromText.replace(/\D/g, ''), td = toText.replace(/\D/g, '');
+    // every digit column gets the same measured width, so nothing shifts or overlaps mid-roll whatever the font
+    const probe = document.createElement('span'); probe.textContent = '0'; probe.style.cssText = 'position:absolute;visibility:hidden'; el.appendChild(probe);
+    const dw = probe.getBoundingClientRect().width || lh * 0.6; probe.remove();
     let di = 0;
     el.innerHTML = [...toText].map((ch) => (/\d/.test(ch)
-      ? `<span class="odo" style="height:${lh}px"><span class="odo-col">${'0123456789'.split('').map((n) => `<span style="height:${lh}px;line-height:${lh}px">${n}</span>`).join('')}</span></span>`
+      ? `<span class="odo" style="height:${lh}px;width:${dw}px"><span class="odo-col">${'0123456789'.split('').map((n) => `<span style="height:${lh}px;line-height:${lh}px">${n}</span>`).join('')}</span></span>`
       : `<span class="odo-sep">${ch}</span>`)).join('');
     const cols = [...el.querySelectorAll('.odo-col')];
     const sameLen = fd.length === td.length;

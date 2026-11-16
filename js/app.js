@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.11.1';
+const APP_VERSION = '1.12.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -538,7 +538,7 @@ function renderQuick() {
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'];
   openSheet(`<h3>Quick add</h3>
   <div class="qa-amt num" aria-live="polite"><span class="cur">₹</span>${[...(q.amt ? Number(q.amt.replace(/\.$/, '')).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + (q.amt.endsWith('.') ? '.' : '') : '0')].map((ch) => `<span class="qd">${esc(ch)}</span>`).join('')}</div>
-  <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k}</button>`).join('')}</div>
+  <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k === '⌫' ? '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5h11v14H9l-6-7z"/><path d="m12.5 9.5 5 5m0-5-5 5"/></svg>' : k}</button>`).join('')}</div>
   <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Groceries, chai, petrol…" autocomplete="off"></label>
   <div class="chips">${recentPayees().map((p) => `<button type="button" class="chip ${p === q.payee ? 'on' : ''}" data-act="qaPayee" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>
   <div class="seg" role="group" aria-label="Paid from" style="grid-template-columns:repeat(${partner() ? 4 : 3},minmax(0,1fr))">${[['upi', 'Savings' + (payAccount('upi', false)?.last4 ? ' ••' + payAccount('upi', false).last4 : '')], ['card', 'Card' + (payAccount('card', false)?.last4 ? ' ••' + payAccount('card', false).last4 : '')], ['cash', 'Cash'], ...(partner() ? [['partner', esc(partnerFirst())]] : [])].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
@@ -667,9 +667,61 @@ function renderVault(m) {
   <div class="day"><span>Insurance</span><span>${pol.length}</span></div>
   <div class="list">${pol.map((v) => `<button class="item" data-act="vaultOpen" data-id="${v.id}">${vaultIcon(v.type)}<div class="grow"><div class="t">${esc(v.title)}</div><div class="s">${esc([v.provider, v.cover].filter(Boolean).join(' · '))}</div></div><div class="muted">${v.files?.length ? '📎 ' : ''}›</div></button>`).join('') || '<div class="item"><div class="grow s">No policies yet</div></div>'}</div>
   ${docs.length ? `<div class="day"><span>Documents</span></div><div class="list">${docs.map((v) => `<button class="item" data-act="vaultOpen" data-id="${v.id}">${vaultIcon('Other')}<div class="grow"><div class="t">${esc(v.title)}</div><div class="s">${esc(v.notes || '')}</div></div><div class="muted">›</div></button>`).join('')}</div>` : ''}
+  <button class="btn wide ghost" style="margin:4px 0 12px" data-act="emergency">Emergency sheet for family</button>
   <p class="small" style="margin:0 4px 8px"><button class="link" data-act="vaultImport">Import a vault file</button></p>
   <p class="small muted" style="margin:6px 4px">Encrypted on this phone. Attach PDFs, e-cards and ID scans to each item.</p>`;
 }
+// ---------- Emergency sheet: everything family needs to claim, on one printable page ----------
+// Policies, numbers, who to call and how to claim. No balances, spending or premiums.
+function emergencyHtml() {
+  const items = D.vault || [], pol = items.filter((v) => v.kind === 'policy'), docs = items.filter((v) => v.kind === 'doc');
+  const me = D.members.find((x) => x.id === 'me')?.name || '';
+  const e = esc, tel = (v) => String(v || '').replace(/[^\d+]/g, '');
+  const link = (v) => { const t = String(v).trim();
+    if (/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(t)) return `<a href="mailto:${e(t)}">${e(t)}</a>`;
+    if (/^https?:\/\//i.test(t)) return `<a href="${e(t)}">${e(t.replace(/^https?:\/\//, ''))}</a>`;
+    const wa = t.match(/^whatsapp\s*:?\s*(\+?[\d\s-]{8,})$/i); if (wa) return `<a href="https://wa.me/${wa[1].replace(/\D/g, '')}">WhatsApp ${e(wa[1].trim())}</a>`;
+    if (/^\+?\d[\d\s-]{6,}$/.test(t)) return `<a href="tel:${tel(t)}">${e(t)}</a>`;
+    return e(t); };
+  const row = (k, v) => v ? `<tr><th>${k}</th><td>${v}</td></tr>` : '';
+  const urgent = items.filter((v) => v.important);
+  const policy = (v) => `<section class="pol"><h2>${e(v.title)}<span>${e(v.type || '')}</span></h2>
+    <table>${row('Insurer', e(v.provider || ''))}${row('TPA', e(v.tpa || ''))}${row('Policy no.', `<b>${e(v.policyNo || '')}</b>`.replace('<b></b>', ''))}${row('Covers', e(v.holder || ''))}${row('Cover', e(v.cover || ''))}${row('Nominee', e(v.nominee || ''))}${row('Renews', v.nextDue ? fmtDate(v.nextDue, true) : '')}</table>
+    ${v.important ? `<p class="imp">${e(v.important)}</p>` : ''}
+    ${v.claim?.length ? `<h3>How to claim</h3><ol>${v.claim.map((c) => `<li>${e(c)}</li>`).join('')}</ol>` : ''}
+    ${v.people?.length ? `<h3>Who to contact</h3>${[...new Set(v.people.map((p) => p.level || 1))].sort().map((l) => `<p class="lvl">Level ${l}${l === 1 ? ' · start here' : ''}</p><ul class="ppl">${v.people.filter((p) => (p.level || 1) === l).map((p) => `<li><b>${e(p.name || '')}</b>${p.team ? ` · ${e(p.team)}` : ''}<br>${[p.phone ? `<a href="tel:${tel(p.phone)}">${e(p.phone)}</a>` : '', p.email ? `<a href="mailto:${e(p.email)}">${e(p.email)}</a>` : '', p.whatsapp ? `<a href="https://wa.me/${tel(p.whatsapp).replace('+', '')}">WhatsApp</a>` : ''].filter(Boolean).join(' · ')}</li>`).join('')}</ul>`).join('')}` : ''}
+    ${v.contacts?.length ? `<h3>${v.people?.length ? 'Other contacts' : 'Contacts'}</h3><table>${v.contacts.map(([k, val]) => row(e(k), link(val))).join('')}</table>` : ''}
+    ${v.notes ? `<p class="note">${e(v.notes)}</p>` : ''}</section>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Family emergency sheet${me ? ' · ' + e(me) : ''}</title>
+<style>
+body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17201b;margin:0;padding:24px 20px 40px;max-width:720px;margin:0 auto;background:#fff}
+h1{font:600 26px/1.2 Georgia,serif;margin:0 0 4px}.sub{color:#5f6b63;margin:0 0 18px;font-size:13px}
+.urgent{background:#1f3d2f;color:#fff;border-radius:12px;padding:12px 16px;margin:0 0 18px}.urgent b{display:block;font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.8;margin-bottom:4px}
+.pol{border:1px solid #d9ddd5;border-radius:12px;padding:14px 16px;margin:0 0 14px;break-inside:avoid}
+h2{font:600 18px/1.3 Georgia,serif;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px}h2 span{font:500 12px -apple-system,sans-serif;color:#5f6b63;letter-spacing:.06em;text-transform:uppercase}
+h3{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#5f6b63;margin:14px 0 4px}
+table{border-collapse:collapse;width:100%}th{text-align:left;font-weight:500;color:#5f6b63;padding:3px 12px 3px 0;width:34%;vertical-align:top}td{padding:3px 0;vertical-align:top}
+ol,ul{margin:0;padding-left:20px}.ppl{list-style:none;padding:0}.ppl li{padding:4px 0}.lvl{margin:8px 0 2px;font-weight:600;font-size:13px}
+.imp{background:#f6efe0;border-radius:8px;padding:8px 10px;margin:10px 0 0;font-weight:600}.note{color:#5f6b63;font-size:13px;margin:10px 0 0}
+a{color:#1f5c43}.foot{color:#5f6b63;font-size:12px;margin-top:22px;border-top:1px solid #d9ddd5;padding-top:10px}
+@media print{body{padding:0}.pol{border-color:#bbb}a{color:#17201b;text-decoration:none}}
+</style></head><body>
+<h1>Family emergency sheet</h1><p class="sub">${me ? e(me) + ' · ' : ''}Prepared ${fmtDate(todayIso(), true)} from Ledger</p>
+${urgent.length ? `<div class="urgent"><b>Do this first</b>${urgent.map((v) => `<div>${e(v.title)}: ${e(v.important)}</div>`).join('')}</div>` : ''}
+${pol.map(policy).join('') || '<p>No policies in the vault yet.</p>'}
+${docs.length ? `<section class="pol"><h2>Documents kept in Ledger</h2><ul>${docs.map((v) => `<li>${e(v.title)}${v.provider ? ' · ' + e(v.provider) : ''}${v.policyNo ? ' · ' + e(v.policyNo) : ''}</li>`).join('')}</ul></section>` : ''}
+<p class="foot">This page holds policy numbers and contacts. Keep it somewhere safe and share it only with family or your nominee.</p>
+</body></html>`;
+}
+function emergencySheet() {
+  if (!(D.vault || []).some((v) => v.kind === 'policy')) return toast('Add a policy to the vault first.');
+  openSheet(`<h3>Emergency sheet</h3><p class="small muted" style="margin-top:-6px">One page for family or your nominee: each policy, its number, who to call and how to claim. No balances or spending.</p>
+    <div class="esheet-prev"><iframe title="Emergency sheet preview" srcdoc="${esc(emergencyHtml())}"></iframe></div>
+    <div class="row" style="margin-top:12px"><button class="btn" style="flex:1" data-act="emShare">Share</button><button class="btn ghost" style="flex:1" data-act="emPrint">Print or save PDF</button></div>
+    <p class="tiny muted" style="margin:8px 2px 0">Share sends it as a page that opens in any browser, for WhatsApp or Mail. To make a PDF: Print, then pinch out on the preview and share.</p>`);
+}
+
 // Emails, phone numbers and links in the vault open Mail, the phone or WhatsApp
 function contactLink(val) {
   const v = String(val).trim();
@@ -1349,6 +1401,13 @@ function renderInvest(m) {
   setTop('Investments', { back: 'closeView' });
   const r = returnsData(), al = allocation();
   const pct = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  if (!r.accs.length && !al.total) {
+    m.innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><div class="serif" style="font-size:1.3rem;margin-bottom:6px">No investments yet</div>
+      <p class="small muted" style="margin:0 0 14px">Mutual funds, Zerodha stocks, PPF, EPF and FDs show here, with returns and where your money sits.</p>
+      <button class="btn wide" data-act="tab" data-tab="import">Import CAS or Zerodha</button><div style="height:8px"></div>
+      <button class="btn wide ghost" data-act="addAccount">Add an investment account</button></div>`;
+    return;
+  }
   m.innerHTML = `${r.accs.length ? `<div class="card"><h2>Returns</h2><div class="big num">${inr(r.value, 0)}</div>
       ${r.cost ? `<div class="small"><span class="${r.gain >= 0 ? 'in' : 'bad'} num">${r.gain >= 0 ? '+' : ''}${inr(r.gain, 0)} (${pct(r.gain / r.cost)})</span> <span class="muted">on ${inr(r.cost, 0)} invested</span></div>` : ''}
       <div class="split" style="margin-top:12px"><div><div class="small muted">XIRR (yearly)</div><div class="mid num ${r.irr == null ? 'muted' : r.irr >= 0 ? 'in' : 'bad'}">${r.irr == null ? '…' : pct(r.irr)}</div></div>
@@ -1939,7 +1998,8 @@ function renderHome(m) {
   const top = s.byCat.slice(0, 5); const topMax = Math.max(1, ...top.map((x) => x[1]));
   const dues = D.accounts.filter((a) => accVisible(a) && a.type === 'credit_card' && !a.archived && a.statement?.dueDate && a.statement.totalDue > 0 && daysUntil(a.statement.dueDate) >= -3 && !a.statement.paid);
   const recent = [...D.transactions].filter((x) => visIds.has(x.accountId)).sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || '')).slice(0, 5);
-  const backupOld = D.transactions.length && (!D.settings.lastBackupAt || (Date.now() - new Date(D.settings.lastBackupAt)) > 7 * 864e5);
+  // Never backed up: ask once there's something worth losing (5 transactions, or anything in the vault). After that, weekly.
+  const backupOld = D.settings.lastBackupAt ? (Date.now() - new Date(D.settings.lastBackupAt)) > 7 * 864e5 : (D.transactions.length >= 5 || (D.vault || []).length > 0);
 
   const hr = new Date().getHours(), me = D.members.find((x) => x.id === 'me')?.name || '';
   const todayOut = D.transactions.filter((x) => x.date === todayIso() && x.amount < 0 && visIds.has(x.accountId) && !['transfer', 'income'].includes(catById(x.categoryId)?.kind)).reduce((t, x) => t - x.amount, 0);
@@ -2612,7 +2672,7 @@ function renderMore(m) {
   const userRules = D.rules;
   m.innerHTML = `
   <div class="day"><span>Household</span></div>
-  <div class="list">${D.members.map((mb) => `<button class="item" data-act="memberSheet" data-id="${mb.id}"><div class="ico">${esc(initials(mb.name))}</div><div class="grow">${esc(mb.name)}<div class="s">${D.accounts.filter((a) => ownerOf(a) === mb.id).length} accounts</div></div><div class="muted">›</div></button>`).join('')}
+  <div class="list">${D.members.map((mb) => `<button class="item" data-act="memberSheet" data-id="${mb.id}"><div class="ico">${esc(initials(mb.name))}</div><div class="grow">${esc(mb.name)}<div class="s">${((n) => `${n} account${n === 1 ? '' : 's'}`)(D.accounts.filter((a) => ownerOf(a) === mb.id).length)}</div></div><div class="muted">›</div></button>`).join('')}
     <button class="item" data-act="memberSheet"><div class="grow" style="color:var(--brand)">+ Add a person</div></button></div>
   <div class="list"><button class="item" data-act="tab" data-tab="import"><div class="ico tone-sage" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg></div><div class="grow">Import statements &amp; SMS<div class="s">Bank, card, Zerodha, CAS and SMS inbox</div></div><div class="muted">›</div></button></div>
   <div class="day"><span>Quick add & Shortcut</span></div>
@@ -3523,6 +3583,13 @@ const acts = {
     ${partner() ? `<label class="f"><span>${esc(partnerFirst())}'s payments come from</span><select class="i" name="partner">${opt('partner', (a) => led(a) && ownerOf(a) === partner().id)}</select></label>` : ''}
     <button class="btn wide">Save</button></form>`); },
   addPartnerAcc: () => { const keep = ui.qa; accountSheet(null); const f = document.querySelector('form[data-form=account]'); if (f?.owner) f.owner.value = partner().id; ui.qaBack = keep; },
+  emergency: () => emergencySheet(),
+  emShare: async () => {
+    const f = new File([emergencyHtml()], 'Family emergency sheet.html', { type: 'text/html' });
+    if (navigator.canShare?.({ files: [f] })) { try { await navigator.share({ files: [f], title: 'Family emergency sheet' }); } catch {} }
+    else { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); }
+  },
+  emPrint: () => { const fr = document.querySelector('#sheet .esheet-prev iframe'); try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch { toast('Use Share, then Print'); } },
   shortcutHelp: () => shortcutHelp(),
   openReceipts: () => { ui.view = { page: 'receipts' }; render(); window.scrollTo(0, 0); },
   addReceipt: async () => { const fs = await pickFiles('image/*,application/pdf'); if (fs.length) receiptForm(fs); },
