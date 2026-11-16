@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0b110e">
+<title>Ledger unlock: preview</title>
+<style>
+@font-face{font-family:"Inter";font-weight:100 900;src:url(../fonts/inter-latin-wght-normal.woff2) format("woff2-variations")}
+@font-face{font-family:"Fraunces";font-weight:100 900;src:url(../fonts/fraunces-latin-opsz-normal.woff2) format("woff2-variations")}
+:root{--bg:#0b110e;--ink:#ece7db;--muted:#9da8a2;--gold:#d2b377;--sage:#7fd4a4;--brand:#2b6b52;
+  --g1:#d2b377;--g2:#2b6b52;--ease:cubic-bezier(.16,1,.3,1)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:Inter,-apple-system,sans-serif;overflow:hidden;overscroll-behavior:none}
+#stage{position:fixed;inset:0;perspective:1100px;perspective-origin:50% 42%;display:grid;place-items:center;touch-action:none;
+  background:radial-gradient(120% 70% at 50% 18%,#15201b 0%,#0b110e 55%,#070b09 100%)}
+/* studio floor: the glow pools under the card */
+.floor{position:absolute;left:50%;top:62%;width:420px;height:150px;margin-left:-210px;border-radius:50%;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--g1) 55%,transparent),color-mix(in srgb,var(--g2) 35%,transparent) 55%,transparent);
+  filter:blur(18px);opacity:0;transform:scaleX(.6)}
+.floor2{position:absolute;left:50%;top:70%;width:600px;height:220px;margin-left:-300px;border-radius:50%;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--g2) 28%,transparent),transparent);filter:blur(30px);opacity:0}
+#tilt,#float,#rig{position:absolute;left:50%;top:44%;width:0;height:0;transform-style:preserve-3d}
+#float,#rig{left:0;top:0}
+/* cards */
+.card{position:absolute;left:-150px;top:-95px;width:300px;height:190px;border-radius:16px;transform-style:preserve-3d;backface-visibility:hidden;will-change:transform}
+.face{position:absolute;inset:0;border-radius:16px;overflow:hidden;
+  box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 0 0 1px rgba(255,255,255,.06) inset,0 30px 60px -20px rgba(0,0,0,.7)}
+.c0 .face{background:
+   repeating-linear-gradient(115deg,rgba(255,255,255,.018) 0 2px,transparent 2px 5px),
+   linear-gradient(135deg,#1c3229 0%,#0f1d17 46%,#16281f 70%,#0b1611 100%)}
+.chip{position:absolute;left:26px;top:58px;width:42px;height:32px;border-radius:7px;
+  background:linear-gradient(135deg,#f0dcae,#c9a45e 45%,#e8cf96 60%,#a8823a);box-shadow:0 0 0 1px rgba(0,0,0,.25) inset}
+.chip::before,.chip::after{content:"";position:absolute;background:rgba(80,60,20,.35)}
+.chip::before{left:14px;right:14px;top:4px;bottom:4px;border-radius:3px;background:transparent;box-shadow:0 0 0 1px rgba(80,60,20,.35)}
+.chip::after{left:0;right:0;top:50%;height:1px}
+.mark{position:absolute;right:22px;top:18px;font-family:Fraunces,Georgia,serif;font-size:22px;font-weight:500;letter-spacing:.01em;
+  color:#0c1813;text-shadow:0 1px 0 rgba(255,255,255,.14),0 -1px 0 rgba(0,0,0,.6)}
+.c0 .mark{color:#d2b377;text-shadow:0 1px 0 rgba(0,0,0,.6),0 0 14px rgba(210,179,119,.25)}
+.lab{position:absolute;left:26px;bottom:20px;font-size:12px;font-weight:650;letter-spacing:.16em;text-transform:uppercase;color:rgba(236,231,219,.82)}
+.sub{position:absolute;right:22px;bottom:20px;font-size:12px;font-weight:600;letter-spacing:.08em;color:rgba(236,231,219,.6)}
+.glint{position:absolute;top:-30%;bottom:-30%;width:38%;left:0;transform:translateX(-160%) skewX(-18deg);pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(255,240,210,.22),rgba(255,255,255,.34),rgba(255,240,210,.18),transparent)}
+/* fanned cards: translucent Ledger tones */
+.cf .face{backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.t1 .face{background:linear-gradient(135deg,rgba(226,194,127,.92),rgba(168,130,58,.78))}
+.t2 .face{background:linear-gradient(135deg,rgba(127,212,164,.85),rgba(43,107,82,.82))}
+.t3 .face{background:linear-gradient(135deg,rgba(217,139,95,.9),rgba(140,70,45,.8))}
+.t4 .face{background:linear-gradient(135deg,rgba(236,222,190,.9),rgba(176,152,110,.8))}
+.t5 .face{background:linear-gradient(135deg,rgba(143,179,232,.85),rgba(42,82,120,.82))}
+.cf .lab,.cf .sub{color:rgba(16,24,20,.8);top:15px;bottom:auto}.cf .lab{left:20px}.cf .sub{right:20px}.cf .mark{top:auto;bottom:16px;font-size:18px;color:rgba(16,24,20,.5);text-shadow:0 1px 0 rgba(255,255,255,.25)}
+/* the sleeve: a dark green leather pocket */
+.sleeve{position:absolute;left:-168px;width:336px;transform-style:preserve-3d}
+.s-back{top:-40px;height:250px;border-radius:22px;
+  background:radial-gradient(120% 90% at 50% 0%,#1d3328,#0f1c16 70%);box-shadow:0 0 0 1px rgba(210,179,119,.12) inset}
+.s-front{top:58px;height:152px;border-radius:14px 14px 22px 22px;overflow:hidden;
+  background:
+    radial-gradient(rgba(255,255,255,.035) 1px,transparent 1.2px) 0 0/5px 5px,
+    radial-gradient(rgba(0,0,0,.25) 1px,transparent 1.3px) 2px 3px/6px 6px,
+    linear-gradient(180deg,#203a2e,#142820 60%,#0f1f18);
+  box-shadow:0 -1px 0 rgba(210,179,119,.35) inset,0 -18px 30px -18px rgba(0,0,0,.6) inset,0 30px 60px -20px rgba(0,0,0,.8)}
+.s-front::before{content:"";position:absolute;left:14px;right:14px;top:12px;bottom:14px;border-radius:10px;border:1.5px dashed rgba(210,179,119,.28)}
+.s-front .emb{position:absolute;left:0;right:0;bottom:30px;text-align:center;font-family:Fraunces,Georgia,serif;font-size:17px;color:#0b1712;
+  text-shadow:0 1px 0 rgba(255,255,255,.08),0 -1px 0 rgba(0,0,0,.55);letter-spacing:.02em}
+.s-ring{position:absolute;left:-174px;width:348px;top:52px;height:164px;border-radius:24px;pointer-events:none;
+  box-shadow:0 0 0 1.5px rgba(210,179,119,.0),0 0 0 rgba(210,179,119,0);opacity:0}
+/* text */
+.cap{position:absolute;left:0;right:0;top:calc(44% + 205px);text-align:center;pointer-events:none}
+.cap .k{font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
+.cap .v{font-family:Fraunces,Georgia,serif;font-size:30px;font-weight:450;margin-top:6px}
+.lock{display:inline-block;width:18px;height:18px;vertical-align:-3px;margin-right:6px}
+.lock path{fill:none;stroke:var(--gold);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ui{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom) + 18px);display:flex;gap:10px;justify-content:center;z-index:5}
+.ui button{font:600 14px Inter,sans-serif;color:var(--ink);background:rgba(236,231,219,.08);border:1px solid rgba(236,231,219,.14);border-radius:999px;padding:11px 18px}
+.note{position:fixed;top:calc(env(safe-area-inset-top) + 14px);left:0;right:0;text-align:center;font-size:12px;color:var(--muted);z-index:5}
+@media (prefers-reduced-motion:reduce){.glint{display:none}}
+</style>
+</head>
+<body>
+<div class="note">Preview only · drag the card to tilt it</div>
+<div id="stage">
+  <div class="floor2"></div><div class="floor"></div>
+  <div id="tilt"><div id="float"><div id="rig">
+    <div class="sleeve s-back"></div>
+    <div class="card cf t5" data-i="5"><div class="face"><div class="mark">Ledger</div><div class="lab">EPF</div><div class="sub">Retirement</div></div></div>
+    <div class="card cf t4" data-i="4"><div class="face"><div class="mark">Ledger</div><div class="lab">Stocks</div><div class="sub">Zerodha</div></div></div>
+    <div class="card cf t3" data-i="3"><div class="face"><div class="mark">Ledger</div><div class="lab">Mutual funds</div><div class="sub">CAS</div></div></div>
+    <div class="card cf t2" data-i="2"><div class="face"><div class="mark">Ledger</div><div class="lab">Home loan</div><div class="sub">DNS</div></div></div>
+    <div class="card cf t1" data-i="1"><div class="face"><div class="mark">Ledger</div><div class="lab">Credit card</div><div class="sub">HDFC</div></div></div>
+    <div class="card c0" data-i="0"><div class="face"><div class="chip"></div><div class="mark">Ledger</div><div class="lab">Savings</div><div class="sub">HDFC</div><div class="glint"></div></div></div>
+    <div class="sleeve s-front"><div class="emb">Ledger</div></div>
+    <div class="sleeve s-ring"></div>
+  </div></div></div>
+  <div class="cap"><div class="k" id="capk">Face ID</div><div class="v" id="capv">&nbsp;</div></div>
+</div>
+<div class="ui"><button id="again">Play again</button></div>
+
+<script src="../vendor/gsap/gsap.min.js"></script>
+<script>
+/* Ledger unlock sequence, preview. In the app the account names come from your own data on the phone;
+   this public page uses generic labels. */
+(() => {
+  const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const tilt = $('#tilt'), flo = $('#float'), rig = $('#rig');
+  const c0 = $('.c0'), fan = $$('.cf').sort((a, b) => a.dataset.i - b.dataset.i), all = [c0, ...fan];
+  const back = $('.s-back'), front = $('.s-front'), ring = $('.s-ring');
+  const capk = $('#capk'), capv = $('#capv'), root = document.documentElement;
+  const W = innerWidth, sc = Math.min(1, (W - 40) / 320);
+  gsap.set('#tilt', { scale: sc });
+
+  // drag to tilt; when you let go it drifts back and sways on its own
+  const rx = gsap.quickTo(tilt, 'rotationX', { duration: 0.6, ease: 'power3.out' });
+  const ry = gsap.quickTo(tilt, 'rotationY', { duration: 0.6, ease: 'power3.out' });
+  const glintX = gsap.quickTo('.c0 .glint', 'xPercent', { duration: 0.6, ease: 'power3.out' });
+  let dragging = false;
+  const move = (e) => {
+    const p = e.touches?.[0] || e; const nx = p.clientX / innerWidth - 0.5, ny = p.clientY / innerHeight - 0.5;
+    rx(-ny * 26); ry(nx * 34); glintX(-160 + (nx + 0.5) * 420);
+  };
+  $('#stage').addEventListener('pointerdown', (e) => { dragging = true; sway.pause(); move(e); });
+  addEventListener('pointermove', (e) => { if (dragging) move(e); });
+  addEventListener('pointerup', () => { if (!dragging) return; dragging = false; rx(0); ry(0); glintX(-160); sway.resume(); });
+  const sway = gsap.to(tilt, { rotationY: 7, rotationX: -3, duration: 3.2, ease: 'sine.inOut', yoyo: true, repeat: -1, paused: true });
+  const breathe = gsap.to(flo, { y: -9, duration: 2.1, ease: 'sine.inOut', yoyo: true, repeat: -1, paused: true });
+
+  const caption = (k, v) => {
+    gsap.timeline().to([capk, capv], { autoAlpha: 0, y: -6, duration: 0.2, ease: 'power2.in' })
+      .add(() => { capk.innerHTML = k; capv.innerHTML = v || '&nbsp;'; })
+      .to([capk, capv], { autoAlpha: 1, y: 0, duration: 0.45, ease: 'power3.out', stagger: 0.06 });
+  };
+  // where each card sits in the fanned deck
+  const spot = (i) => ({ x: (i - 2.5) * 5, y: 96 - i * 38, z: -i * 34, rotationZ: (2.5 - i) * 2.2, rotationY: 0, rotationX: 14 });
+
+  function reset() {
+    gsap.killTweensOf([tilt, flo, rig, ...all, back, front, ring, capk, capv, root, '.floor', '.floor2', '.c0 .glint']);
+    gsap.set(all, { x: 0, y: 0, z: 0, rotationX: 0, rotationY: 0, rotationZ: 0, autoAlpha: 1, scale: 1 });
+    gsap.set(fan, { autoAlpha: 0, z: -2 });
+    gsap.set([back, front], { y: 520, autoAlpha: 1 });
+    gsap.set(ring, { y: 520, autoAlpha: 0 });
+    gsap.set(c0, { y: 260, z: -220, rotationX: 40, autoAlpha: 0 });
+    gsap.set(['.floor', '.floor2'], { autoAlpha: 0, scaleX: 0.6 });
+    gsap.set(tilt, { rotationX: 0, rotationY: 0 });
+    gsap.set(rig, { y: 0 });
+    gsap.set('.c0 .glint', { xPercent: -160 });
+    root.style.setProperty('--g1', '#d2b377'); root.style.setProperty('--g2', '#2b6b52');
+    capk.textContent = 'Face ID'; capv.innerHTML = '&nbsp;';
+  }
+
+  function play() {
+    reset();
+    if (RM) { gsap.set(c0, { y: 0, z: 0, rotationX: 0, autoAlpha: 1 }); capk.textContent = 'Unlocked'; capv.textContent = 'Welcome back'; return; }
+    const tl = gsap.timeline({ defaults: { ease: 'expo.out' } });
+
+    // 1. The card rises out of the dark and floats, light pooling under it
+    tl.to(c0, { y: 0, z: 0, rotationX: 0, autoAlpha: 1, duration: 1.6 })
+      .to('.floor', { autoAlpha: 0.9, scaleX: 1, duration: 1.6 }, '<0.2')
+      .to('.floor2', { autoAlpha: 0.8, scaleX: 1, duration: 1.8 }, '<')
+      .add(() => { breathe.play(); sway.play(); }, '-=0.8')
+      .fromTo('.c0 .glint', { xPercent: -160 }, { xPercent: 420, duration: 1.3, ease: 'power2.inOut' }, '-=0.9')
+      .add(() => caption('Face ID', 'Unlocking…'), '-=1.3')
+      // a slow turn so you see the metal catch the light
+      .to(c0, { rotationY: -22, rotationX: 8, duration: 1.2, ease: 'sine.inOut' }, '+=0.2')
+      .to(c0, { rotationY: 0, rotationX: 0, duration: 1.0, ease: 'sine.inOut' })
+
+    // 2. Face ID passes: the card splits into a fanned deck of your accounts
+      .add('fan', '+=0.15')
+      .add(() => caption('Your accounts', '&nbsp;'), 'fan')
+      .to(fan, { autoAlpha: 1, duration: 0.3, stagger: 0.05, ease: 'power1.out' }, 'fan')
+      .to(all, { duration: 1.25, ease: 'expo.out', stagger: 0.07,
+        x: (i) => spot(i).x, y: (i) => spot(i).y, z: (i) => spot(i).z,
+        rotationZ: (i) => spot(i).rotationZ, rotationY: (i) => spot(i).rotationY, rotationX: (i) => spot(i).rotationX }, 'fan')
+      .to(root, { '--g1': '#d98b5f', '--g2': '#7fd4a4', duration: 1.6, ease: 'sine.inOut' }, 'fan')
+      .to(rig, { y: -10, duration: 1.4, ease: 'sine.inOut' }, 'fan')
+      // the deck drifts a little while you take it in
+      .to(all, { duration: 1.6, ease: 'sine.inOut', rotationY: (i) => 6 - i * 1.5, y: (i) => spot(i).y - i * 4 }, 'fan+=1.3')
+      .to(root, { '--g1': '#8fb3e8', '--g2': '#d2b377', duration: 1.4, ease: 'sine.inOut' }, 'fan+=1.4')
+
+    // 3. Whip back into the one card, then a drop
+      .add('snap', 'fan+=3.1')
+      .to(all, { duration: 0.42, ease: 'expo.in', stagger: { each: 0.03, from: 'end' }, x: 0, y: 0, z: 0, rotationZ: 0, rotationY: 0, rotationX: 0 }, 'snap')
+      .to(fan, { autoAlpha: 0, duration: 0.12 }, 'snap+=0.42')
+      .to(root, { '--g1': '#d2b377', '--g2': '#2b6b52', duration: 0.6, ease: 'power2.out' }, 'snap+=0.3')
+      .fromTo('.c0 .glint', { xPercent: -160 }, { xPercent: 420, duration: 0.5, ease: 'power2.out' }, 'snap+=0.42')
+      .add(() => { breathe.pause(); gsap.to(flo, { y: 0, duration: 0.3 }); }, 'snap+=0.45')
+      .to(c0, { y: -26, duration: 0.32, ease: 'power2.out' }, 'snap+=0.5')
+      .add(() => caption('Securing', '&nbsp;'), 'snap+=0.5')
+
+    // 4. The sleeve rises; the card slides in; the edges glow gold
+      .to([back, front], { y: 0, duration: 0.9, ease: 'expo.out', stagger: 0.04 }, 'snap+=0.55')
+      .to(c0, { y: 70, duration: 0.95, ease: 'power3.inOut' }, 'snap+=0.85')
+      .to('.floor', { scaleX: 1.15, autoAlpha: 1, duration: 0.6 }, 'snap+=1.5')
+      .set(ring, { y: 0 }, 'snap+=1.7')
+      .fromTo(ring, { autoAlpha: 0, boxShadow: '0 0 0 1.5px rgba(210,179,119,0), 0 0 0px rgba(210,179,119,0)' },
+        { autoAlpha: 1, boxShadow: '0 0 0 1.5px rgba(210,179,119,.95), 0 0 34px rgba(210,179,119,.55)', duration: 0.5, ease: 'power2.out' }, 'snap+=1.75')
+      .to(ring, { boxShadow: '0 0 0 1.5px rgba(210,179,119,.55), 0 0 14px rgba(210,179,119,.25)', duration: 0.7, ease: 'sine.inOut', yoyo: true, repeat: 2 }, '>')
+      .add(() => caption('<svg class="lock" viewBox="0 0 24 24"><path d="M6 11h12v9H6z"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>Unlocked', 'Welcome back'), 'snap+=1.8')
+      .to(tilt, { rotationX: 0, rotationY: 0, duration: 0.8, ease: 'power3.out' }, 'snap+=1.6')
+      .add(() => sway.pause(), 'snap+=1.6')
+
+    // in the app, Home fades in from here
+      .to('#stage', { autoAlpha: 0.0, duration: 0.7, ease: 'power2.in' }, '+=0.9')
+      .set('#stage', { autoAlpha: 1 })
+      .add(reset);
+  }
+  $('#again').addEventListener('click', play);
+  document.fonts.ready.then(() => setTimeout(play, 250));
+})();
+</script>
+</body>
+</html>
