@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.11.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -541,8 +541,8 @@ function renderQuick() {
   <div class="qa-keys">${keys.map((k) => `<button type="button" class="qa-k" data-act="qaKey" data-k="${k}" aria-label="${k === '⌫' ? 'Delete' : k}">${k}</button>`).join('')}</div>
   <label class="f" style="margin-top:12px"><span>What for</span><input class="i" id="qaPayee" value="${esc(q.payee)}" placeholder="Groceries, chai, petrol…" autocomplete="off"></label>
   <div class="chips">${recentPayees().map((p) => `<button type="button" class="chip ${p === q.payee ? 'on' : ''}" data-act="qaPayee" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>
-  <div class="seg" role="group" aria-label="Paid from">${[['upi', 'Savings' + (payAccount('upi', false)?.last4 ? ' ••' + payAccount('upi', false).last4 : '')], ['card', 'Card' + (payAccount('card', false)?.last4 ? ' ••' + payAccount('card', false).last4 : '')], ['cash', 'Cash']].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
-  <p class="tiny muted" style="margin:6px 2px 10px">${acc ? 'From ' + esc(accShort(acc)) : q.via === 'cash' ? 'A Cash wallet account will be created' : 'No account set for this yet'} · <button class="link tiny" type="button" data-act="payWithSheet">Change</button></p>
+  <div class="seg" role="group" aria-label="Paid from" style="grid-template-columns:repeat(${partner() ? 4 : 3},minmax(0,1fr))">${[['upi', 'Savings' + (payAccount('upi', false)?.last4 ? ' ••' + payAccount('upi', false).last4 : '')], ['card', 'Card' + (payAccount('card', false)?.last4 ? ' ••' + payAccount('card', false).last4 : '')], ['cash', 'Cash'], ...(partner() ? [['partner', esc(partnerFirst())]] : [])].map(([v, l]) => `<button type="button" class="${q.via === v ? 'on' : ''}" data-act="qaVia" data-v="${v}" aria-pressed="${q.via === v}">${l}</button>`).join('')}</div>
+  <p class="tiny muted" style="margin:6px 2px 10px">${acc ? 'From ' + esc(accShort(acc)) : q.via === 'cash' ? 'A Cash wallet account will be created' : q.via === 'partner' ? `${esc(partnerFirst())} has no account in Ledger yet. <button class="link tiny" type="button" data-act="addPartnerAcc">Add it</button>` : 'No account set for this yet'} · <button class="link tiny" type="button" data-act="payWithSheet">Change</button></p>
   <div class="split">
     <label class="f"><span>Category</span><select class="i" id="qaCat">${catOptions(q.cat || guessCategory(q.payee || '', -1) || '')}</select></label>
     <label class="f"><span>Date</span><input class="i" type="date" id="qaDate" value="${q.date}"></label>
@@ -558,7 +558,7 @@ async function qaSave() {
   const q = ui.qa; const amt = Math.round(parseFloat(q.amt || '0') * 100);
   if (!amt) return toast('Enter an amount');
   q.payee = ($('#qaPayee')?.value || q.payee).trim() || 'Expense';
-  const acc = payAccount(q.via); if (!acc) return toast('Set which account UPI payments come from first');
+  const acc = payAccount(q.via); if (!acc) return toast(q.via === 'partner' ? `Add ${partnerFirst()}'s account first` : 'Set which account UPI payments come from first');
   const cat = $('#qaCat')?.value || guessCategory(q.payee, -amt) || null;
   const x = { id: uid(), accountId: acc.id, date: q.date || todayIso(), amount: -amt, payee: q.payee, description: q.payee, categoryId: cat, notes: '', raw: '', hash: 'manual|' + uid(), source: 'manual', importId: null, ref: null, time: new Date().toTimeString().slice(0, 5) };
   D.transactions.push(x);
@@ -642,7 +642,7 @@ function shortcutHelp() {
     <li>Add <b>Set Variable</b>. Name: <code>Amount</code>, value: <b>Provided Input</b>.</li>
     <li>Add <b>Ask for Input</b>. Type: <b>Text</b>. Prompt: <code>What for?</code></li>
     <li>Add <b>Set Variable</b>. Name: <code>What</code>, value: <b>Provided Input</b>.</li>
-    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>Savings ${esc(payAccount('upi', false)?.last4 || '1234')}</code>, <code>Card ${esc(payAccount('card', false)?.last4 || '5678')}</code>, <code>Cash</code>. Under each item add a <b>Text</b> action with that same text. The last 4 digits pick the account, so UPI paid from your card goes under Card.</li>
+    <li>Add <b>Choose from Menu</b>. Prompt: <code>Paid with</code>. Items: <code>Savings ${esc(payAccount('upi', false)?.last4 || '1234')}</code>, <code>Card ${esc(payAccount('card', false)?.last4 || '5678')}</code>, <code>Cash</code>${partner() ? `, <code>${esc(partnerFirst())}</code>` : ''}. Under each item add a <b>Text</b> action with that same text. The last 4 digits pick the account, so UPI paid from your card goes under Card.</li>
     <li>After <b>End Menu</b>, add <b>Set Variable</b>. Name: <code>How</code>, value: <b>Menu Result</b>.</li>
     <li>Add <b>Text</b>. Type <code>===LOG===</code> and a space, insert <b>Current Date</b> (tap it → Date Format: <b>ISO 8601</b>, include time). Press return, then insert <b>Amount</b>, type <code> | </code>, insert <b>What</b>, type <code> | </code>, insert <b>How</b>.</li>
     <li>Add <b>Append to Text File</b>: text = that <b>Text</b>, file <code>Ledger Inbox.txt</code> in the <b>Shortcuts</b> folder, <b>Make New Line</b> on. (The same file your SMS automations use.)</li>
@@ -2770,10 +2770,20 @@ function addSms(acc, p, hash) {
   return 'added';
 }
 // Which account a quick entry or Shortcut log goes to: UPI, card or cash (More → Quick add)
+// The other person in the household (Shibani), for logging spends from her account
+const partner = () => D.members.find((m) => m.id !== 'me') || null;
+const partnerFirst = () => (partner()?.name || '').split(/\s+/)[0];
 function payAccount(via, create = true) {
   const pw = (D.settings.payWith ||= {});
   let a = pw[via] && accById(pw[via]);
   if (a && !a.archived) return a;
+  if (via === 'partner') {
+    const p = partner(); if (!p) return null;
+    const hers = D.accounts.filter((x) => !x.archived && typeOf(x.type).mode === 'ledger' && ownerOf(x) === p.id);
+    a = hers.find((x) => x.type === 'savings' || x.type === 'current') || hers.find((x) => x.type !== 'credit_card') || hers[0];
+    if (a) pw[via] = a.id;
+    return a || null;
+  }
   const live = D.accounts.filter((x) => !x.archived && typeOf(x.type).mode === 'ledger' && ownerOf(x) === 'me');
   if (via === 'card') a = live.find((x) => x.type === 'credit_card');
   else if (via === 'cash') a = live.find((x) => x.type === 'cash');
@@ -2791,7 +2801,9 @@ function guessCategory(payee, amount) {
 function addLog(lg, receivedAt, hash) {
   // "Card 5678" or "UPI 1234": the account with those last 4 digits wins
   const byDigits = lg.last4 && D.accounts.find((a) => !a.archived && (a.last4 === lg.last4 || (a.smsLast4 || []).includes(lg.last4)));
-  const acc = byDigits || payAccount(lg.via); if (!acc) return 'skipped';
+  const pf = partnerFirst().toLowerCase();
+  const via = pf && (lg.how || '').toLowerCase().includes(pf) ? 'partner' : lg.via;
+  const acc = byDigits || payAccount(via); if (!acc) return 'skipped';
   const date = receivedAt ? isoOf(new Date(receivedAt)) : todayIso();
   const amount = lg.income ? lg.amount : -lg.amount;
   const twin = D.transactions.find((x) => x.accountId === acc.id && x.amount === amount && daysApart(x.date, date) <= 2 && x.source !== 'log' && !x.logged);
@@ -3508,7 +3520,9 @@ const acts = {
     <label class="f"><span>UPI payments come from</span><select class="i" name="upi">${opt('upi', (a) => led(a) && a.type !== 'credit_card')}</select></label>
     <label class="f"><span>Card payments go on</span><select class="i" name="card">${opt('card', (a) => a.type === 'credit_card')}</select></label>
     <label class="f"><span>Cash</span><select class="i" name="cash">${opt('cash', led)}</select></label>
+    ${partner() ? `<label class="f"><span>${esc(partnerFirst())}'s payments come from</span><select class="i" name="partner">${opt('partner', (a) => led(a) && ownerOf(a) === partner().id)}</select></label>` : ''}
     <button class="btn wide">Save</button></form>`); },
+  addPartnerAcc: () => { const keep = ui.qa; accountSheet(null); const f = document.querySelector('form[data-form=account]'); if (f?.owner) f.owner.value = partner().id; ui.qaBack = keep; },
   shortcutHelp: () => shortcutHelp(),
   openReceipts: () => { ui.view = { page: 'receipts' }; render(); window.scrollTo(0, 0); },
   addReceipt: async () => { const fs = await pickFiles('image/*,application/pdf'); if (fs.length) receiptForm(fs); },
@@ -3831,7 +3845,7 @@ const forms = {
     if (f.get('remind') && v.nextDue) D.bills.push({ id: uid(), kind: 'reminder', name: v.title + (v.premium ? ' premium' : ' renewal'), amount: v.premium || 0, every: v.freq || 'once', next: v.nextDue, day: +v.nextDue.slice(8), remind: 7, accountId: null, note: v.policyNo ? 'Policy ' + v.policyNo : '' });
     save(); closeSheet(); render(); done('Saved');
   },
-  payWith: (f) => { D.settings.payWith = { upi: f.get('upi') || null, card: f.get('card') || null, cash: f.get('cash') || null }; save(); closeSheet(); render(); if (ui.qa) renderQuick(); else done('Saved'); },
+  payWith: (f) => { D.settings.payWith = { upi: f.get('upi') || null, card: f.get('card') || null, cash: f.get('cash') || null, partner: f.get('partner') || null }; save(); closeSheet(); render(); if (ui.qa) renderQuick(); else done('Saved'); },
   receipt: async (f) => { const files = ui.rcPending || []; for (const file of files) await saveReceipt(file, { title: f.get('title').trim() + (files.length > 1 ? ' · ' + file.name : ''), date: f.get('date'), categoryId: f.get('categoryId') || null, note: f.get('note').trim() }); ui.rcPending = null; save(); closeSheet(); render(); done(files.length > 1 ? `${files.length} saved` : 'Receipt saved'); },
   bill: (f, form) => {
     const amt = parseRupees(f.get('amount') || '');
@@ -3964,7 +3978,10 @@ const forms = {
       const note = (r.note || '').replace(/^\d+ EMIs left\.$/, '');
       if (note || n) toast(`${note}${n ? ` ${n} past EMI${n > 1 ? 's' : ''} recorded, ${a.loan?.remaining} left.` : ''}`.trim(), 4500);
     }
-    save(); closeSheet(); if (!id) { ui.tab = 'accounts'; ui.view = { page: 'account', id: a.id }; } render();
+    save(); closeSheet();
+    // Added from Quick add (her account): go straight back to the entry, with her account picked
+    if (!id && ui.qaBack) { ui.qa = { ...ui.qaBack, via: 'partner' }; ui.qaBack = null; D.settings.payWith.partner = a.id; save(); render(); renderQuick(); return; }
+    if (!id) { ui.tab = 'accounts'; ui.view = { page: 'account', id: a.id }; } render();
   },
   valuation: (f, form) => {
     const v = parseRupees(f.get('value')); if (v == null) return toast('Enter a value.');
