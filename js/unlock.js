@@ -93,55 +93,35 @@
     let finished = false;
     const finish = () => {
       if (finished) return; finished = true;
-      gsap.to(el, { autoAlpha: 0, duration: 0.7, ease: 'power2.inOut', onComplete: () => { sway.kill(); breathe.kill(); el.remove(); running = null; } });
+      gsap.to(el, { autoAlpha: 0, duration: 0.35, ease: 'power2.inOut', onComplete: () => { sway.kill(); breathe.kill(); el.remove(); running = null; } });
       onDone && onDone();
     };
-    const safety = setTimeout(finish, 16000); // never left covering the app
+    const safety = setTimeout(finish, 6000); // never left covering the app
     const tl = running = gsap.timeline({ defaults: { ease: 'expo.out' }, onComplete: () => { clearTimeout(safety); finish(); } });
 
-    // 1. the card rises out of the dark and floats, light pooling under it
-    tl.to(c0, { y: 0, z: 0, rotationX: 0, autoAlpha: 1, duration: 1.6 })
-      .to(q('.u-floor'), { autoAlpha: 0.9, duration: 1.6 }, '<0.2')
-      .to(q('.u-floor2'), { autoAlpha: 0.8, duration: 1.8 }, '<')
-      .to([capk, capv], { autoAlpha: 1, y: 0, duration: 0.6, ease: 'power3.out', stagger: 0.08 }, '<0.3')
-      .add(() => { breathe.play(); sway.play(); }, '-=0.8')
-      .fromTo(q('.u-c0 .u-glint'), { xPercent: -160 }, { xPercent: 420, duration: 1.3, ease: 'power2.inOut' }, '-=0.9')
-      .to(c0, { rotationY: -22, rotationX: 8, duration: 1.2, ease: 'sine.inOut' }, '+=0.1')
-      .to(c0, { rotationY: 0, rotationX: 0, duration: 1.0, ease: 'sine.inOut' });
-
-    // 2. it splits into a cascade of your accounts
+    // About 3 seconds in all: rise (0.6s), fan into your accounts (0.9s), whip back (0.3s), into the sleeve with a gold glow (0.9s), fade
+    tl.to(c0, { y: 0, z: 0, rotationX: 0, autoAlpha: 1, duration: 0.6 })
+      .to(q('.u-floor'), { autoAlpha: 0.9, duration: 0.6 }, '<')
+      .to(q('.u-floor2'), { autoAlpha: 0.8, duration: 0.7 }, '<')
+      .to([capk, capv], { autoAlpha: 1, y: 0, duration: 0.35, ease: 'power3.out', stagger: 0.05 }, '<0.15')
+      .fromTo(q('.u-c0 .u-glint'), { xPercent: -160 }, { xPercent: 420, duration: 0.6, ease: 'power2.inOut' }, '<0.1');
     if (fan.length) {
-      tl.add('fan', '+=0.1')
-        .add(() => caption('Your accounts', ''), 'fan')
-        .to(fan, { autoAlpha: 1, duration: 0.3, stagger: 0.05, ease: 'power1.out' }, 'fan')
-        .to(all, { duration: 1.25, stagger: 0.07, x: (i) => spot(i).x, y: (i) => spot(i).y, z: (i) => spot(i).z, rotationZ: (i) => spot(i).rotationZ, rotationY: 0, rotationX: (i) => spot(i).rotationX }, 'fan')
-        .to(el, { '--g1': '#d98b5f', '--g2': '#7fd4a4', duration: 1.6, ease: 'sine.inOut' }, 'fan')
-        .to(rig, { y: -10, duration: 1.4, ease: 'sine.inOut' }, 'fan')
-        .to(all, { duration: 1.6, ease: 'sine.inOut', rotationY: (i) => 6 - i * 1.5, y: (i) => spot(i).y - i * 4 }, 'fan+=1.3')
-        .to(el, { '--g1': '#8fb3e8', '--g2': '#d2b377', duration: 1.4, ease: 'sine.inOut' }, 'fan+=1.4')
-        .add('snap', 'fan+=3.1')
-        // 3. whip back into the one card
-        .to(all, { duration: 0.42, ease: 'expo.in', stagger: { each: 0.03, from: 'end' }, x: 0, y: 0, z: 0, rotationZ: 0, rotationY: 0, rotationX: 0 }, 'snap')
-        .to(fan, { autoAlpha: 0, duration: 0.12 }, 'snap+=0.42')
-        .to(rig, { y: 0, duration: 0.4, ease: 'power2.out' }, 'snap+=0.3');
-    } else tl.add('snap', '+=0.2');
-    tl.to(el, { '--g1': '#d2b377', '--g2': '#2b6b52', duration: 0.6, ease: 'power2.out' }, 'snap+=0.3')
-      .fromTo(q('.u-c0 .u-glint'), { xPercent: -160 }, { xPercent: 420, duration: 0.5, ease: 'power2.out' }, 'snap+=0.42')
-      .add(() => { breathe.pause(); gsap.to(flo, { y: 0, duration: 0.3 }); }, 'snap+=0.45')
-      .to(c0, { y: -26, duration: 0.32, ease: 'power2.out' }, 'snap+=0.5')
-      .add(() => caption('Securing', ''), 'snap+=0.5')
-    // 4. the sleeve rises, the card slides in, the edges glow gold
-      .to([back, front], { y: 0, duration: 0.9, stagger: 0.04 }, 'snap+=0.55')
-      .to(c0, { y: 70, duration: 0.95, ease: 'power3.inOut' }, 'snap+=0.85')
-      .to(q('.u-floor'), { autoAlpha: 1, duration: 0.6 }, 'snap+=1.5')
-      .set(ring, { y: 0 }, 'snap+=1.7')
+      tl.add('fan', 0.55)
+        .to(fan, { autoAlpha: 1, duration: 0.15, stagger: 0.03, ease: 'power1.out' }, 'fan')
+        .to(all, { duration: 0.55, stagger: 0.035, x: (i) => spot(i).x, y: (i) => spot(i).y, z: (i) => spot(i).z, rotationZ: (i) => spot(i).rotationZ, rotationY: 0, rotationX: (i) => spot(i).rotationX }, 'fan')
+        .to(el, { '--g1': '#d98b5f', '--g2': '#7fd4a4', duration: 0.6, ease: 'sine.inOut' }, 'fan')
+        .add('snap', 'fan+=0.95')
+        .to(all, { duration: 0.28, ease: 'expo.in', stagger: { each: 0.015, from: 'end' }, x: 0, y: 0, z: 0, rotationZ: 0, rotationY: 0, rotationX: 0 }, 'snap')
+        .to(fan, { autoAlpha: 0, duration: 0.08 }, 'snap+=0.28');
+    } else tl.add('snap', 0.7);
+    tl.to(el, { '--g1': '#d2b377', '--g2': '#2b6b52', duration: 0.4, ease: 'power2.out' }, 'snap+=0.2')
+      .to([back, front], { y: 0, duration: 0.5, stagger: 0.03 }, 'snap+=0.22')
+      .to(c0, { y: 70, duration: 0.5, ease: 'power3.inOut' }, 'snap+=0.32')
+      .set(ring, { y: 0 }, 'snap+=0.75')
       .fromTo(ring, { autoAlpha: 0, boxShadow: '0 0 0 1.5px rgba(210,179,119,0), 0 0 0px rgba(210,179,119,0)' },
-        { autoAlpha: 1, boxShadow: '0 0 0 1.5px rgba(210,179,119,.95), 0 0 34px rgba(210,179,119,.55)', duration: 0.5, ease: 'power2.out' }, 'snap+=1.75')
-      .to(ring, { boxShadow: '0 0 0 1.5px rgba(210,179,119,.55), 0 0 14px rgba(210,179,119,.25)', duration: 0.7, ease: 'sine.inOut', yoyo: true, repeat: 2 }, '>')
-      .add(() => caption('<svg class="u-lock" viewBox="0 0 24 24"><path d="M6 11h12v9H6z"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>Unlocked', 'Welcome back'), 'snap+=1.8')
-      .to(tilt, { rotationX: 0, rotationY: 0, duration: 0.8, ease: 'power3.out' }, 'snap+=1.6')
-      .add(() => sway.pause(), 'snap+=1.6')
-      .to({}, { duration: 0.6 });
+        { autoAlpha: 1, boxShadow: '0 0 0 1.5px rgba(210,179,119,.95), 0 0 34px rgba(210,179,119,.55)', duration: 0.3, ease: 'power2.out' }, 'snap+=0.78')
+      .add(() => caption('<svg class="u-lock" viewBox="0 0 24 24"><path d="M6 11h12v9H6z"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>Unlocked', ''), 'snap+=0.7')
+      .to(ring, { boxShadow: '0 0 0 1.5px rgba(210,179,119,.6), 0 0 16px rgba(210,179,119,.3)', duration: 0.35, ease: 'sine.inOut' }, '>')
   }
   window.LedgerUnlock = { play, get playing() { return !!running; } };
 })();
