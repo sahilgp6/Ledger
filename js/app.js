@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.13.0';
+const APP_VERSION = '1.13.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -64,7 +64,7 @@ function openSheet(html) {
   const sh = $('#sheet'); sh.innerHTML = '<div class="grab"></div>' + html;
   // No contact or password autofill bars over Ledger's own fields
   sh.querySelectorAll('input:not([type=checkbox]):not([type=hidden]):not([type=file]),textarea').forEach((i) => { if (!i.hasAttribute('autocomplete')) i.setAttribute('autocomplete', 'off'); });
-  sh.classList.add('on'); $('#scrim').classList.add('on'); sh.scrollTop = 0; lockPage();
+  sh.classList.add('on'); $('#scrim').classList.add('on'); sh.scrollTop = 0; lockPage(); blurAmounts(sh);
   const g = ui.grow; ui.grow = null;
   if (g && Date.now() - g.t < 600 && window.LM?.ok) LM.sheetFrom(g.r, sh, g.bg);
 }
@@ -1903,7 +1903,29 @@ function render() {
     if (ui.slideDir) { LM.slide(m, ui.slideDir); ui.slideDir = 0; }
     LM.onScroll();
   }
+  blurAmounts(m);
   moments(m);
+}
+// Hidden amounts: every rupee figure on screen gets blurred, including ones inside sentences
+// ("From your ₹2,20,000 salary"), not only the big numbers.
+const AMT_RE = /[−-]?\s?₹\s?[\d,]+(?:\.\d+)?\s?(?:L|Cr|k)?/g;
+function blurAmounts(root) {
+  if (!D?.settings.masked || !root) return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => {
+    const p = n.parentElement;
+    if (!p || !n.nodeValue.includes('₹') || p.closest('script,style,textarea,input,select,option,.money,.num,.big,.mid,#ux,#toast')) return NodeFilter.FILTER_REJECT;
+    return NodeFilter.FILTER_ACCEPT; } });
+  const nodes = []; let n; while ((n = w.nextNode())) nodes.push(n);
+  for (const t of nodes) {
+    const txt = t.nodeValue; AMT_RE.lastIndex = 0; if (!AMT_RE.test(txt)) continue; AMT_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment(); let last = 0, m;
+    while ((m = AMT_RE.exec(txt))) {
+      if (m.index > last) frag.appendChild(document.createTextNode(txt.slice(last, m.index)));
+      const sp = document.createElement('span'); sp.className = 'money'; sp.textContent = m[0]; frag.appendChild(sp); last = m.index + m[0].length;
+    }
+    if (last < txt.length) frag.appendChild(document.createTextNode(txt.slice(last)));
+    t.parentNode.replaceChild(frag, t);
+  }
 }
 // Once-a-day moments on Home: the intro, a day kept under budget, a card bill that landed under target
 function moments(m) {
@@ -1934,7 +1956,7 @@ function renderCore() {
   const page = ui.view?.page ? ui.view.page + (ui.view.id || '') : ui.tab + (ui.view?.tag || '');
   const main = $('#main');
   if (page !== ui.lastPage) { pageMotion(main, page); ui.lastPage = page; ui.arrive = true; ui.draw = true; clearTimeout(ui.drawT); ui.drawT = setTimeout(() => { ui.draw = false; }, 900); }
-  $('#app').classList.toggle('masked', !!D.settings.masked);
+  $('#app').classList.toggle('masked', !!D.settings.masked); document.body.classList.toggle('masked', !!D.settings.masked); // sheets sit outside #app
   document.querySelectorAll('#tabs [data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const m = $('#main');
   if (ui.view?.page === 'account') { renderAccount(m, ui.view.id); requestAnimationFrame(() => requestAnimationFrame(() => document.querySelectorAll('.ringarc').forEach((c) => { c.style.strokeDashoffset = c.style.getPropertyValue('--off'); }))); return; }
@@ -3701,7 +3723,7 @@ const acts = {
     navigator.clipboard.writeText(workerCode).then(() => toast('Relay code copied. Paste it in Cloudflare.')).catch(() => toast('Could not copy. Open sahilgp6.github.io/Ledger/cloudflare-worker.js and copy it from there.', 5000));
   },
   chartRange: (d) => { (D.settings.chartRange ||= {})[d.key] = d.r; haptic(); ui.draw = true; save(); render(); ui.draw = false; },
-  toggleMask: () => { D.settings.masked = !D.settings.masked; haptic(); save(); $('#app').classList.toggle('masked', D.settings.masked); document.querySelectorAll('.eye').forEach((b) => { b.setAttribute('aria-pressed', String(D.settings.masked)); b.setAttribute('aria-label', D.settings.masked ? 'Show amounts' : 'Hide amounts'); }); },
+  toggleMask: () => { D.settings.masked = !D.settings.masked; haptic(); save(); $('#app').classList.toggle('masked', D.settings.masked); document.body.classList.toggle('masked', D.settings.masked); blurAmounts($('#main')); blurAmounts($('#sheet')); document.querySelectorAll('.eye').forEach((b) => { b.setAttribute('aria-pressed', String(D.settings.masked)); b.setAttribute('aria-label', D.settings.masked ? 'Show amounts' : 'Hide amounts'); }); },
   relayOff: () => { D.settings.priceRelay = ''; save(); closeSheet(); render(); },
   refreshAll: async (d, el) => {
     if (el.disabled) return; el.disabled = true; el.style.opacity = '.5';

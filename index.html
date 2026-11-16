@@ -168,6 +168,7 @@ main.anim>*:nth-child(2){animation-delay:.05s}main.anim>*:nth-child(3){animation
 .draw{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .8s var(--ease) .1s forwards}
 @keyframes draw{to{stroke-dashoffset:0}}
 .masked .money,.masked .big,.masked .mid,.masked .item .a,.masked .num{filter:blur(9px)}
+.masked span.money{filter:blur(6px);display:inline-block;transition:filter .25s}
 .money,.big,.mid,.item .a,.num{transition:filter .22s var(--ease)}
 .qa-amt{font-family:var(--serif);font-size:2.8rem;text-align:center;margin:4px 0 10px;letter-spacing:-.02em}.qa-amt .cur{color:var(--muted);font-size:1.6rem;margin-right:4px;vertical-align:.5rem}
 .qa-keys{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
