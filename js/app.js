@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.12.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -701,7 +701,10 @@ h1{font:600 26px/1.2 Georgia,serif;margin:0 0 4px}.sub{color:#5f6b63;margin:0 0 
 .pol{border:1px solid #d9ddd5;border-radius:12px;padding:14px 16px;margin:0 0 14px;break-inside:avoid}
 h2{font:600 18px/1.3 Georgia,serif;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px}h2 span{font:500 12px -apple-system,sans-serif;color:#5f6b63;letter-spacing:.06em;text-transform:uppercase}
 h3{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#5f6b63;margin:14px 0 4px}
-table{border-collapse:collapse;width:100%}th{text-align:left;font-weight:500;color:#5f6b63;padding:3px 12px 3px 0;width:34%;vertical-align:top}td{padding:3px 0;vertical-align:top}
+html,body{overflow-x:hidden}*{box-sizing:border-box;max-width:100%}
+table{border-collapse:collapse;width:100%;table-layout:fixed}th{text-align:left;font-weight:500;color:#5f6b63;padding:3px 12px 3px 0;width:34%;vertical-align:top}td{padding:3px 0;vertical-align:top}
+th,td,li,p,a{overflow-wrap:anywhere;word-break:break-word}
+@media (max-width:560px){body{padding:18px 14px 30px}table,tbody,tr,th,td{display:block;width:auto}th{padding:8px 0 0;font-size:13px}td{padding:1px 0 2px}.pol{padding:12px 13px}}
 ol,ul{margin:0;padding-left:20px}.ppl{list-style:none;padding:0}.ppl li{padding:4px 0}.lvl{margin:8px 0 2px;font-weight:600;font-size:13px}
 .imp{background:#f6efe0;border-radius:8px;padding:8px 10px;margin:10px 0 0;font-weight:600}.note{color:#5f6b63;font-size:13px;margin:10px 0 0}
 a{color:#1f5c43}.foot{color:#5f6b63;font-size:12px;margin-top:22px;border-top:1px solid #d9ddd5;padding-top:10px}
