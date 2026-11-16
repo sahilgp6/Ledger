@@ -293,6 +293,21 @@
   }
   addEventListener('scroll', onScroll, { passive: true });
 
-  window.LM = { get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  /* ---------- Lenis: eased scrolling for wheels and trackpads, and smooth jumps (tap a tab again to go to the top).
+     On iPhone your finger keeps native scrolling; Lenis only eases the jumps the app makes. ---------- */
+  let lenis = null;
+  function initLenis() {
+    if (!window.Lenis || lenis) return;
+    try {
+      lenis = new Lenis({ autoRaf: false, lerp: 0.12, smoothWheel: true, syncTouch: false, prevent: (n) => !!n.closest?.('#sheet,#ux,.chart,.chips') });
+      if (window.gsap) { gsap.ticker.add((t) => lenis.raf(t * 1000)); } else { const f = (t) => { lenis.raf(t); requestAnimationFrame(f); }; requestAnimationFrame(f); }
+    } catch (e) { lenis = null; }
+  }
+  function toTop() { if (lenis && ready()) lenis.scrollTo(0, { duration: 0.9, easing: (t) => 1 - Math.pow(1 - t, 4) }); else scrollTo({ top: 0, behavior: RM() ? 'auto' : 'smooth' }); }
+  function scrollLock(on) { if (!lenis) return; on ? lenis.stop() : lenis.start(); }
+  function jumpTo(el, offset = -90) { if (!el) return; if (lenis && ready()) lenis.scrollTo(el, { offset, duration: 0.8, easing: (t) => 1 - Math.pow(1 - t, 4) }); else el.scrollIntoView({ block: 'start', behavior: RM() ? 'auto' : 'smooth' }); }
+
+  window.LM = { toTop, scrollLock, jumpTo, get lenis() { return lenis; }, get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal };
+  const boot = () => { init(); initLenis(); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

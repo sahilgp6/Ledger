@@ -13,6 +13,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.mfapi.in https://*.workers.dev https://raw.githubusercontent.com https://huggingface.co https://*.huggingface.co https://*.hf.co; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>Ledger</title>
 <link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="vendor/lenis/lenis.css">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <style>
@@ -374,7 +375,9 @@ body.loading [data-nwval],body.loading .chart .cwrap,body.loading .hold-v{animat
 <script defer src="vendor/gsap/gsap.min.js"></script>
 <script defer src="vendor/gsap/MotionPathPlugin.min.js"></script>
 <script defer src="vendor/gsap/DrawSVGPlugin.min.js"></script>
+<script defer src="vendor/lenis/lenis.min.js"></script>
 <script defer src="js/motion.js"></script>
+<script defer src="js/unlock.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

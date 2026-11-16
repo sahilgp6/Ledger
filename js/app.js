@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.12.1';
+const APP_VERSION = '1.13.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -51,12 +51,12 @@ function needsField(msg) {
 let pageLock = null;
 function lockPage() {
   if (pageLock) return;
-  pageLock = scrollY;
+  pageLock = scrollY; window.LM?.scrollLock(true);
   Object.assign(document.body.style, { position: 'fixed', top: `-${pageLock}px`, left: '0', right: '0', width: '100%' });
 }
 function unlockPage() {
   if (pageLock == null) return;
-  const y = pageLock; pageLock = null;
+  const y = pageLock; pageLock = null; window.LM?.scrollLock(false);
   Object.assign(document.body.style, { position: '', top: '', left: '', right: '', width: '' });
   scrollTo(0, y);
 }
@@ -1910,12 +1910,7 @@ function moments(m) {
   if (ui.tab !== 'home' || ui.view || !window.LM) return;
   const today = todayIso();
   let introAt = 0;
-  if (D.settings.introDay !== today && LM.ok) {
-    D.settings.introDay = today; save();
-    const s = safeToSpend();
-    LM.intro(s ? 'Safe to spend today' : 'Net worth', '₹0', s ? inr(s.todayLeft, 0) : inr(netWorth().net, 0));
-    introAt = 2300;
-  }
+  if (window.LedgerUnlock?.playing) return; // the unlock sequence is on screen; moments run when it ends
   if (D.settings.burstDay !== today) {
     D.settings.burstDay = today; save();
     const s = safeToSpend();
@@ -3494,7 +3489,20 @@ async function afterUnlock() {
   refreshNavs().then((n) => { if (n && D) render(); }).catch(() => {});
   refreshStocks().then((n) => { if (n && D) render(); }).catch(() => {});
   hideLock(); render();
+  playUnlock();
   requestPersistence().then(() => storageInfo());
+}
+// The unlock sequence: your main account on the green card, then up to five more fanning out behind it
+function playUnlock() {
+  if (!window.LedgerUnlock) return;
+  const front = safeAccount() || D.accounts.find((a) => !a.archived && typeOf(a.type).mode === 'ledger' && ownerOf(a) === 'me');
+  const ORDER = ['credit_card', 'loan', 'mf', 'stocks', 'epf', 'fd', 'ppf', 'nps', 'savings', 'current'];
+  const rank = (a) => { const i = ORDER.indexOf(a.type); return i < 0 ? 50 : i; };
+  const rest = D.accounts.filter((a) => !a.archived && a !== front && ownerOf(a) !== 'other').sort((a, b) => rank(a) - rank(b) || (ownerOf(a) === 'me' ? -1 : 1)).slice(0, 5);
+  const card = (a) => ({ lab: a.name, sub: a.last4 ? '••' + a.last4 : (a.institution || typeOf(a.type).label || '') });
+  const h = new Date().getHours(), greeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const name = (D.members.find((m) => m.id === 'me')?.name || '').split(/\s+/)[0];
+  window.LedgerUnlock.play({ cards: [front, ...rest].filter(Boolean).map(card), greeting, name, onDone: () => { if (D) moments($('#main')); } });
 }
 function lockApp() { if (!D) return; AI.unload(); vault.saveNow().finally(() => { vault.lock(); D = null; ui.imp = null; ui.ask = []; $('#main').innerHTML = ''; renderUnlock(); }); }
 
@@ -3615,7 +3623,7 @@ const acts = {
     if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
     const a = document.createElement('a'); a.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics); a.download = `${name}.ics`; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
   },
-  tab: (d) => { if (ui.tab !== d.tab) haptic(); ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
+  tab: (d) => { if (d.tab === ui.tab && !ui.view && scrollY > 10) { window.LM?.toTop(); return; } if (ui.tab !== d.tab) haptic(); ui.tab = d.tab; ui.view = null; if (d.tab !== 'tx') { ui.acc = ''; ui.cat = ''; ui.src = ''; } render(); window.scrollTo(0, 0); },
   closeSheet, closeView: () => { ui.navBack = true; ui.view = ui.view?.page === 'tags' && ui.view.tag ? { page: 'tags' } : null; render(); },
   month: (d) => { ui.month = addMonths(ui.month, +d.d); ui.slideDir = +d.d; render(); },
   showUncat: () => { ui.tab = 'tx'; ui.cat = '_none'; ui.month = ymOf(todayIso()); ui.view = null; render(); },
@@ -4142,7 +4150,7 @@ async function boot() {
 boot();
 
 // Exposed for automated tests only
-window.__ledger = { get data() { return D; }, vault, ui, render, runQuery, recapCard, spendFacts, ask, builtinTips, detectSubs, processBills, billIcs, handleInbox, matchTransfers, AI };
+window.__ledger = { get data() { return D; }, vault, ui, render, playUnlock, runQuery, recapCard, spendFacts, ask, builtinTips, detectSubs, processBills, billIcs, handleInbox, matchTransfers, AI };
 
 // Savings goal and AI style on the Summary sheet: saved as you leave each box
 document.addEventListener('change', (e) => {
