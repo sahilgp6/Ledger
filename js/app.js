@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.3';
+const APP_VERSION = '1.15.4';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -361,7 +361,7 @@ function chartTouch(e) {
   const i = Math.round(f * (c.pts.length - 1)), p = c.pts[i];
   const chg = p.v - c.first;
   const cur = box.querySelector('.cur'); cur.hidden = false; const fx = (c.pts.length === 1 ? 1 : i / (c.pts.length - 1)) * 100; cur.style.left = `${fx}%`;
-  const tip = box.querySelector('.ctip'); if (tip) { tip.hidden = false; tip.innerHTML = `<span>${esc(p.label)}</span><b>${inr(p.v, 0)}</b>`; tip.style.left = `clamp(42px, ${fx}%, calc(100% - 42px))`; }
+  const tip = box.querySelector('.ctip'); if (tip) { tip.hidden = false; tip.innerHTML = `<span>${esc(p.label)}</span><b class="money">${inr(p.v, 0)}</b>`; tip.style.left = `clamp(42px, ${fx}%, calc(100% - 42px))`; }
   if (c.lastI !== i) { c.lastI = i; if (e.type === 'touchmove') haptic(); }
   const big = el.parentElement.querySelector('[data-nwval]'); if (big) { big.dataset.keep ||= big.textContent; big.textContent = inr(p.v, 0); }
   el.querySelector('[data-at]').textContent = p.label;
