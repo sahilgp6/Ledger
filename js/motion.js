@@ -242,7 +242,7 @@
     if (!ready() || !el) return;
     const o = document.createElement('i'); o.className = 'lightsweep';
     el.style.position ||= 'relative'; const ov = el.style.overflow; el.style.overflow = 'hidden'; el.appendChild(o);
-    gsap.fromTo(o, { xPercent: -160 }, { xPercent: 520, duration: 1.05, ease: 'power2.inOut', delay, onComplete: () => { o.remove(); el.style.overflow = ov; } });
+    gsap.fromTo(o, { xPercent: -160 }, { xPercent: 520, duration: 1.2, ease: 'power2.inOut', delay, onComplete: () => { o.remove(); el.style.overflow = ov; } });
   }
   /* ---------- a sum: the steps arrive in order and the result lands last, a little larger ---------- */
   function steps(sheet) {
@@ -279,6 +279,56 @@
     if (rows.length) gsap.fromTo(rows, { autoAlpha: 0, y: -8 }, { autoAlpha: 1, y: 0, duration: 0.3, ease: E.soft, stagger: 0.045, delay: 0.08, clearProps: 'opacity,visibility,transform' });
   }
 
+  /* ---------- spotlight: the rest of the screen dims and greys, one card is lifted, lit and animated ---------- */
+  function spotlight(el, { note, celebrate = false, done } = {}) {
+    if (!el) { done && done(); return; }
+    const r = el.getBoundingClientRect();
+    const dim = document.createElement('div'); dim.className = 'spot-dim';
+    const clone = el.cloneNode(true); clone.classList.add('spot-card'); clone.removeAttribute('data-act'); clone.removeAttribute('data-grow');
+    const cs = getComputedStyle(el), bg = /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor;
+    Object.assign(clone.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, background: bg, color: cs.color });
+    const lab = document.createElement('div'); lab.className = 'spot-note'; lab.textContent = note || '';
+    document.body.append(dim, clone, lab);
+    // keep the lifted card exactly over the real one, and the note just below it (or above, near the bottom)
+    let raf = 0;
+    const place = () => {
+      const q = el.getBoundingClientRect(); clone.style.top = q.top + 'px'; clone.style.left = q.left + 'px';
+      const below = q.bottom + 18, h = lab.offsetHeight || 44;
+      lab.style.top = (below + h < innerHeight - 90 ? below : Math.max(12, q.top - h - 18)) + 'px';
+      raf = requestAnimationFrame(place);
+    };
+    place();
+    let closed = false;
+    const close = () => {
+      if (closed) return; closed = true; cancelAnimationFrame(raf);
+      const out = () => { dim.remove(); clone.remove(); lab.remove(); done && done(); };
+      if (!ready()) return out();
+      gsap.timeline({ onComplete: out }).to([lab, clone], { autoAlpha: 0, duration: 0.3, ease: E.exit }).to(dim, { autoAlpha: 0, duration: 0.35, ease: E.exit }, '<0.05');
+    };
+    dim.addEventListener('click', close); clone.addEventListener('click', close); lab.addEventListener('click', close);
+    if (!ready()) { dim.style.opacity = 1; lab.style.opacity = 1; setTimeout(close, 3500); return; }
+    const arc = clone.querySelector('.meter-arc'), to = arc ? +arc.getAttribute('stroke-dashoffset') : 0, full = arc ? +arc.getAttribute('stroke-dasharray') : 0;
+    const tl = gsap.timeline({ onComplete: () => setTimeout(close, 900) });
+    tl.fromTo(dim, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.45, ease: 'power2.out' })
+      .fromTo(clone, { scale: 1, boxShadow: '0 0 0 0 rgba(210,179,119,0)' }, { scale: 1.04, boxShadow: '0 18px 50px -10px rgba(0,0,0,.55), 0 0 0 1.5px rgba(210,179,119,.9), 0 0 40px rgba(210,179,119,.35)', duration: 0.6, ease: E.pop }, '<0.1');
+    if (arc) { svgOff(clone); tl.fromTo(arc, { attr: { 'stroke-dashoffset': full } }, { attr: { 'stroke-dashoffset': to }, duration: 1.2, ease: E.out }, '<0.15'); }
+    tl.add(() => sweep(clone), '<0.2')
+      .fromTo(lab, { autoAlpha: 0, y: 10, xPercent: -50 }, { autoAlpha: 1, y: 0, xPercent: -50, duration: 0.45, ease: E.pop }, '<0.35');
+    if (celebrate) tl.add(() => sparks(clone), '<0.1');
+    tl.to(clone, { scale: 1.02, duration: 1.6, ease: 'sine.inOut', yoyo: true, repeat: 1 }, '>');
+  }
+  const svgOff = (root) => root.querySelectorAll('svg.meter').forEach((sv) => sv.classList.add('gs'));
+  function sparks(el) {
+    const host = el.getBoundingClientRect(), cols = ['#e2c27f', '#7fb08f', '#8fb3e8', '#d98b5f'];
+    for (let i = 0; i < 28; i++) {
+      const p = document.createElement('i'); p.className = 'spark';
+      p.style.left = host.width / 2 + 'px'; p.style.top = host.height / 2 + 'px'; p.style.background = cols[i % 4]; p.style.width = p.style.height = 6 + Math.random() * 5 + 'px';
+      el.appendChild(p);
+      const a = Math.random() * Math.PI * 2, d = 70 + Math.random() * 110;
+      gsap.fromTo(p, { scale: 0, autoAlpha: 1 }, { x: Math.cos(a) * d, y: Math.sin(a) * d * 0.7, scale: 1, autoAlpha: 0, duration: 1 + Math.random() * 0.6, ease: 'power3.out', onComplete: () => p.remove() });
+    }
+  }
+
   /* ---------- the big title shrinks into a slim bar as you scroll ---------- */
   let raf = 0;
   function onScroll() {
@@ -307,7 +357,7 @@
   function scrollLock(on) { if (!lenis) return; on ? lenis.stop() : lenis.start(); }
   function jumpTo(el, offset = -90) { if (!el) return; if (lenis && ready()) lenis.scrollTo(el, { offset, duration: 0.8, easing: (t) => 1 - Math.pow(1 - t, 4) }); else el.scrollIntoView({ block: 'start', behavior: RM() ? 'auto' : 'smooth' }); }
 
-  window.LM = { toTop, scrollLock, jumpTo, get lenis() { return lenis; }, get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal };
+  window.LM = { toTop, scrollLock, jumpTo, get lenis() { return lenis; }, get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal, spotlight };
   const boot = () => { init(); initLenis(); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

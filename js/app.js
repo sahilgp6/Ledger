@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.13.3';
+const APP_VERSION = '1.14.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1928,17 +1928,37 @@ function blurAmounts(root) {
     t.parentNode.replaceChild(frag, t);
   }
 }
+let spotObs = null;
+function watchSpot() {
+  const el = $('#main .safe'); if (!el || !('IntersectionObserver' in window)) return;
+  spotObs?.disconnect();
+  spotObs = new IntersectionObserver((ents) => {
+    const e = ents[0]; if (!e?.isIntersecting || e.intersectionRatio < 0.85) return;
+    if (window.LedgerUnlock?.playing || $('#sheet').classList.contains('on') || D.settings.spotDay === todayIso()) return;
+    spotObs.disconnect(); spotObs = null;
+    setTimeout(() => {
+      const now = $('#main .safe'); if (!now || ui.tab !== 'home' || ui.view || $('#sheet').classList.contains('on')) return; // moved away: try again next time
+      const s = safeToSpend(); if (!s) return;
+      D.settings.spotDay = todayIso(); save();
+      const under = s.ydayUnder && s.daily - s.spentYest >= 1;
+      const note = D.settings.masked ? (under ? 'Under budget yesterday' : 'Your budget for today')
+        : under ? `Under budget yesterday · ${inr(s.daily - s.spentYest, 0)} carried`
+        : s.spentYest != null && s.spentYest > s.daily ? `${inr(s.todayLeft, 0)} for today, after yesterday's ${inr(s.spentYest - s.daily, 0)} over`
+        : `${inr(s.todayLeft, 0)} safe to spend today`;
+      haptic();
+      LM.spotlight(now, { note, celebrate: under });
+    }, 350);
+  }, { threshold: [0.85, 1] });
+  spotObs.observe(el);
+}
 // Once-a-day moments on Home: the intro, a day kept under budget, a card bill that landed under target
 function moments(m) {
   if (ui.tab !== 'home' || ui.view || !window.LM) return;
   const today = todayIso();
   let introAt = 0;
   if (window.LedgerUnlock?.playing) return; // the unlock sequence is on screen; moments run when it ends
-  if (D.settings.burstDay !== today) {
-    D.settings.burstDay = today; save();
-    const s = safeToSpend();
-    if (s?.ydayUnder && s.daily - s.spentYest >= 1) setTimeout(() => LM.burst($('#main .safe'), `Under budget yesterday · ${inr(s.daily - s.spentYest, 0)} carried`), introAt + 700);
-  }
+  // Once a day, the first time Safe to spend comes into view: the rest of the screen dims and it gets the spotlight
+  if (D.settings.spotDay !== today) watchSpot();
   const c = D.cardPlan ? cardPlan() : null;
   if (c?.cards?.length && c.target > 0) {
     const snap = (D.cardPlan.snap ||= {}), k = ymOf(c.next);
