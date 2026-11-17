@@ -331,7 +331,7 @@
   function tapFlip(el, open) {
     if (!ready() || !el) { open(); return; }
     const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
-    const bg = /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor;
+    const bg = cs.backgroundImage !== 'none' ? cs.backgroundImage : /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor;
     const dim = document.createElement('div'); dim.className = 'spot-dim tapdim';
     const clone = el.cloneNode(true); clone.classList.add('spot-card'); clone.removeAttribute('data-act');
     Object.assign(clone.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, background: bg, color: cs.color });
@@ -346,6 +346,8 @@
       .to(clone, { scale: 0.96, duration: 0.09, ease: 'power2.out' }, 0)
       .to(clone, { scale: 1.04, boxShadow: glow(2, 40), duration: 0.32, ease: 'back.out(2.4)' });
     if (arc) { svgOff(clone); const to = +arc.getAttribute('stroke-dashoffset'), full = +arc.getAttribute('stroke-dasharray'); tl.fromTo(arc, { attr: { 'stroke-dashoffset': full } }, { attr: { 'stroke-dashoffset': to }, duration: 0.55, ease: 'power3.out' }, '<0.05'); }
+    const bar = clone.querySelector('.safebar i');
+    if (bar) tl.fromTo(bar, { scaleX: 0, transformOrigin: '0% 50%' }, { scaleX: 1, duration: 0.55, ease: 'power3.out' }, 0.15);
     if (big && !document.body.classList.contains('masked')) { const t = big.textContent; tl.add(() => odo(big, t.replace(/\d/g, '0'), t), '<'); }
     // edge-on: the card turns away and its back (the sheet) turns towards you
     tl.to(clone, { rotationY: 90, scale: 0.94, duration: 0.2, ease: 'power2.in' }, '+=0.12')

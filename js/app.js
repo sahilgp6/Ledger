@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.2';
+const APP_VERSION = '1.15.3';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1129,7 +1129,7 @@ function cardPlanCard() {
   const col = { ok: 'var(--in)', warn: 'var(--warn)', bad: 'var(--bad)' }[c.tone];
   // The bar shows what you owe on the card right now against the target
   const used = c.target > 0 ? Math.min(100, (c.billed / c.target) * 100) : 100, mark = Math.min(100, ((c.gone - 0.5) / c.days) * 100);
-  return `<button class="card item cplan tone-${c.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet" data-grow>
+  return `<button class="card item cplan tone-${c.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="cardPlanSheet">
     <div class="row"><h2 class="grow" style="margin:0">Card bill target</h2><span class="pillnote" style="color:var(--gold-ink)">Bill on ${nd}</span></div>
     <div class="row" style="align-items:baseline;gap:8px;margin-top:6px"><div class="big num money ${c.target < 0 ? 'bad' : ''}" data-count="${Math.round(c.target)}" data-ck="cardt">${inr(c.target, 0)}</div><div class="muted small">for the card</div></div>
     <div class="small muted">From ${c.salaryGuessed ? 'a' : 'your'} ${inr(c.salary, 0)} salary${c.salaryGuessed ? ' (your last one, tap to change)' : ''}</div>
@@ -1140,6 +1140,8 @@ function cardPlanCard() {
   </button>`;
 }
 function cardPlanSheet() { openSheet(cardPlanHtml()); }
+// Tapping a Home card that opens a sheet: the card lifts, refills, and flips over into its sheet
+function flipOpen(el, open) { const card = el?.closest?.('#main .card'); if (card && window.LM?.ok) LM.tapFlip(card, () => open()); else open(); }
 // Tap a tile: the sum behind it, with your numbers, and what can make it wrong
 function cpTip(k) {
   const c = cardPlan(), nd = fmtDate(c.next, true).replace(/ \d{4}$/, '');
@@ -3575,8 +3577,8 @@ const acts = {
   donutSel: (d) => { haptic(); donutSelect(d.id); },
   lpTag: (d) => lpTagSheet(d.id),
   calDay: (d) => calDaySheet(d.d),
-  safeSheet: (d, el) => { const card = el?.closest?.('#main .safe'); if (card && window.LM?.ok) LM.tapFlip(card, () => safeSheet()); else safeSheet(); },
-  cardPlanSheet: () => cardPlanSheet(),
+  safeSheet: (d, el) => flipOpen(el, safeSheet),
+  cardPlanSheet: (d, el) => flipOpen(el, cardPlanSheet),
   cpFixedSheet: (d) => cpFixedSheet(d.id),
   cpFixedDel: (d) => { const p = cplan(); p.fixed = p.fixed.filter((x) => x.id !== d.id); delete p.off['own:' + d.id]; save(); render(); cardPlanSheet(); },
   safeReset: () => { delete D.settings.safeMeter; save(); render(); safeSheet(); done('Meter restarted'); },
