@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.15.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -49,17 +49,22 @@ function needsField(msg) {
 }
 // While a sheet is open the page behind it stays still (iOS ignores overflow:hidden, so pin the body in place)
 let pageLock = null;
+// Sheets freeze the page in place. No position:fixed swap, so the page never reflows or jumps
+// while a card is flipping or growing into its sheet.
 function lockPage() {
-  if (pageLock) return;
+  if (pageLock != null) return;
   pageLock = scrollY;
-  Object.assign(document.body.style, { position: 'fixed', top: `-${pageLock}px`, left: '0', right: '0', width: '100%' });
+  window.LM?.scrollLock(true);
+  document.documentElement.classList.add('locked');
 }
 function unlockPage() {
   if (pageLock == null) return;
-  const y = pageLock; pageLock = null;
-  Object.assign(document.body.style, { position: '', top: '', left: '', right: '', width: '' });
-  scrollTo(0, y);
+  pageLock = null;
+  document.documentElement.classList.remove('locked');
+  window.LM?.scrollLock(false);
 }
+document.addEventListener('touchmove', (e) => { if (pageLock != null && !e.target.closest?.('#sheet')) e.preventDefault(); }, { passive: false });
+document.addEventListener('wheel', (e) => { if (pageLock != null && !e.target.closest?.('#sheet')) e.preventDefault(); }, { passive: false });
 function openSheet(html) {
   const sh = $('#sheet'); sh.innerHTML = '<div class="grab"></div>' + html;
   // No contact or password autofill bars over Ledger's own fields

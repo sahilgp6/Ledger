@@ -337,6 +337,7 @@
     Object.assign(clone.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, background: bg, color: cs.color });
     dim.style.setProperty('--cx', (r.left + r.width / 2) + 'px'); dim.style.setProperty('--cy', (r.top + r.height / 2) + 'px');
     document.body.append(dim, clone);
+    gsap.set(clone, { transformPerspective: 2400 }); // set once up front, so it never tweens from 0 (that warped the card)
     el.style.visibility = 'hidden';
     const arc = clone.querySelector('.meter-arc'), big = clone.querySelector('.big');
     const glow = (a, b) => `0 18px 44px -12px rgba(0,0,0,.5), 0 0 0 ${a}px rgba(226,194,127,.95), 0 0 ${b}px rgba(226,194,127,.5)`;
@@ -347,7 +348,7 @@
     if (arc) { svgOff(clone); const to = +arc.getAttribute('stroke-dashoffset'), full = +arc.getAttribute('stroke-dasharray'); tl.fromTo(arc, { attr: { 'stroke-dashoffset': full } }, { attr: { 'stroke-dashoffset': to }, duration: 0.55, ease: 'power3.out' }, '<0.05'); }
     if (big && !document.body.classList.contains('masked')) { const t = big.textContent; tl.add(() => odo(big, t.replace(/\d/g, '0'), t), '<'); }
     // edge-on: the card turns away and its back (the sheet) turns towards you
-    tl.to(clone, { rotationY: 90, scale: 1, duration: 0.2, ease: 'power2.in', transformPerspective: 900 }, '+=0.12')
+    tl.to(clone, { rotationY: 90, scale: 0.94, duration: 0.2, ease: 'power2.in' }, '+=0.12')
       .add(() => {
         flipFrom = { r: clone.getBoundingClientRect(), r0: r, bg, t: Date.now() };
         clone.remove(); el.style.visibility = '';
@@ -363,11 +364,15 @@
     const r2 = sheet.getBoundingClientRect();
     sheet.style.opacity = '0';
     const o = document.createElement('div'); o.className = 'expander flipback';
-    Object.assign(o.style, { left: f.r0.left + 'px', top: f.r0.top + 'px', width: f.r0.width + 'px', height: f.r0.height + 'px', borderRadius: '18px', background: 'var(--card)', zIndex: 33 });
+    Object.assign(o.style, { left: f.r0.left + 'px', top: f.r0.top + 'px', width: f.r0.width + 'px', height: f.r0.height + 'px', borderRadius: '18px', background: 'var(--card)', zIndex: 57 });
     document.body.appendChild(o);
-    const rows = [...sheet.querySelectorAll(':scope > *:not(.list):not(.grip), :scope .list > *')].slice(0, 24);
-    gsap.timeline({ onComplete: () => { o.remove(); sheet.style.transition = ''; sheet.style.transform = ''; } })
-      .fromTo(o, { rotationY: -90, transformPerspective: 900 }, { rotationY: 0, duration: 0.2, ease: 'power2.out' })
+    // only the lines you can see drop in; anything below the fold is simply there when you scroll
+    const rows = [...sheet.querySelectorAll(':scope > *:not(.list):not(.grab), :scope .list > *')].filter((x) => x.getBoundingClientRect().top < innerHeight).slice(0, 12);
+    const tidy = () => { o.remove(); sheet.style.transition = ''; sheet.style.transform = ''; sheet.style.opacity = ''; gsap.set(rows, { clearProps: 'opacity,visibility,transform' }); };
+    setTimeout(tidy, 4000);
+    gsap.timeline({ onComplete: tidy })
+      .set(o, { transformPerspective: 2400 })
+      .fromTo(o, { rotationY: -90, scale: 0.94 }, { rotationY: 0, scale: 1, duration: 0.2, ease: 'power2.out' })
       .to(o, { left: r2.left, top: r2.top, width: r2.width, height: r2.height, borderRadius: '20px 20px 0 0', duration: 0.32, ease: E.inout })
       .set(sheet, { opacity: 1 })
       .set(rows, { autoAlpha: 0 })
