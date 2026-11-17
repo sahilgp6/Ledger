@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.13.2';
+const APP_VERSION = '1.13.3';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1442,7 +1442,8 @@ function countUps(root) {
   root.querySelectorAll('[data-count]').forEach((el) => {
     const key = el.dataset.ck || 'x', to = +el.dataset.count, from = ui.vals[key] ?? 0;
     ui.vals[key] = to;
-    if (RM() || from === to) { el.textContent = inr(to, 0); return; }
+    // While amounts are hidden, no rolling digits: on iPhone a moving digit can slip out from under the blur
+    if (RM() || from === to || D.settings.masked) { el.textContent = inr(to, 0); return; }
     if (window.LM?.ok && ['nw', 'safe', 'cardt'].includes(key)) { LM.odo(el, inr(from, 0), inr(to, 0)); return; }
     const t0 = performance.now(), dur = 720;
     el.textContent = inr(from, 0);
