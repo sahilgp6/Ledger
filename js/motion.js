@@ -280,7 +280,7 @@
   }
 
   /* ---------- spotlight: the rest of the screen dims and greys, one card is lifted, lit and animated ---------- */
-  function spotlight(el, { note, celebrate = false, done } = {}) {
+  function spotlight(el, { note, celebrate = false, confetti = null, done } = {}) {
     if (!el) { done && done(); return; }
     const r = el.getBoundingClientRect();
     const dim = document.createElement('div'); dim.className = 'spot-dim';
@@ -306,25 +306,33 @@
       gsap.timeline({ onComplete: out }).to([lab, clone], { autoAlpha: 0, duration: 0.3, ease: E.exit }).to(dim, { autoAlpha: 0, duration: 0.35, ease: E.exit }, '<0.05');
     };
     dim.addEventListener('click', close); clone.addEventListener('click', close); lab.addEventListener('click', close);
-    if (!ready()) { dim.style.opacity = 1; lab.style.opacity = 1; setTimeout(close, 3500); return; }
+    if (!ready()) { dim.style.opacity = 1; lab.style.opacity = 1; setTimeout(close, 4000); return; }
+    // the light pools around the card
+    const q0 = el.getBoundingClientRect(); dim.style.setProperty('--cx', (q0.left + q0.width / 2) + 'px'); dim.style.setProperty('--cy', (q0.top + q0.height / 2) + 'px');
     const arc = clone.querySelector('.meter-arc'), to = arc ? +arc.getAttribute('stroke-dashoffset') : 0, full = arc ? +arc.getAttribute('stroke-dasharray') : 0;
-    const tl = gsap.timeline({ onComplete: () => setTimeout(close, 900) });
-    tl.fromTo(dim, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.45, ease: 'power2.out' })
-      .fromTo(clone, { scale: 1, boxShadow: '0 0 0 0 rgba(210,179,119,0)' }, { scale: 1.04, boxShadow: '0 18px 50px -10px rgba(0,0,0,.55), 0 0 0 1.5px rgba(210,179,119,.9), 0 0 40px rgba(210,179,119,.35)', duration: 0.6, ease: E.pop }, '<0.1');
-    if (arc) { svgOff(clone); tl.fromTo(arc, { attr: { 'stroke-dashoffset': full } }, { attr: { 'stroke-dashoffset': to }, duration: 1.2, ease: E.out }, '<0.15'); }
-    tl.add(() => sweep(clone), '<0.2')
-      .fromTo(lab, { autoAlpha: 0, y: 10, xPercent: -50 }, { autoAlpha: 1, y: 0, xPercent: -50, duration: 0.45, ease: E.pop }, '<0.35');
-    if (celebrate) tl.add(() => sparks(clone), '<0.1');
-    tl.to(clone, { scale: 1.02, duration: 1.6, ease: 'sine.inOut', yoyo: true, repeat: 1 }, '>');
+    const big = clone.querySelector('.big'), meter = clone.querySelector('svg.meter');
+    const glow = (a, b) => `0 24px 60px -12px rgba(0,0,0,.6), 0 0 0 ${a}px rgba(226,194,127,.95), 0 0 ${b}px rgba(226,194,127,.55)`;
+    const tl = gsap.timeline({ onComplete: () => setTimeout(close, 1200) });
+    tl.fromTo(dim, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.5, ease: 'power2.out' })
+      // the card lifts out of the page with a pop
+      .fromTo(clone, { scale: 0.97, y: 14, boxShadow: glow(0, 0) }, { scale: 1.07, y: -6, boxShadow: glow(2, 56), duration: 0.7, ease: 'back.out(2.2)' }, '<0.1');
+    if (arc) { svgOff(clone); tl.fromTo(arc, { attr: { 'stroke-dashoffset': full } }, { attr: { 'stroke-dashoffset': to }, duration: 1.5, ease: 'power3.out' }, '<0.2'); }
+    if (big && !document.body.classList.contains('masked')) { const t = big.textContent; tl.add(() => odo(big, t.replace(/\d/g, '0'), t), '<0.1'); }
+    if (meter) tl.fromTo(meter, { filter: 'drop-shadow(0 0 0 rgba(226,194,127,0))' }, { filter: 'drop-shadow(0 0 14px rgba(226,194,127,.9))', duration: 0.6, ease: 'power2.out', yoyo: true, repeat: 3 }, '<0.6');
+    tl.add(() => sweep(clone), 0.75).add(() => sweep(clone), 2.1)
+      .fromTo(lab, { autoAlpha: 0, y: 18, scale: 0.85, xPercent: -50 }, { autoAlpha: 1, y: 0, scale: 1, xPercent: -50, duration: 0.55, ease: 'back.out(2.4)' }, 0.95);
+    if (celebrate) { tl.add(() => sparks(clone), 1.0).add(() => sparks(clone), 1.5); if (typeof confetti === 'function') tl.add(() => confetti(), 1.05); }
+    // the gold edge breathes while you read it
+    tl.to(clone, { boxShadow: glow(2.5, 30), scale: 1.05, duration: 0.8, ease: 'sine.inOut', yoyo: true, repeat: 3 }, 1.0);
   }
   const svgOff = (root) => root.querySelectorAll('svg.meter').forEach((sv) => sv.classList.add('gs'));
   function sparks(el) {
     const host = el.getBoundingClientRect(), cols = ['#e2c27f', '#7fb08f', '#8fb3e8', '#d98b5f'];
-    for (let i = 0; i < 28; i++) {
-      const p = document.createElement('i'); p.className = 'spark';
-      p.style.left = host.width / 2 + 'px'; p.style.top = host.height / 2 + 'px'; p.style.background = cols[i % 4]; p.style.width = p.style.height = 6 + Math.random() * 5 + 'px';
-      el.appendChild(p);
-      const a = Math.random() * Math.PI * 2, d = 70 + Math.random() * 110;
+    for (let i = 0; i < 40; i++) {
+      const p = document.createElement('i'); p.className = 'spark spark-fixed';
+      p.style.left = host.left + host.width / 2 + 'px'; p.style.top = host.top + host.height / 2 + 'px'; p.style.background = cols[i % 4]; p.style.width = p.style.height = 6 + Math.random() * 5 + 'px';
+      document.body.appendChild(p);
+      const a = Math.random() * Math.PI * 2, d = 90 + Math.random() * 150;
       gsap.fromTo(p, { scale: 0, autoAlpha: 1 }, { x: Math.cos(a) * d, y: Math.sin(a) * d * 0.7, scale: 1, autoAlpha: 0, duration: 1 + Math.random() * 0.6, ease: 'power3.out', onComplete: () => p.remove() });
     }
   }

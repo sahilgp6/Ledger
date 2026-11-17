@@ -359,9 +359,10 @@ body.loading [data-nwval],body.loading .chart .cwrap,body.loading .hold-v{animat
 .esheet-prev iframe{width:100%;height:100%;border:0;display:block}
 
 /* daily spotlight on Safe to spend */
-.spot-dim{position:fixed;inset:0;z-index:55;touch-action:none;background:rgba(9,13,11,.55);-webkit-backdrop-filter:grayscale(1) brightness(.75);backdrop-filter:grayscale(1) brightness(.75);opacity:0}
-.spot-card{position:fixed!important;z-index:56;border-radius:var(--r)!important;transform-origin:50% 50%;overflow:visible!important}
-.spot-note{position:fixed;left:50%;z-index:57;background:var(--ink);color:var(--bg);font-weight:600;font-size:.92rem;padding:10px 16px;border-radius:999px;max-width:calc(100vw - 32px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.35);opacity:0}
+.spot-dim{position:fixed;inset:0;z-index:55;touch-action:none;background:radial-gradient(520px 360px at var(--cx,50%) var(--cy,50%),rgba(9,13,11,.25),rgba(5,8,6,.8) 70%);-webkit-backdrop-filter:grayscale(1) brightness(.6);backdrop-filter:grayscale(1) brightness(.6);opacity:0}
+.spot-card{position:fixed!important;z-index:56;border-radius:var(--r)!important;transform-origin:50% 50%;overflow:hidden!important}
+.spark-fixed{position:fixed!important;z-index:58}
+.spot-note{position:fixed;left:50%;z-index:57;background:var(--ink);color:var(--bg);font-weight:650;font-size:1.02rem;padding:12px 20px;box-shadow:0 0 0 1.5px rgba(226,194,127,.8),0 14px 34px rgba(0,0,0,.45);border-radius:20px;width:max-content;max-width:calc(100vw - 40px);text-align:center;line-height:1.35;box-shadow:0 10px 30px rgba(0,0,0,.35);opacity:0}
 .lightsweep{background:linear-gradient(90deg,transparent,color-mix(in srgb,#ffe7b0 55%,transparent),transparent)!important;width:32%!important}
 </style>
 </head>

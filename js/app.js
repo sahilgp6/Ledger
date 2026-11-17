@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.14.0';
+const APP_VERSION = '1.14.1';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1559,12 +1559,16 @@ function celebrate(title, sub) {
   const box = document.createElement('div'); box.id = 'cele'; box.setAttribute('role', 'status');
   box.innerHTML = `<div class="cele-card"><div class="serif" style="font-size:1.35rem">${esc(title)}</div><div class="small muted" style="margin-top:4px">${esc(sub)}</div></div>`;
   document.body.appendChild(box); setTimeout(() => box.classList.add('out'), 2600); setTimeout(() => box.remove(), 3100);
+  confettiBurst();
+}
+// Gold and green confetti from the middle of the screen
+function confettiBurst(yFrac = 0.38) {
   if (RM()) return;
   const cv = document.createElement('canvas'), dpr = devicePixelRatio || 1;
-  cv.id = 'confetti'; cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; document.body.appendChild(cv);
+  cv.id = 'confetti'; cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; cv.style.zIndex = '60'; document.body.appendChild(cv);
   const g = cv.getContext('2d'); g.scale(dpr, dpr);
   const cols = ['#a8823a', '#e9d7ae', '#1f5c45', '#c9a54a', '#7c8f86'];
-  const P = Array.from({ length: 90 }, () => ({ x: innerWidth / 2, y: innerHeight * 0.38, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 10 - 4, s: 4 + Math.random() * 5, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3, c: cols[(Math.random() * cols.length) | 0] }));
+  const P = Array.from({ length: 90 }, () => ({ x: innerWidth / 2, y: innerHeight * yFrac, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 10 - 4, s: 4 + Math.random() * 5, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3, c: cols[(Math.random() * cols.length) | 0] }));
   const t0 = performance.now();
   const frame = (t) => {
     const k = (t - t0) / 1800; g.clearRect(0, 0, innerWidth, innerHeight);
@@ -1945,8 +1949,10 @@ function watchSpot() {
         : under ? `Under budget yesterday · ${inr(s.daily - s.spentYest, 0)} carried`
         : s.spentYest != null && s.spentYest > s.daily ? `${inr(s.todayLeft, 0)} for today, after yesterday's ${inr(s.spentYest - s.daily, 0)} over`
         : `${inr(s.todayLeft, 0)} safe to spend today`;
-      haptic();
-      LM.spotlight(now, { note, celebrate: under });
+      // bring the card to the middle of the screen first, then light it up
+      const r = now.getBoundingClientRect(), target = Math.max(0, scrollY + r.top - (innerHeight - r.height) / 2 + 20);
+      const go = () => { haptic(); LM.spotlight(now, { note, celebrate: under, confetti: under ? () => confettiBurst(0.45) : null }); };
+      if (Math.abs(target - scrollY) > 30) { if (LM.lenis) LM.lenis.scrollTo(target, { duration: 0.6, easing: (t) => 1 - Math.pow(1 - t, 3) }); else scrollTo({ top: target, behavior: 'smooth' }); setTimeout(go, 650); } else go();
     }, 350);
   }, { threshold: [0.85, 1] });
   spotObs.observe(el);
