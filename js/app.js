@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.1';
+const APP_VERSION = '1.15.2';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1618,7 +1618,7 @@ function donutCard(byCat, total, ym) {
         <g transform="rotate(-90 80 80)">${arcs.map((a) => `<circle class="dseg" data-act="donutSel" data-id="${a.id}" cx="80" cy="80" r="${R}" fill="none" stroke="${DONUT_COL[a.i]}" stroke-width="22" stroke-dasharray="${a.len.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-a.start).toFixed(2)}" style="--dx:${a.dy.toFixed(2)}px;--dy:${(-a.dx).toFixed(2)}px;--i:${a.i}"/>`).join('')}</g>
         <text x="80" y="74" text-anchor="middle" class="dn-l">Spent</text><text x="80" y="96" text-anchor="middle" class="dn-v num money">${inr(total, 0)}</text>
       </svg>
-      <div class="grow">${arcs.map((a) => `<div class="drow hz" role="button" tabindex="0" data-act="donutSel" data-id="${a.id}"><span class="dot" style="background:${DONUT_COL[a.i]}"></span><span class="grow small">${esc(a.name)}</span><span class="small num muted">${a.pct}%</span></div>`).join('')}</div>
+      <div class="grow">${arcs.map((a) => `<div class="drow" role="button" tabindex="0" data-act="donutSel" data-id="${a.id}"><span class="dot" style="background:${DONUT_COL[a.i]}"></span><span class="grow small">${esc(a.name)}</span><span class="small num muted">${a.pct}%</span></div>`).join('')}</div>
     </div>
     ${arcs.map((a) => `<div class="dsel" data-for="${a.id}" data-name="${esc(a.name)}" data-v="${inr(a.v, 0)}" data-pct="${a.pct}" hidden>
       ${a.id === '_other' ? '' : `<div class="dtx">${txs(a.id).map((x) => `<button class="item" data-act="editTx" data-id="${x.id}"><div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)}</div></div><div class="a num">${inr(x.amount)}</div></button>`).join('')}</div><button class="link small" style="margin-top:8px" data-act="showCat" data-id="${a.id}">See all ${esc(a.name)} ›</button>`}</div>`).join('')}
@@ -1689,7 +1689,7 @@ function calendarCard(ym = ymOf(todayIso())) {
   for (let i = 0; i < first; i++) cells.push('<i></i>');
   for (let d = 1; d <= days; d++) {
     const iso = `${ym}-${String(d).padStart(2, '0')}`, v = Math.max(0, tot.get(iso) || 0), k = v / mx;
-    cells.push(`<div class="cal-d hz ${iso === today ? 'today' : ''} ${iso > today ? 'future' : ''}" role="button" tabindex="0" data-act="calDay" data-grow data-d="${iso}" style="background:${v ? `color-mix(in oklch, var(--brand) ${Math.round(12 + k * 78)}%, var(--chip))` : 'var(--chip)'};${k > 0.55 ? 'color:var(--on-brand)' : ''}" aria-label="${fmtDate(iso, true)}: ${inr(v, 0)}">${d}</div>`);
+    cells.push(`<div class="cal-d ${iso === today ? 'today' : ''} ${iso > today ? 'future' : ''}" role="button" tabindex="0" data-act="calDay" data-grow data-d="${iso}" style="background:${v ? `color-mix(in oklch, var(--brand) ${Math.round(12 + k * 78)}%, var(--chip))` : 'var(--chip)'};${k > 0.55 ? 'color:var(--on-brand)' : ''}" aria-label="${fmtDate(iso, true)}: ${inr(v, 0)}">${d}</div>`);
   }
   return `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Day by day</h2><span class="tiny muted">${MON[+ym.slice(5) - 1]}</span></div>
     <div class="cal-h">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((w) => `<span>${w}</span>`).join('')}</div><div class="cal">${cells.join('')}</div>
