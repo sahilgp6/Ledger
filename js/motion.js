@@ -325,6 +325,58 @@
     // the gold edge breathes while you read it
     tl.to(clone, { boxShadow: glow(2.5, 30), scale: 1.05, duration: 0.8, ease: 'sine.inOut', yoyo: true, repeat: 3 }, 1.0);
   }
+  /* ---------- tapping a card: it presses in, lifts with a gold edge, refills its ring, then flips over;
+     the sheet is its back side, and the sheet's lines drop in one at a time ---------- */
+  let flipFrom = null;
+  function tapFlip(el, open) {
+    if (!ready() || !el) { open(); return; }
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    const bg = /rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ? 'var(--card)' : cs.backgroundColor;
+    const dim = document.createElement('div'); dim.className = 'spot-dim tapdim';
+    const clone = el.cloneNode(true); clone.classList.add('spot-card'); clone.removeAttribute('data-act');
+    Object.assign(clone.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: 0, background: bg, color: cs.color });
+    dim.style.setProperty('--cx', (r.left + r.width / 2) + 'px'); dim.style.setProperty('--cy', (r.top + r.height / 2) + 'px');
+    document.body.append(dim, clone);
+    el.style.visibility = 'hidden';
+    const arc = clone.querySelector('.meter-arc'), big = clone.querySelector('.big');
+    const glow = (a, b) => `0 18px 44px -12px rgba(0,0,0,.5), 0 0 0 ${a}px rgba(226,194,127,.95), 0 0 ${b}px rgba(226,194,127,.5)`;
+    const tl = gsap.timeline();
+    tl.to(dim, { autoAlpha: 1, duration: 0.25, ease: 'power2.out' })
+      .to(clone, { scale: 0.96, duration: 0.09, ease: 'power2.out' }, 0)
+      .to(clone, { scale: 1.04, boxShadow: glow(2, 40), duration: 0.32, ease: 'back.out(2.4)' });
+    if (arc) { svgOff(clone); const to = +arc.getAttribute('stroke-dashoffset'), full = +arc.getAttribute('stroke-dasharray'); tl.fromTo(arc, { attr: { 'stroke-dashoffset': full } }, { attr: { 'stroke-dashoffset': to }, duration: 0.55, ease: 'power3.out' }, '<0.05'); }
+    if (big && !document.body.classList.contains('masked')) { const t = big.textContent; tl.add(() => odo(big, t.replace(/\d/g, '0'), t), '<'); }
+    // edge-on: the card turns away and its back (the sheet) turns towards you
+    tl.to(clone, { rotationY: 90, scale: 1, duration: 0.2, ease: 'power2.in', transformPerspective: 900 }, '+=0.12')
+      .add(() => {
+        flipFrom = { r: clone.getBoundingClientRect(), r0: r, bg, t: Date.now() };
+        clone.remove(); el.style.visibility = '';
+        open();
+        gsap.to(dim, { autoAlpha: 0, duration: 0.3, ease: 'power1.out', onComplete: () => dim.remove() });
+      });
+  }
+  // called by openSheet: the sheet swings round from the card's edge and its lines drop in
+  function flipToSheet(sheet) {
+    const f = flipFrom; flipFrom = null;
+    if (!f || Date.now() - f.t > 800 || !ready()) return false;
+    sheet.style.transition = 'none'; sheet.style.transform = 'none';
+    const r2 = sheet.getBoundingClientRect();
+    sheet.style.opacity = '0';
+    const o = document.createElement('div'); o.className = 'expander flipback';
+    Object.assign(o.style, { left: f.r0.left + 'px', top: f.r0.top + 'px', width: f.r0.width + 'px', height: f.r0.height + 'px', borderRadius: '18px', background: 'var(--card)', zIndex: 33 });
+    document.body.appendChild(o);
+    const rows = [...sheet.querySelectorAll(':scope > *:not(.list):not(.grip), :scope .list > *')].slice(0, 24);
+    gsap.timeline({ onComplete: () => { o.remove(); sheet.style.transition = ''; sheet.style.transform = ''; } })
+      .fromTo(o, { rotationY: -90, transformPerspective: 900 }, { rotationY: 0, duration: 0.2, ease: 'power2.out' })
+      .to(o, { left: r2.left, top: r2.top, width: r2.width, height: r2.height, borderRadius: '20px 20px 0 0', duration: 0.32, ease: E.inout })
+      .set(sheet, { opacity: 1 })
+      .set(rows, { autoAlpha: 0 })
+      .to(o, { autoAlpha: 0, duration: 0.15 })
+      .fromTo(rows, { autoAlpha: 0, y: -30, rotationX: -40, transformOrigin: '50% 0%', transformPerspective: 700 },
+        { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.42, ease: 'back.out(1.7)', stagger: 0.05, clearProps: 'opacity,visibility,transform' }, '<');
+    return true;
+  }
+
   const svgOff = (root) => root.querySelectorAll('svg.meter').forEach((sv) => sv.classList.add('gs'));
   function sparks(el) {
     const host = el.getBoundingClientRect(), cols = ['#e2c27f', '#7fb08f', '#8fb3e8', '#d98b5f'];
@@ -365,7 +417,7 @@
   function scrollLock(on) { if (!lenis) return; on ? lenis.stop() : lenis.start(); }
   function jumpTo(el, offset = -90) { if (!el) return; if (lenis && ready()) lenis.scrollTo(el, { offset, duration: 0.8, easing: (t) => 1 - Math.pow(1 - t, 4) }); else el.scrollIntoView({ block: 'start', behavior: RM() ? 'auto' : 'smooth' }); }
 
-  window.LM = { toTop, scrollLock, jumpTo, get lenis() { return lenis; }, get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal, spotlight };
+  window.LM = { toTop, scrollLock, jumpTo, get lenis() { return lenis; }, get ok() { return ready(); }, killIdle, odo, ring, markers, charts, expand, enter, sheetFrom, slide, fresh, fold, saved, burst, intro, onScroll, digit, wipe, shake, sweep, steps, paid, flip, reveal, spotlight, tapFlip, flipToSheet };
   const boot = () => { init(); initLenis(); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

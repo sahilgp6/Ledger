@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.14.1';
+const APP_VERSION = '1.15.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -51,12 +51,12 @@ function needsField(msg) {
 let pageLock = null;
 function lockPage() {
   if (pageLock) return;
-  pageLock = scrollY; window.LM?.scrollLock(true);
+  pageLock = scrollY;
   Object.assign(document.body.style, { position: 'fixed', top: `-${pageLock}px`, left: '0', right: '0', width: '100%' });
 }
 function unlockPage() {
   if (pageLock == null) return;
-  const y = pageLock; pageLock = null; window.LM?.scrollLock(false);
+  const y = pageLock; pageLock = null;
   Object.assign(document.body.style, { position: '', top: '', left: '', right: '', width: '' });
   scrollTo(0, y);
 }
@@ -66,6 +66,7 @@ function openSheet(html) {
   sh.querySelectorAll('input:not([type=checkbox]):not([type=hidden]):not([type=file]),textarea').forEach((i) => { if (!i.hasAttribute('autocomplete')) i.setAttribute('autocomplete', 'off'); });
   sh.classList.add('on'); $('#scrim').classList.add('on'); sh.scrollTop = 0; lockPage(); blurAmounts(sh);
   const g = ui.grow; ui.grow = null;
+  if (window.LM?.flipToSheet(sh)) return;
   if (g && Date.now() - g.t < 600 && window.LM?.ok) LM.sheetFrom(g.r, sh, g.bg);
 }
 // Keep sheets above the keyboard: iOS shrinks only the visible area, so lift the sheet by the keyboard's height
@@ -1195,7 +1196,7 @@ function safeCard() {
   const R = 46, C = 2 * Math.PI * R, frac = s.allowance > 0 ? Math.max(0, Math.min(1, s.todayLeft / s.allowance)) : 0;
   const carryTxt = Math.abs(s.carry) < 100 ? '' : s.carry > 0 ? `+ ${inr(s.carry, 0)} saved from earlier days` : `− ${inr(-s.carry, 0)} overspent earlier`;
   const msg = s.todayLeft < 0 ? `Over by ${inr(-s.todayLeft, 0)}` : s.spentToday ? `${inr(s.spentToday, 0)} spent today` : 'Nothing spent yet';
-  return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet" data-grow>
+  return `<button class="card item safe tone-${s.tone}" style="border-radius:var(--r);margin-bottom:14px;border:0;display:block;text-align:left" data-act="safeSheet">
     <div class="row"><h2 class="grow" style="margin:0">Safe to spend today</h2><span class="pillnote" style="color:${col}">${msg}</span></div>
     <div class="row" style="gap:16px;align-items:center;margin-top:8px">
       <svg class="meter" viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle cx="55" cy="55" r="${R}" fill="none" stroke="var(--chip)" stroke-width="10"/>
@@ -3569,7 +3570,7 @@ const acts = {
   donutSel: (d) => { haptic(); donutSelect(d.id); },
   lpTag: (d) => lpTagSheet(d.id),
   calDay: (d) => calDaySheet(d.d),
-  safeSheet: () => safeSheet(),
+  safeSheet: (d, el) => { const card = el?.closest?.('#main .safe'); if (card && window.LM?.ok) LM.tapFlip(card, () => safeSheet()); else safeSheet(); },
   cardPlanSheet: () => cardPlanSheet(),
   cpFixedSheet: (d) => cpFixedSheet(d.id),
   cpFixedDel: (d) => { const p = cplan(); p.fixed = p.fixed.filter((x) => x.id !== d.id); delete p.off['own:' + d.id]; save(); render(); cardPlanSheet(); },
