@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.4';
+const APP_VERSION = '1.15.5';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1011,7 +1011,7 @@ function safeToSpend() {
   const tone = todayLeft < 0 ? 'bad' : allowance > 0 && spentToday > allowance * 0.8 ? 'warn' : 'ok';
   const usual = 0;
   const asOf = D.transactions.filter((x) => x.accountId === acct.id).reduce((m2, x) => (x.date > m2 ? x.date : m2), '');
-  return { spentYest, ydayUnder: spentYest != null && spentYest <= daily, acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, laterBill, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
+  return { spentYest, ydayUnder: spentYest != null && spentYest <= daily, acct, bal, extra, cardDue, cards, billList, emiList, bills, emi, goal, o, left, perDay, daysLeft, next, start, days, day, pool, daily, carry, allowance, spentToday, todayLeft, laterBill, cycFrom: cyc && !cyc.stale ? cyc.from : ymOf(today) + '-01', spentSince: (f) => spentFrom(f, today), insFrom: ins, salaryKnown: !!(cyc && !cyc.stale), usual, tone, asOf };
 }
 // ===================== Card bill target =====================
 // One sum: expected salary − fixed costs − savings goal − money for UPI = what the card bill can be.
@@ -1228,6 +1228,8 @@ function safeSheet() {
       ${dl('Spent today', `− ${inr(s.spentToday, 0)}`)}
       ${dl('<b>Left today</b>', `<b>${inr(s.todayLeft, 0)}</b>`, s.todayLeft < 0 ? 'bad' : 'in')}</div>
     <p class="small muted" style="margin:-4px 0 10px">Whatever you don't spend today is added to tomorrow. Bills, EMIs and your goal below are set aside first. Only money leaving ${esc(s.acct.name)} counts${s.o.card ? ', plus card purchases, since card dues are paid from it' : '. Card spending is tracked by the card bill target instead'}. A payment only counts once it's in Ledger (bank SMS, Shortcut log or statement).</p>
+    <div class="list" style="margin:0 0 8px"><div class="item" style="padding:8px 14px"><div class="grow">Counting from<div class="s">Move it back if the meter restarted by mistake</div></div><input class="i" type="date" id="safeFrom" value="${s.start}" min="${s.cycFrom}" max="${todayIso()}" style="width:auto;min-height:40px"></div></div>
+    ${D.settings.safeMeterPrev && s.start === todayIso() ? `<button class="btn wide" style="margin-bottom:8px" data-act="safeUndo">Undo restart (back to ${fmtDate(D.settings.safeMeterPrev.from, true).replace(/ \d{4}$/, '')})</button>` : ''}
     <button class="btn ghost wide" style="margin-bottom:12px" data-act="safeReset">Start the meter again from today</button>
     <div class="day"><span>Where the money comes from</span></div>
     <div class="list" style="margin:0 0 12px"><div class="item" style="padding:10px 14px"><div class="grow">${esc(s.acct.name)}<div class="s">${s.asOf ? 'Balance as of your latest entry, ' + fmtDate(s.asOf, true) : 'Current balance'}</div></div><span class="num">${inr(s.bal, 0)}</span></div>
@@ -3581,7 +3583,12 @@ const acts = {
   cardPlanSheet: (d, el) => flipOpen(el, cardPlanSheet),
   cpFixedSheet: (d) => cpFixedSheet(d.id),
   cpFixedDel: (d) => { const p = cplan(); p.fixed = p.fixed.filter((x) => x.id !== d.id); delete p.off['own:' + d.id]; save(); render(); cardPlanSheet(); },
-  safeReset: () => { delete D.settings.safeMeter; save(); render(); safeSheet(); done('Meter restarted'); },
+  safeReset: () => {
+    if (!confirm('Start the meter again from today? Savings and overspending from earlier days are cleared.')) return;
+    if (D.settings.safeMeter && D.settings.safeMeter.from !== todayIso()) D.settings.safeMeterPrev = D.settings.safeMeter;
+    delete D.settings.safeMeter; save(); render(); safeSheet(); done('Meter restarted');
+  },
+  safeUndo: () => { const p = D.settings.safeMeterPrev; if (!p) return; D.settings.safeMeter = p; delete D.settings.safeMeterPrev; save(); render(); safeSheet(); done('Back to ' + fmtDate(p.from, true).replace(/ \d{4}$/, '')); },
   openBudgets: () => { ui.view = { page: 'budgets' }; render(); window.scrollTo(0, 0); },
   budgetSheet: (d) => budgetSheet(d.id),
   budgetRemove: (d) => { delete budgets()[d.id]; delete (D.settings.budgetSince || {})[d.id]; save(); closeSheet(); render(); },
@@ -4217,6 +4224,14 @@ document.addEventListener('change', (e) => {
   // Redraw after any tap that caused this change has landed, and only if the same sheet is still open
   const later = (sel, fn) => setTimeout(() => { if ($('#sheet ' + sel)) { const t = $('#sheet').scrollTop; fn(); $('#sheet').scrollTop = t; } }, 0);
   if (e.target.id === 'safeExtra') { const v = parseRupees(e.target.value); D.settings.safeExtra = v && v > 0 ? v : 0; save(); render(); later('#safeExtra', safeSheet); return; }
+  if (e.target.id === 'safeFrom') {
+    // Counting from an earlier day: what's left now plus everything spent since then, spread over those days
+    const s = safeToSpend(), f = e.target.value; if (!s || !f) return;
+    const from = f < s.cycFrom ? s.cycFrom : f > todayIso() ? todayIso() : f, n = Math.max(1, daysUntil(s.next) - daysUntil(from));
+    const m = D.settings.safeMeter; if (!m) return;
+    if (m.from !== from) { delete D.settings.safeMeterPrev; m.from = from; m.daily = Math.round((s.left + s.spentSince(from)) / n); m.seenIn = s.insFrom(from); }
+    save(); render(); later('#safeFrom', safeSheet); done('Counting from ' + fmtDate(from, true).replace(/ \d{4}$/, '')); return;
+  }
   if (e.target.id === 'safeAcct') { D.settings.safeAcct = e.target.value; save(); render(); later('#safeAcct', safeSheet); return; }
   if (e.target.dataset?.safe) { safeOpts()[e.target.dataset.safe] = e.target.checked; save(); render(); const t = $('#sheet').scrollTop, k = e.target.dataset.safe, on = e.target.checked; safeSheet(); $('#sheet').scrollTop = t; window.LM?.flip($(`#sheet input[data-safe="${k}"]`)?.closest('.item')?.querySelector('.num'), on); return; }
   if (e.target.id === 'safeGoal') { const v = parseRupees(e.target.value); D.settings.saveTarget = v && v > 0 ? v : 0; save(); render(); later('#safeGoal', safeSheet); return; }
