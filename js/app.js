@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.5';
+const APP_VERSION = '1.15.6';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1618,8 +1618,8 @@ function donutCard(byCat, total, ym) {
   const txs = (id) => D.transactions.filter((x) => x.date.startsWith(ym) && x.amount < 0 && vis.has(x.accountId) && (x.categoryId || '_none') === id).sort((a, b) => a.amount - b.amount).slice(0, 3);
   return `<div class="card donut" data-total="${total}"><h2>Where it went</h2>
     <div class="row" style="gap:16px;align-items:center">
-      <svg class="dn ${ui.draw ? 'drawn' : ''}" viewBox="0 0 160 160" width="150" height="150" role="img" aria-label="Spending by category">
-        <g transform="rotate(-90 80 80)">${arcs.map((a) => `<circle class="dseg" data-act="donutSel" data-id="${a.id}" cx="80" cy="80" r="${R}" fill="none" stroke="${DONUT_COL[a.i]}" stroke-width="22" stroke-dasharray="${a.len.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-a.start).toFixed(2)}" style="--dx:${a.dy.toFixed(2)}px;--dy:${(-a.dx).toFixed(2)}px;--i:${a.i}"/>`).join('')}</g>
+      <svg class="dn ${ui.draw ? 'drawn' : ''}" viewBox="0 0 160 160" width="150" height="150" role="img" aria-label="Spending by category"><defs><filter id="dnHide" x="-30%" y="-60%" width="160%" height="220%"><feGaussianBlur stdDeviation="5"/></filter></defs>
+        <g transform="rotate(-90 80 80)">${arcs.map((a) => `<circle class="dseg" data-act="donutSel" data-id="${a.id}" cx="80" cy="80" r="${R}" fill="none" stroke="${DONUT_COL[a.i]}" stroke-width="22" stroke-dashoffset="${(-a.start).toFixed(2)}" style="stroke-dasharray:${a.len.toFixed(2)} ${C.toFixed(2)};--dx:${a.dy.toFixed(2)}px;--dy:${(-a.dx).toFixed(2)}px;--i:${a.i}"/>`).join('')}</g>
         <text x="80" y="74" text-anchor="middle" class="dn-l">Spent</text><text x="80" y="96" text-anchor="middle" class="dn-v num money">${inr(total, 0)}</text>
       </svg>
       <div class="grow">${arcs.map((a) => `<div class="drow" role="button" tabindex="0" data-act="donutSel" data-id="${a.id}"><span class="dot" style="background:${DONUT_COL[a.i]}"></span><span class="grow small">${esc(a.name)}</span><span class="small num muted">${a.pct}%</span></div>`).join('')}</div>
