@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.8';
+const APP_VERSION = '1.15.9';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1606,8 +1606,14 @@ function checkCelebrate() {
 // ---- Spending donut: tap a slice (or its row) to pull it out and see that category
 const DONUT_COL = ['var(--brand)', 'var(--gold)', '#7c8f86', '#b07a5a', '#9fb7c9', 'var(--line)'];
 function donutCard(byCat, total, ym) {
+  // Slices share out the spending categories only. A category can go below zero when money comes back into it
+  // (a refund, or money received filed under it); that lowers the total spent but can't be drawn as a slice.
+  const spent = total;
+  const pos = byCat.filter(([, v]) => v > 0);
+  total = pos.reduce((t, [, v]) => t + v, 0);
   if (!total) return '';
-  const top = byCat.filter(([, v]) => v > 0).slice(0, 5);
+  const back = total - spent;
+  const top = pos.slice(0, 5);
   const rest = total - top.reduce((t, [, v]) => t + v, 0);
   const segs = [...top, ...(rest > total * 0.005 ? [['_other', rest]] : [])];
   const R = 60, C = 2 * Math.PI * R, gap = segs.length > 1 ? 2.5 : 0;
@@ -1619,14 +1625,15 @@ function donutCard(byCat, total, ym) {
     return { id, v, i, len, start, dx: Math.cos(mid) * 6, dy: Math.sin(mid) * 6, name: id === '_other' ? 'Everything else' : id === '_none' ? 'Uncategorised' : catName(id), pct: Math.round((v / total) * 100) };
   });
   const txs = (id) => D.transactions.filter((x) => x.date.startsWith(ym) && x.amount < 0 && vis.has(x.accountId) && (x.categoryId || '_none') === id).sort((a, b) => a.amount - b.amount).slice(0, 3);
-  return `<div class="card donut" data-total="${total}"><h2>Where it went</h2>
+  return `<div class="card donut" data-total="${spent}"><h2>Where it went</h2>
     <div class="row" style="gap:16px;align-items:center">
       <svg class="dn ${ui.draw ? 'drawn' : ''}" viewBox="0 0 160 160" width="150" height="150" role="img" aria-label="Spending by category"><defs><filter id="dnHide" x="-30%" y="-60%" width="160%" height="220%"><feGaussianBlur stdDeviation="5"/></filter></defs>
         <g transform="rotate(-90 80 80)">${arcs.map((a) => `<circle class="dseg" data-act="donutSel" data-id="${a.id}" cx="80" cy="80" r="${R}" fill="none" stroke="${DONUT_COL[a.i]}" stroke-width="22" stroke-dashoffset="${(-a.start).toFixed(2)}" style="stroke-dasharray:${a.len.toFixed(2)} ${C.toFixed(2)};--dx:${a.dy.toFixed(2)}px;--dy:${(-a.dx).toFixed(2)}px;--i:${a.i}"/>`).join('')}</g>
-        <text x="80" y="74" text-anchor="middle" class="dn-l">Spent</text><text x="80" y="96" text-anchor="middle" class="dn-v num money">${inr(total, 0)}</text>
+        <text x="80" y="74" text-anchor="middle" class="dn-l">Spent</text><text x="80" y="96" text-anchor="middle" class="dn-v num money">${inr(spent, 0)}</text>
       </svg>
       <div class="grow">${arcs.map((a) => `<div class="drow" role="button" tabindex="0" data-act="donutSel" data-id="${a.id}"><span class="dot" style="background:${DONUT_COL[a.i]}"></span><span class="grow small">${esc(a.name)}</span><span class="small num muted">${a.pct}%</span></div>`).join('')}</div>
     </div>
+    ${back > 0 ? `<p class="tiny muted" style="margin:8px 0 0">Slices show ${inr(total, 0)} of spending. ${inr(back, 0)} came back as refunds or money received filed under a spending category, so you spent ${inr(spent, 0)}.</p>` : ''}
     ${arcs.map((a) => `<div class="dsel" data-for="${a.id}" data-name="${esc(a.name)}" data-v="${inr(a.v, 0)}" data-pct="${a.pct}" hidden>
       ${a.id === '_other' ? '' : `<div class="dtx">${txs(a.id).map((x) => `<button class="item" data-act="editTx" data-id="${x.id}"><div class="grow"><div class="t">${esc(x.payee || x.description)}</div><div class="s">${fmtDate(x.date, true)}</div></div><div class="a num">${inr(x.amount)}</div></button>`).join('')}</div><button class="link small" style="margin-top:8px" data-act="showCat" data-id="${a.id}">See all ${esc(a.name)} ›</button>`}</div>`).join('')}
   </div>`;
@@ -1847,6 +1854,8 @@ function monthStats(ym) {
   let spend = 0, income = 0, uncategorised = 0;
   const byCat = new Map();
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
+  const tmap = new Map(); for (const y of D.transactions) if (y.transferId) (tmap.get(y.transferId) || tmap.set(y.transferId, []).get(y.transferId)).push(y);
+  const legs = (t) => { const l = tmap.get(t) || []; return l.length > 1 ? l : [{ accountId: null }]; };
   for (const x of D.transactions) {
     if (!x.date.startsWith(ym)) continue;
     if (multi() && D.settings.who !== 'all' && !vis.has(x.accountId)) continue;
@@ -1856,6 +1865,9 @@ function monthStats(ym) {
       continue;
     }
     if (c?.kind === 'income') { income += x.amount; continue; }
+    // Money moved between two accounts you're both looking at (yours and Shibani's, say) isn't spending,
+    // whatever category it's filed under: one side going out and the other coming in would cancel and skew the slices.
+    if (x.transferId && legs(x.transferId).every((y) => vis.has(y.accountId))) continue;
     if (!c) { uncategorised++; if (x.amount > 0) continue; }
     spend -= x.amount;
     const k = x.categoryId || '_none';
