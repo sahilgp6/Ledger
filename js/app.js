@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.6';
+const APP_VERSION = '1.15.7';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -3290,6 +3290,15 @@ function matchTransfers() {
     if (!o) continue;
     const t = uid(); i.transferId = o.transferId = t; i.categoryId = o.categoryId = 'card_payment'; n++;
   }
+  // The card's own "payment received" can arrive after Ledger already added the card side of a bank payment.
+  // Then the real entry replaces the added one, so the payment isn't counted twice.
+  for (const i of cardIns) {
+    if (i.transferId) continue;
+    const m = D.transactions.find((x) => x.auto && x.source === 'transfer' && x.accountId === i.accountId && x.amount === i.amount && daysApart(x.date, i.date) <= 4);
+    if (!m) continue;
+    i.transferId = m.transferId; i.categoryId = 'card_payment';
+    D.transactions = D.transactions.filter((x) => x !== m); n++;
+  }
   // Money moved between your own bank/cash accounts
   const isLedger = (x) => !isCard(x) && typeOf(accById(x.accountId)?.type).mode === 'ledger';
   const selfish = (x) => !x.transferId && (!x.categoryId || x.categoryId === 'self_transfer');
@@ -3543,7 +3552,7 @@ async function offerFaceId() {
 }
 async function afterUnlock() {
   D = migrate(vault.data); vault.data = D;
-  try { if (settleCards()) save(); } catch (e) { console.warn(e); }
+  try { if (matchTransfers()) save(); } catch (e) { console.warn(e); }
   if (processEmis() | processEpf()) save();
   refreshNavs().then((n) => { if (n && D) render(); }).catch(() => {});
   refreshStocks().then((n) => { if (n && D) render(); }).catch(() => {});
