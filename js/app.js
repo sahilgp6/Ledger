@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.9';
+const APP_VERSION = '1.16.0';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1856,8 +1856,10 @@ function monthStats(ym) {
   const vis = new Set(D.accounts.filter((a) => accVisible(a)).map((a) => a.id));
   const tmap = new Map(); for (const y of D.transactions) if (y.transferId) (tmap.get(y.transferId) || tmap.set(y.transferId, []).get(y.transferId)).push(y);
   const legs = (t) => { const l = tmap.get(t) || []; return l.length > 1 ? l : [{ accountId: null }]; };
+  const fresh = D.settings.freshMonth?.ym === ym ? D.settings.freshMonth.from : null; // "start this month fresh": earlier days left out
   for (const x of D.transactions) {
     if (!x.date.startsWith(ym)) continue;
+    if (fresh && x.date < fresh) continue;
     if (multi() && D.settings.who !== 'all' && !vis.has(x.accountId)) continue;
     const c = catById(x.categoryId);
     if (c?.kind === 'transfer') {
@@ -2105,6 +2107,9 @@ function renderHome(m) {
       <div class="small muted">${prev.spend ? `${s.spend > prev.spend ? '▲' : '▼'} ${inr(Math.abs(s.spend - prev.spend), 0)} vs last month` : ''}</div></div>
       ${s.income ? `<div style="text-align:right"><div class="small muted">Income</div><div class="in num">${inr(s.income, 0)}</div></div>` : ''}</div>
     <div class="cols">${months.map((x) => `<div class="${x.y === ym ? 'now' : ''}"><i style="height:${Math.max(3, (x.v / maxV) * 70)}px"></i><span>${MON[+x.y.slice(5) - 1]}</span></div>`).join('')}</div>
+    ${ym === ymOf(todayIso()) ? (D.settings.freshMonth?.ym === ym
+      ? `<p class="small muted" style="margin:12px 0 0">Counting from ${fmtDate(D.settings.freshMonth.from, true).replace(/ \d{4}$/, '')}. <button class="link" data-act="freshUndo">Undo</button></p>`
+      : `<p class="small" style="margin:12px 0 0"><button class="link" data-act="freshStart">Start this month fresh from today</button></p>`) : ''}
     ${s.uncategorised ? `<p class="small" style="margin:12px 0 0"><button class="link" data-act="showUncat">${s.uncategorised} transactions need a category ›</button></p>` : ''}
   </div>
   ${calendarCard(ym)}
@@ -3601,6 +3606,11 @@ const acts = {
   cpTip: (d) => { cpTip(d.k); window.LM?.steps($('#sheet')); },
   summarySheet: () => summarySheet(),
   donutSel: (d) => { haptic(); donutSelect(d.id); },
+  freshStart: () => {
+    if (!confirm(`Start ${monthLabel(ymOf(todayIso()))} fresh from today? Spending before today is left out of this month's totals, Where it went and budgets. Nothing is deleted, and you can undo.`)) return;
+    D.settings.freshMonth = { ym: ymOf(todayIso()), from: todayIso() }; save(); render(); done('Starting fresh from today');
+  },
+  freshUndo: () => { delete D.settings.freshMonth; save(); render(); done('Whole month back'); },
   lpTag: (d) => lpTagSheet(d.id),
   calDay: (d) => calDaySheet(d.d),
   safeSheet: (d, el) => flipOpen(el, safeSheet),
