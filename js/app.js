@@ -6,7 +6,7 @@ import { planQuestion } from './planner.js';
 import { readXlsx } from './xlsx.js';
 import * as AI from './ai.js';
 
-const APP_VERSION = '1.15.7';
+const APP_VERSION = '1.15.8';
 const DATA_VERSION = 1;
 const vault = new Vault();
 let D = null; // decrypted data, in memory only while unlocked
@@ -1175,6 +1175,9 @@ function cardPlanHtml() {
   const c = cardPlan();
   const row = (x) => `<label class="item" style="padding:10px 14px"><div class="grow">${esc(x.name)}<div class="s">${esc(x.note)}${x.by === 'card' ? ' · on the card, stays inside the target' : ''}</div></div><span class="num" style="margin-right:10px;${x.on ? '' : 'opacity:.4;text-decoration:line-through'}${x.by === 'card' ? ';color:var(--muted)' : ''}">${x.by === 'card' ? '' : '− '}${inr(x.amount, 0)}</span>${x.own ? `<button type="button" class="link small" style="margin-right:8px" data-act="cpFixedSheet" data-id="${x.id}">Edit</button>` : ''}<input type="checkbox" switch data-cpoff="${esc(x.key)}" ${x.on ? 'checked' : ''}></label>`;
   return (`<h3>Plan the card bill</h3><p class="small muted" style="margin-top:-6px">For card spending from ${fmtDate(c.start, true).replace(/ \d{4}$/, '')}, billed on ${fmtDate(c.next, true)}.</p>
+    <div class="day"><span>Outstanding now</span></div>
+    <div class="list" style="margin-bottom:6px">${c.cards.map((a) => `<button class="item" data-act="setBalance" data-id="${a.id}" style="padding:10px 14px"><div class="grow">${esc(accShort(a))}<div class="s">${a.balanceSetAt ? 'Set from your bank on ' + fmtDate(a.balanceSetAt, true).replace(/ \d{4}$/, '') + ', plus entries since' : 'Worked out from your entries'}</div></div><span class="num">${inr(Math.max(0, -balance(a)), 0)}</span><span class="muted" style="margin-left:8px">Update ›</span></button>`).join('')}</div>
+    <p class="small muted" style="margin:0 0 12px">Different in the HDFC app? Tap the card and type what it shows.</p>
     <div class="split"><label class="f"><span>Expected salary (₹)</span><input class="i num" id="cpSalary" inputmode="decimal" placeholder="e.g. 180000" value="${c.salaryGuessed ? '' : c.salary / 100}"></label>
       <label class="f"><span>Money for UPI (₹)</span><input class="i num" id="cpUpi" inputmode="decimal" placeholder="${c.upiGuessed && c.upi ? c.upi / 100 : '0'}" value="${c.upiGuessed ? '' : c.upi / 100}"></label></div>
     <p class="small muted cp-note" style="margin:-6px 0 12px">${c.salaryGuessed && c.salary ? `Using your last salary, ${inr(c.salary, 0)}, until you type one. ` : ''}${c.upiGuessed && c.upi ? `UPI uses your usual ${inr(c.upi, 0)} a month from ${esc(safeAccount()?.name || 'your bank')} until you type an amount.` : 'UPI: Ranjeet and anything else you pay from the bank, not the card.'}</p>
@@ -3257,9 +3260,9 @@ function setBalanceSheet(accId) {
     <label class="f"><span>${a.type === 'credit_card' ? 'Amount you owe right now' : 'Balance right now'} (₹)</span><input class="i num" name="bal" inputmode="decimal" value="${(Math.abs(cur) / 100).toFixed(2)}" required></label>
     <label class="f"><span>As on</span><input class="i" type="date" name="date" value="${todayIso()}" required></label>
     <p class="small" style="margin:0 0 6px">Ledger shows ${inr(cur)}. If yours is different, why?</p>
-    <label class="row small" style="margin:6px 0"><input type="radio" name="why" value="transfer" checked class="chk"><span>I moved money to or from my other account:</span></label>
+    <label class="row small" style="margin:6px 0"><input type="radio" name="why" value="transfer" ${a.type === 'credit_card' ? '' : 'checked'} class="chk"><span>I moved money to or from my other account:</span></label>
     <select class="i" name="other" style="margin:0 0 8px">${accOptions('', (o) => o.id !== a.id)}</select>
-    <label class="row small" style="margin:6px 0"><input type="radio" name="why" value="adjust" class="chk"><span>Just correct it (missing entries, cash, interest)</span></label>
+    <label class="row small" style="margin:6px 0"><input type="radio" name="why" value="adjust" ${a.type === 'credit_card' ? 'checked' : ''} class="chk"><span>Just correct it (missing entries, cash, interest)</span></label>
     <p class="tiny muted">Either way it won't count as spending or income. A transfer also corrects the other account.</p>
     <button class="btn wide">Save</button>
   </form>`);
